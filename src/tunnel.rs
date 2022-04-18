@@ -5,7 +5,7 @@ use tokio::time;
 use crate::authorization::Status;
 use crate::downstream::{AuthorizedRequest, Downstream, PendingDatagramMultiplexerRequest, PendingTcpConnectRequest};
 use crate::forwarder::Forwarder;
-use crate::{datagram_pipe, downstream, log_id, log_utils, udp_pipe};
+use crate::{datagram_pipe, downstream, log_id, log_utils, pipe, udp_pipe};
 use crate::pipe::{DuplexPipe, SimplexPipe, SimplexPipeDirection};
 use crate::settings::Settings;
 
@@ -166,6 +166,29 @@ impl Tunnel {
                     (dstr_source, dstr_sink),
                     (fwd_shared, fwd_source, fwd_sink),
                     core_settings.udp_connections_timeout,
+                ))
+            }
+            Ok(downstream::DatagramPipeHalves::Icmp(dstr_source, dstr_sink)) => {
+                let (fwd_source, fwd_sink) =
+                    match forwarder.lock().unwrap().make_icmp_datagram_multiplexer(request_id.clone()) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            log_id!(debug, request_id, "Failed to create datagram multiplexer: {}", e);
+                            return;
+                        }
+                    };
+
+                Box::new(datagram_pipe::GenericDuplexPipe::new(
+                    datagram_pipe::GenericSimplexPipe::new(
+                        pipe::SimplexPipeDirection::Outgoing,
+                        dstr_source,
+                        fwd_sink,
+                    ),
+                    datagram_pipe::GenericSimplexPipe::new(
+                        pipe::SimplexPipeDirection::Incoming,
+                        fwd_source,
+                        dstr_sink,
+                    ),
                 ))
             }
             Err(e) => {

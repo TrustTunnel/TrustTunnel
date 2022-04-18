@@ -8,6 +8,9 @@ edition = "2021"
 name = "vpn_libs_endpoint"
 path = "src/lib.rs"
 
+[build-dependencies]
+cc = "1.0"
+
 [dependencies]
 log = "0.4"
 quiche = { version = "0.12", features = ["qlog"] }

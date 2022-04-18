@@ -6,7 +6,7 @@ use http::StatusCode;
 use async_trait::async_trait;
 use bytes::Bytes;
 use crate::downstream::Downstream;
-use crate::{authorization, datagram_pipe, downstream, http_codec, http_datagram_codec, http_forwarded_stream, http_udp_codec, log_id, log_utils, net_utils, pipe};
+use crate::{authorization, datagram_pipe, downstream, http_codec, http_datagram_codec, http_forwarded_stream, http_icmp_codec, http_udp_codec, log_id, log_utils, net_utils, pipe};
 use crate::http_codec::HttpCodec;
 use crate::net_utils::TcpDestination;
 use crate::settings::Settings;
@@ -133,7 +133,10 @@ impl Downstream for HttpDownstream {
                 break Ok(Some(Box::new(PendingAuthorization { stream, id: stream_id })));
             }
             if is_datagram_mux {
-                break Ok(Some(Box::new(DatagramMultiplexer { stream, id: stream_id })));
+                break Ok(Some(Box::new(DatagramMultiplexer {
+                    stream,
+                    id: stream_id,
+                })));
             }
             break Ok(Some(Box::new(TcpConnection { stream, id: stream_id })));
         }
@@ -257,7 +260,19 @@ impl downstream::PendingDatagramMultiplexerRequest for DatagramMultiplexer {
                     encoder: Box::new(http_udp_codec::Encoder::default()),
                 }),
             )),
-            ICMP_AUTHORITY => todo!(),
+            ICMP_AUTHORITY => {
+                Ok(downstream::DatagramPipeHalves::Icmp(
+                    Box::new(DatagramDecoder {
+                        source: source.finalize(),
+                        decoder: Box::new(http_icmp_codec::Decoder::new()),
+                        pending_bytes: Default::default(),
+                    }),
+                    Box::new(DatagramEncoder {
+                        sink: sink.send_ok_response(false)?.into_datagram_sink(),
+                        encoder: Box::new(http_icmp_codec::Encoder::default()),
+                    }),
+                ))
+            },
             _ => unreachable!(),
         }
     }

@@ -29,3 +29,6 @@ mod log_utils;
 mod socks5_forwarder;
 mod datagram_pipe;
 mod udp_pipe;
+mod icmp_utils;
+mod http_icmp_codec;
+mod icmp_forwarder;

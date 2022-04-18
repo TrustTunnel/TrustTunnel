@@ -1,10 +1,10 @@
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::{datagram_pipe, downstream, log_utils, pipe};
+use crate::{datagram_pipe, downstream, icmp_utils, log_utils, pipe};
 use crate::net_utils::TcpDestination;
 
 
@@ -17,6 +17,17 @@ pub(crate) struct UdpDatagramMeta {
 pub(crate) struct UdpDatagram {
     pub meta: UdpDatagramMeta,
     pub payload: Bytes,
+}
+
+#[derive(Debug, Hash, Eq, PartialEq, Copy, Clone)]
+pub(crate) struct IcmpDatagramMeta {
+    pub peer: IpAddr,
+}
+
+#[derive(Debug)]
+pub(crate) struct IcmpDatagram {
+    pub meta: IcmpDatagramMeta,
+    pub message: icmp_utils::Message,
 }
 
 /// An abstract interface for a TCP connector implementation
@@ -60,6 +71,14 @@ pub(crate) trait Forwarder: Send {
         Arc<dyn UdpDatagramPipeShared>,
         Box<dyn datagram_pipe::Source<Output = UdpDatagramReadStatus>>,
         Box<dyn datagram_pipe::Sink<Input = downstream::UdpDatagram>>,
+    )>;
+
+    /// Create an ICMP datagram multiplexer
+    fn make_icmp_datagram_multiplexer(
+        &mut self, id: log_utils::IdChain<u64>
+    ) -> io::Result<(
+        Box<dyn datagram_pipe::Source<Output = IcmpDatagram>>,
+        Box<dyn datagram_pipe::Sink<Input = downstream::IcmpDatagram>>,
     )>;
 }
 

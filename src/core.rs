@@ -11,6 +11,7 @@ use crate::http1_codec::Http1Codec;
 use crate::http2_codec::Http2Codec;
 use crate::http3_codec::Http3Codec;
 use crate::http_downstream::HttpDownstream;
+use crate::icmp_forwarder::IcmpForwarder;
 use crate::quic_multiplexer::QuicMultiplexer;
 use crate::settings::{ForwardProtocolSettings, ListenProtocolSettings, Settings};
 use crate::socks5_forwarder::Socks5Forwarder;
@@ -27,17 +28,25 @@ struct Context {
     core_settings: Arc<Settings>,
     next_client_id: Arc<AtomicU64>,
     next_tunnel_id: Arc<AtomicU64>,
+    icmp_forwarder: Option<Arc<IcmpForwarder>>,
 }
 
 impl Core {
     pub fn new(
         settings: Settings,
     ) -> Self {
+        let settings = Arc::new(settings);
+
         Self {
             context: Arc::new(Context {
-                core_settings: Arc::new(settings),
+                core_settings: settings.clone(),
                 next_client_id: Arc::new(AtomicU64::new(0)),
                 next_tunnel_id: Arc::new(AtomicU64::new(0)),
+                icmp_forwarder: if settings.icmp.is_none() {
+                    None
+                } else {
+                    Some(Arc::new(IcmpForwarder::new(settings)))
+                },
             }),
         }
     }
@@ -57,9 +66,16 @@ impl Core {
         };
         futures::pin_mut!(listen_udp);
 
-        futures::future::try_join(
+        let listen_icmp = async {
+            self.listen_icmp().await
+                .map_err(|e| io::Error::new(e.kind(), format!("ICMP listener failure: {}", e)))
+        };
+        futures::pin_mut!(listen_icmp);
+
+        futures::future::try_join3(
             listen_tcp,
             listen_udp,
+            listen_icmp,
         ).await.map(|_| ())
     }
 
@@ -100,9 +116,7 @@ impl Core {
             let client_id = log_utils::IdChain::from(log_utils::IdItem::new(
                 log_utils::CLIENT_ID_FMT, self.context.next_client_id.fetch_add(1, Ordering::Relaxed)
             ));
-            let stream = match tcp_listener.accept().await
-                .and_then(|(s, a)| s.set_nodelay(true).map(|_| (s, a)))
-            {
+            let stream = match tcp_listener.accept().await {
                 Ok((stream, addr)) => if has_tcp_based_codec {
                     log_id!(debug, client_id, "New TCP client: {}", addr);
                     stream
@@ -178,6 +192,15 @@ impl Core {
                 }
             });
         }
+    }
+
+    async fn listen_icmp(&self) -> io::Result<()> {
+        let forwarder = match &self.context.icmp_forwarder {
+            None => return Ok(()),
+            Some(x) => x.clone(),
+        };
+
+        forwarder.listen().await
     }
 
     async fn on_new_tls_connection(context: Arc<Context>, acceptor: TlsAcceptor, client_id: log_utils::IdChain<u64>) {
@@ -265,9 +288,11 @@ impl Core {
         match &context.core_settings.forward_protocol {
             ForwardProtocolSettings::Direct(_) => Box::new(DirectForwarder::new(
                 context.core_settings.clone(),
+                context.icmp_forwarder.clone(),
             )),
             ForwardProtocolSettings::Socks5(_) => Box::new(Socks5Forwarder::new(
                 context.core_settings.clone(),
+                context.icmp_forwarder.clone(),
             )),
         }
     }

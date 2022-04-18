@@ -56,7 +56,7 @@ impl LeftPipe {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
             let datagram = self.source.read().await?;
-            log_id!(trace, self.source.id(), "--> Datagram: meta={:?}", datagram);
+            log_id!(trace, self.source.id(), "--> Datagram: {:?}", datagram);
 
             if let Err(e) = self.on_udp_packet(&datagram.meta).await {
                 log_id!(debug, self.source.id(),

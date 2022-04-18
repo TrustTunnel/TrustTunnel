@@ -12,6 +12,7 @@ use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 use crate::forwarder::Forwarder;
 use crate::{datagram_pipe, downstream, forwarder, log_id, log_utils, net_utils, pipe};
+use crate::icmp_forwarder::IcmpForwarder;
 use crate::net_utils::TcpDestination;
 use crate::settings::{ForwardProtocolSettings, Settings};
 use crate::tcp_forwarder::TcpForwarder;
@@ -19,6 +20,7 @@ use crate::tcp_forwarder::TcpForwarder;
 
 pub(crate) struct Socks5Forwarder {
     core_settings: Arc<Settings>,
+    icmp_forwarder: Option<Arc<IcmpForwarder>>,
 }
 
 struct TcpConnector {
@@ -62,9 +64,11 @@ struct SocketError {
 impl Socks5Forwarder {
     pub fn new(
         core_settings: Arc<Settings>,
+        icmp_forwarder: Option<Arc<IcmpForwarder>>,
     ) -> Self {
         Self {
             core_settings: core_settings.clone(),
+            icmp_forwarder,
         }
     }
 }
@@ -157,6 +161,15 @@ impl Forwarder for Socks5Forwarder {
                 shared,
             }),
         ))
+    }
+
+    fn make_icmp_datagram_multiplexer(&mut self, id: log_utils::IdChain<u64>)
+        -> io::Result<(
+            Box<dyn datagram_pipe::Source<Output = forwarder::IcmpDatagram>>,
+            Box<dyn datagram_pipe::Sink<Input = downstream::IcmpDatagram>>,
+        )>
+    {
+        self.icmp_forwarder.as_ref().unwrap().make_multiplexer(id)
     }
 }
 

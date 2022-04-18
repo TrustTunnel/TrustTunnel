@@ -60,6 +60,9 @@ pub struct Settings {
     #[serde(rename(deserialize = "auth_file"))]
     #[serde(deserialize_with = "deserialize_authorizer")]
     pub(crate) authorizer: Arc<dyn Authorizer>,
+    /// The ICMP forwarding settings.
+    /// Setting up this feature requires superuser rights on some systems.
+    pub(crate) icmp: Option<IcmpSettings>,
 }
 
 #[derive(Default, Deserialize)]
@@ -101,6 +104,23 @@ pub enum ListenProtocolSettings {
     Http1(Http1Settings),
     Http2(Http2Settings),
     Quic(QuicSettings),
+}
+
+#[derive(Deserialize)]
+pub struct IcmpSettings {
+    /// The name of an interface to bind the ICMP socket to
+    pub(crate) interface_name: String,
+    /// Time out of tunneled ICMP requests
+    #[serde(default = "IcmpSettings::default_request_timeout")]
+    #[serde(rename(deserialize = "urequest_timeout_secs"))]
+    #[serde(deserialize_with = "deserialize_duration_secs")]
+    pub(crate) request_timeout: Duration,
+    /// The capacity of the ICMP multiplexer received messages queue.
+    /// Decreasing it may cause packet dropping in case the multiplexer cannot keep up the pace.
+    /// Increasing it may lead to high memory consumption.
+    /// Each client has its own queue.
+    #[serde(default = "IcmpSettings::default_message_queue_capacity")]
+    pub(crate) recv_message_queue_capacity: usize,
 }
 
 #[derive(Deserialize)]
@@ -190,6 +210,10 @@ pub struct Http2SettingsBuilder {
 
 pub struct QuicSettingsBuilder {
     settings: QuicSettings,
+}
+
+pub struct IcmpSettingsBuilder {
+    settings: IcmpSettings,
 }
 
 #[derive(Debug)]
@@ -342,6 +366,20 @@ impl QuicSettings {
     }
 }
 
+impl IcmpSettings {
+    pub fn builder() -> IcmpSettingsBuilder {
+        IcmpSettingsBuilder::new()
+    }
+
+    fn default_request_timeout() -> Duration {
+        Duration::from_secs(3)
+    }
+
+    fn default_message_queue_capacity() -> usize {
+        256
+    }
+}
+
 impl SettingsBuilder {
     fn new() -> Self {
         Self {
@@ -358,6 +396,7 @@ impl SettingsBuilder {
                 forward_protocol: Default::default(),
                 listen_protocols: vec![],
                 authorizer: Settings::default_authorizer(),
+                icmp: None,
             },
             tunnel_tls_host_info_set: false,
             authorizer: None,
@@ -468,6 +507,12 @@ impl SettingsBuilder {
     /// Set the client authorizer
     pub fn authorizer(mut self, x: Box<dyn Authorizer>) -> Self {
         self.authorizer = Some(x);
+        self
+    }
+
+    /// Set the ICMP forwarder settings
+    pub fn icmp(mut self, x: IcmpSettings) -> Self {
+        self.settings.icmp = Some(x);
         self
     }
 }
@@ -663,6 +708,41 @@ impl QuicSettingsBuilder {
     pub fn message_queue_capacity(mut self, v: usize) -> Self {
         self.settings.message_queue_capacity = v;
         self
+    }
+}
+
+impl IcmpSettingsBuilder {
+    fn new() -> Self {
+        Self {
+            settings: IcmpSettings {
+                interface_name: Default::default(),
+                request_timeout: IcmpSettings::default_request_timeout(),
+                recv_message_queue_capacity: IcmpSettings::default_message_queue_capacity(),
+            },
+        }
+    }
+
+    /// Set the interface name to bind the socket to
+    pub fn interface_name<S: ToString>(mut self, v: S) -> Self {
+        self.settings.interface_name = v.to_string();
+        self
+    }
+
+    /// Set the ICMP request timeout
+    pub fn request_timeout(mut self, v: Duration) -> Self {
+        self.settings.request_timeout = v;
+        self
+    }
+
+    /// Set the capacity of the ICMP multiplexer received messages queue
+    pub fn recv_message_queue_capacity(mut self, v: usize) -> Self {
+        self.settings.recv_message_queue_capacity = v;
+        self
+    }
+
+    /// Finalize [`IcmpSettings`]
+    pub fn build(self) -> Result<IcmpSettings> {
+        Ok(self.settings)
     }
 }
 

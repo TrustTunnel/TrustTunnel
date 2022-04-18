@@ -1,9 +1,9 @@
 use std::fmt::{Debug, Formatter};
 use std::io;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use async_trait::async_trait;
 use bytes::Bytes;
-use crate::{authorization, datagram_pipe, forwarder, log_utils, pipe};
+use crate::{authorization, datagram_pipe, forwarder, icmp_utils, log_utils, pipe};
 use crate::net_utils::TcpDestination;
 
 
@@ -17,6 +17,18 @@ pub(crate) struct UdpDatagramMeta {
 pub(crate) struct UdpDatagram {
     pub meta: UdpDatagramMeta,
     pub payload: Bytes,
+}
+
+#[derive(Debug, Hash, PartialEq, Eq)]
+pub(crate) struct IcmpDatagramMeta {
+    pub peer: IpAddr,
+}
+
+#[derive(Debug)]
+pub(crate) struct IcmpDatagram {
+    pub meta: IcmpDatagramMeta,
+    pub message: icmp_utils::Message,
+    pub ttl: u8,
 }
 
 pub(crate) trait StreamId {
@@ -55,6 +67,7 @@ pub(crate) trait PendingTcpConnectRequest: StreamId + Send {
 
 pub(crate) enum DatagramPipeHalves {
     Udp(Box<dyn datagram_pipe::Source<Output = UdpDatagram>>, Box<dyn datagram_pipe::Sink<Input = forwarder::UdpDatagram>>),
+    Icmp(Box<dyn datagram_pipe::Source<Output = IcmpDatagram>>, Box<dyn datagram_pipe::Sink<Input = forwarder::IcmpDatagram>>),
 }
 
 /// An abstract interface for a datagram multiplexer open request implementation
