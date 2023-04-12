@@ -104,36 +104,34 @@ impl<IO: AsyncRead + AsyncWrite + Send + Unpin> HttpCodec for Http2Codec<IO> {
             State::Established(s) => s,
         };
 
-        while let Some(result) = session.accept().await {
-            match result {
-                Ok((request, respond)) => {
-                    let (request, rx) = request.into_parts();
-                    let id = self.parent_id_chain.extended(log_utils::IdItem::new(
-                        log_utils::CONNECTION_ID_FMT, self.next_conn_id.next().unwrap()
-                    ));
-                    // @note: [`h2::StreamId`] cannot be converted to raw integer, so just log it
-                    //        to have a link between stream and out own generated IDs in the logs
-                    // @note: could be worked around by allowing any id type in the id chain
-                    log_id!(debug, id, "H2 stream id: {:?}", rx.stream_id());
-                    return Ok(Some(Box::new(Stream {
-                        request: Request {
-                            request,
-                            rx,
-                            client_address: self.client_address,
-                            id: id.clone(),
-                        },
-                        respond: Respond {
-                            tx: respond,
-                            id,
-                        }
-                    })))
-                },
-                Err(e) if e.is_io() => return Err(e.into_io().unwrap()),
-                Err(ref e) => log_id!(debug, self.parent_id_chain, "Request failed: {}", e),
+        match session.accept().await {
+            Some(Ok((request, respond))) => {
+                let (request, rx) = request.into_parts();
+                let id = self.parent_id_chain.extended(log_utils::IdItem::new(
+                    log_utils::CONNECTION_ID_FMT, self.next_conn_id.next().unwrap(),
+                ));
+                // @note: [`h2::StreamId`] cannot be converted to raw integer, so just log it
+                //        to have a link between stream and out own generated IDs in the logs
+                // @note: could be worked around by allowing any id type in the id chain
+                log_id!(debug, id, "H2 stream id: {:?}", rx.stream_id());
+                Ok(Some(Box::new(Stream {
+                    request: Request {
+                        request,
+                        rx,
+                        client_address: self.client_address,
+                        id: id.clone(),
+                    },
+                    respond: Respond {
+                        tx: respond,
+                        id,
+                    },
+                })))
             }
+            Some(Err(e)) if e.is_io() => Err(e.into_io().unwrap()),
+            Some(Err(e)) if e.reason() == Some(Reason::NO_ERROR) => Ok(None),
+            Some(Err(e)) => Err(h2_to_io_error(e)),
+            None => Ok(None),
         }
-
-        Ok(None)
     }
 
     async fn graceful_shutdown(&mut self) -> io::Result<()> {
@@ -227,7 +225,7 @@ impl http_codec::PendingRespond for Respond {
         let tx = self.tx.send_response(http::Response::from_parts(response, ()), eof)
             .map_err(h2_to_io_error)?;
 
-        Ok(Box::new(RespondStream{
+        Ok(Box::new(RespondStream {
             tx,
             id: self.id,
         }))
@@ -283,7 +281,7 @@ impl pipe::Sink for RespondStream {
     }
 
     async fn wait_writable(&mut self) -> io::Result<()> {
-        WaitWritable{ stream: &mut self.tx }.await
+        WaitWritable { stream: &mut self.tx }.await
     }
 }
 
