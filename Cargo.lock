@@ -2320,7 +2320,7 @@ checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
 
 [[package]]
 name = "vpn_endpoint"
-version = "0.9.54"
+version = "0.9.55"
 dependencies = [
  "clap",
  "console-subscriber",
