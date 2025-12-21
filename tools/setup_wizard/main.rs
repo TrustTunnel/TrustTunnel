@@ -196,7 +196,7 @@ Required in non-interactive mode."#,
         println!("To start endpoint, run the following command:");
         println!("\ttrusttunnel_endpoint {} {}", l, h);
     }
-    println!("To see full set of the available options, run the following command:");
+    println!("To see the full set of available options, run the following command:");
     println!("\ttrusttunnel_endpoint -h");
 }
 

@@ -375,7 +375,7 @@ impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
     async fn write(&mut self, datagram: D) -> io::Result<datagram_pipe::SendStatus> {
         match self.encoder.encode_packet(&datagram) {
             None => {
-                debug!("Couldn't encode datagram");
+                debug!("Failed to encode datagram");
                 Ok(datagram_pipe::SendStatus::Dropped)
             }
             Some(encoded) => self.sink.write(encoded),

@@ -22,7 +22,7 @@ pub fn build() -> TlsHostsSettings {
         .or_else(|| {
             lookup_existent_cert().and_then(|x| {
                 (crate::get_mode() != Mode::NonInteractive
-                    && ask_for_agreement(&format!("Use an existent certificate? {:?}", x)))
+                    && ask_for_agreement(&format!("Use an existing certificate? {:?}", x)))
                 .then_some(x)
             })
         })

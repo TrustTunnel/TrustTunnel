@@ -129,7 +129,7 @@ impl IcmpForwarder {
             let request = match reply.responded_echo_request() {
                 None => {
                     debug!(
-                        "Failed extracting echo request, dropping message: peer={}, message={:?}",
+                        "Failed to extract echo request, dropping message: peer={}, message={:?}",
                         peer, reply
                     );
                     continue;
@@ -458,7 +458,7 @@ impl Drop for RawPacketStream {
         let fd = self.inner.get_ref();
         unsafe {
             if 0 != libc::close(*fd) {
-                debug!("Failed closing socket: {}", io::Error::last_os_error());
+                debug!("Failed to close socket: {}", io::Error::last_os_error());
             }
         }
     }

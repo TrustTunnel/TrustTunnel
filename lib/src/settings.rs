@@ -1182,7 +1182,7 @@ impl ReverseProxySettingsBuilder {
         self.settings.server_address = v
             .to_socket_addrs()?
             .next()
-            .ok_or_else(|| io::Error::new(ErrorKind::Other, "Parsed address to empty list"))?;
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "Address is parsed to empty list"))?;
         Ok(self)
     }
 

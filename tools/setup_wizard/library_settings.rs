@@ -65,7 +65,7 @@ fn build_authenticator() -> String {
             let users = build_user_list();
             fs::write(&path, compose_credentials_content(users.into_iter()))
                 .expect("Couldn't write the credentials into a file");
-            println!("The user credentials are written to file: {}", path);
+            println!("The user credentials are written to the file: {}", path);
         }
 
         path
@@ -89,7 +89,7 @@ fn build_rules() -> String {
             let rules_config = crate::rules_settings::build();
             let rules_content = generate_rules_toml_content(&rules_config);
             fs::write(&path, rules_content).expect("Couldn't write the rules into a file");
-            println!("The rules configuration is written to file: {}", path);
+            println!("The rules configuration is written to the file: {}", path);
         }
 
         path

@@ -67,7 +67,7 @@ impl Shutdown {
     /// Tell the things to do graceful shutdowns. See [`Notification::wait()`].
     pub fn submit(&self) {
         if let Err(e) = self.notify_tx.send(()) {
-            debug!("Failed submitting: {}", e);
+            debug!("Failed to submit: {}", e);
         }
     }
 

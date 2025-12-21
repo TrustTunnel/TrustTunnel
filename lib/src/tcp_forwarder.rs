@@ -165,7 +165,7 @@ impl pipe::Sink for StreamTx {
         if self.is_shut_down {
             return Err(io::Error::new(
                 ErrorKind::Other,
-                "Already shutdown".to_string(),
+                "Already shut down".to_string(),
             ));
         }
 
@@ -189,7 +189,7 @@ impl pipe::Sink for StreamTx {
         if self.is_shut_down {
             return Err(io::Error::new(
                 ErrorKind::Other,
-                "Already shutdown".to_string(),
+                "Already shut down".to_string(),
             ));
         }
 
