@@ -8,6 +8,7 @@ extern "C" {
 }
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use socket2::Socket;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket};
 
@@ -79,11 +80,22 @@ where
 }
 
 pub(crate) fn make_udp_socket(is_v4: bool) -> io::Result<UdpSocket> {
-    if is_v4 {
-        UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+    let socket = if is_v4 {
+        UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?
     } else {
-        UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
-    }
+        UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))?
+    };
+
+    set_socket_buffers(&socket)?;
+    Ok(socket)
+}
+
+fn set_socket_buffers(socket: &UdpSocket) -> io::Result<()> {
+    let sock = Socket::from(socket.try_clone()?);
+    let size = 4 * 1024 * 1024; // 4MB
+    sock.set_recv_buffer_size(size)?;
+    sock.set_send_buffer_size(size)?;
+    Ok(())
 }
 
 /// https://www.rfc-editor.org/rfc/rfc9000.html#section-16
