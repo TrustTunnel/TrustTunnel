@@ -52,6 +52,32 @@
 | `TT_PORT_UDP` | Host UDP port | `443` |
 | `TT_LISTEN_ADDRESS` | Bind address internal | `0.0.0.0:443` |
 
+> **Warning:** Do NOT change `TT_LISTEN_ADDRESS` from `0.0.0.0:443`. This is the internal container port and must match the Docker port mapping. To use a different external port, only modify `TT_PORT_TCP` and `TT_PORT_UDP`.
+
+## Android Client Setup (Self-Signed Certificate)
+
+When using `TT_CERT_TYPE=self-signed`, Android devices will not trust the server certificate by default. You must manually install the CA certificate:
+
+1.  **Copy the certificate from your server:**
+    ```bash
+    # The certificate is generated in the data volume
+    cat data/certs/cert.pem
+    ```
+    Copy this file to your Android device (via USB, email, or cloud storage).
+
+2.  **Install on Android (Pixel / Android 14+):**
+    - Go to **Settings** > **Security & Privacy** > **More security settings** > **Encryption & credentials**
+    - Tap **Install a certificate** > **CA certificate**
+    - Confirm the warning ("Install anyway")
+    - Select the `cert.pem` file
+
+3.  **Configure the TrustTunnel App:**
+    - **Server Address:** `YOUR_SERVER_IP:10443` (or your custom `TT_PORT_TCP`)
+    - **Certificate Domain:** `vpn.yourdomain.com` (must match `TT_HOSTNAME`)
+    - **Username/Password:** As configured in `TT_CREDENTIALS`
+
+> **Note:** If you regenerate certificates (by deleting `data/*`), you must reinstall the new certificate on all devices.
+
 ## Updates
  To update the server to the latest version, simply run:
  ```bash
