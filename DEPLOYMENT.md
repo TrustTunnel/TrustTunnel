@@ -40,6 +40,26 @@
     ufw allow ${TT_PORT_TCP}/tcp # VPN Handshake/Fallback (default 443)
     ```
 
+6.  **IPv6 Support (Critical for Connectivity)**
+    By default, Docker on Linux does *not* enable IPv6 for containers. To ensure `trusttunnel` works correctly with IPv6, you must configure the Docker daemon:
+
+    1.  Edit or create `/etc/docker/daemon.json`:
+        ```bash
+        nano /etc/docker/daemon.json
+        ```
+    2.  Add the following configuration:
+        ```json
+        {
+          "ipv6": true,
+          "fixed-cidr-v6": "2001:db8:1::/64",
+          "ip6tables": true
+        }
+        ```
+    3.  Restart Docker:
+        ```bash
+        systemctl restart docker
+        ```
+
 ## Configuration Reference (`.env`)
 
 | Variable | Description | Default |

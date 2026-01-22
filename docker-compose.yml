@@ -13,8 +13,11 @@ services:
       - NET_ADMIN
     devices:
       - /dev/net/tun:/dev/net/tun
+    networks:
+      - app_network
     sysctls:
       - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
     healthcheck:
       test: ["CMD", "curl", "-f", "-k", "https://localhost:443/health"]
       interval: 30s
@@ -31,3 +34,11 @@ services:
 
 volumes:
   data:
+
+networks:
+  app_network:
+    enable_ipv6: true
+    driver: bridge
+    ipam:
+      config:
+        - subnet: "fd00:0:0:1::/64"

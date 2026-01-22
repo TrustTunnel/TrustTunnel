@@ -80,6 +80,7 @@ main() {
     # Setup NAT/Masquerading
     echo "Setting up NAT..."
     iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE || echo "Warning: Failed to set iptables rule. Ensure privileges."
+    ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE || echo "Warning: Failed to set ip6tables rule. Ensure privileges/IPv6 enabled."
 
     exec trusttunnel_endpoint vpn.toml hosts.toml
 }
