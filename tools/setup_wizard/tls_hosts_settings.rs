@@ -4,7 +4,7 @@ use crate::acme::{
 use crate::user_interaction::{ask_for_agreement, ask_for_input, checked_overwrite, select_index};
 use crate::Mode;
 use chrono::{Datelike, Duration, Local};
-use rcgen::DnType;
+use rcgen::{BasicConstraints, DnType, IsCa};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -260,6 +260,8 @@ fn generate_cert() -> Option<Cert> {
     params
         .distinguished_name
         .push(DnType::CommonName, &common_name);
+    // CRITICAL: Set is_ca to true so Android accepts it as a CA certificate
+    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
 
     let cert = params
         .self_signed(&key_pair)

@@ -1,3 +1,6 @@
+# Secrets
+.env
+
 # Rust build artifacts
 **/target/
 lib/Cargo.lock
