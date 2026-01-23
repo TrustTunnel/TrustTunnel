@@ -381,29 +381,25 @@ impl<D> datagram_pipe::Source for DatagramDecoder<D> {
 }
 
 #[async_trait]
-impl<D: Send> pipe::Sink for DatagramEncoder<D> {
-    fn id(&self) -> log_utils::IdChain<u64> {
-        self.sink.id()
-    }
+impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
+    type Input = D;
 
-    async fn  write(&mut self, data: D) -> io::Result<pipe::Data> {
-        let encoded = match self.encoder.encode_packet(&data) {
+    async fn write(&mut self, datagram: D) -> io::Result<datagram_pipe::SendStatus> {
+        let bit_len = 0; // Don't know length yet
+        
+        let encoded = match self.encoder.encode_packet(&datagram) {
             None => {
                 debug!("Failed to encode datagram");
-                return Ok(pipe::Data::Chunk(Bytes::new()));
+                return Ok(datagram_pipe::SendStatus::Dropped);
             }
             Some(encoded) => encoded,
         };
 
-        self.sink.write(encoded).map(pipe::Data::Chunk)
-    }
-
-    fn consume(&mut self, count: usize) -> io::Result<()> {
-        self.sink.consume(count)
-    }
-
-    async fn wait_writable(&mut self) -> io::Result<()> {
-        self.sink.wait_writable().await
+        // BACKPRESSURE FIX: Wait for capacity!
+        self.sink.wait_writable().await?;
+        
+        self.sink.write(encoded).await?;
+        Ok(datagram_pipe::SendStatus::Sent)
     }
 }
 
