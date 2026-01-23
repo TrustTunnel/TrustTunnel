@@ -274,8 +274,9 @@ impl<F: Fn(SimplexDirection, usize) + Send + Clone> DuplexPipe<F> {
                 }
                 ret.map_err(|e| e.io)
             }
-            Ok(Either::Left((ExchangeOnceStatus::TimedOut(_), _)))
-            | Ok(Either::Right((ExchangeOnceStatus::TimedOut(_), _))) => {
+            Ok(Either::Left((ExchangeOnceStatus::TimedOut(dir), _)))
+            | Ok(Either::Right((ExchangeOnceStatus::TimedOut(dir), _))) => {
+                log_dir!(trace, id, dir, "Pipe timed out");
                 Ok(ExchangeOnceStatus::TimedOut(()))
             }
             Err(Either::Left((e, _))) | Err(Either::Right((e, _))) => {
