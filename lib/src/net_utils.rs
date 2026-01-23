@@ -244,11 +244,105 @@ pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> SocketAddr {
     }
 }
 
+/// Helper struct to hold mmsghdr and iovec for recvmmsg
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) struct MMsgHdr {
+    pub msg: libc::mmsghdr,
+    pub iov: libc::iovec,
+    pub addr: libc::sockaddr_storage,
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+impl Default for MMsgHdr {
+    fn default() -> Self {
+        unsafe { std::mem::zeroed() }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe impl Send for MMsgHdr {}
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe impl Sync for MMsgHdr {}
+
+/// Receive multiple datagrams at once using recvmmsg
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn recv_mmsg_dgram(
+    fd: libc::c_int,
+    hdrs: &mut [MMsgHdr],
+    buffers: &mut [bytes::BytesMut],
+) -> io::Result<usize> {
+    // Initialize headers with buffers
+    for (i, hdr) in hdrs.iter_mut().enumerate() {
+        if i >= buffers.len() {
+            break;
+        }
+        let buf = &mut buffers[i];
+        
+        // Ensure buffer has capacity
+        if buf.capacity() == 0 {
+            buf.reserve(MIN_LINK_MTU);
+        }
+        
+        let dst = buf.chunk_mut().as_mut_ptr();
+        let capacity = buf.chunk_mut().len();
+        
+        hdr.iov.iov_base = dst as *mut libc::c_void;
+        hdr.iov.iov_len = capacity;
+        
+        hdr.msg.msg_hdr.msg_iov = &mut hdr.iov;
+        hdr.msg.msg_hdr.msg_iovlen = 1;
+        hdr.msg.msg_hdr.msg_name = &mut hdr.addr as *mut _ as *mut libc::c_void;
+        hdr.msg.msg_hdr.msg_namelen = std::mem::size_of_val(&hdr.addr) as libc::socklen_t;
+    }
+    
+    unsafe {
+        let diff = hdrs.len().min(buffers.len());
+        
+        let ret = libc::recvmmsg(
+            fd,
+            hdrs.as_mut_ptr() as *mut libc::mmsghdr,
+            diff as libc::c_uint,
+            libc::MSG_DONTWAIT,
+            std::ptr::null_mut(),
+        );
+
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                return Ok(0);
+            }
+            return Err(err);
+        }
+
+        // Post-process: update buffer lengths
+        let n_msgs = ret as usize;
+        for i in 0..n_msgs {
+             // For some reason, sometimes msg_len in mmsghdr is not enough or confusing, 
+             // but usually it contains the number of bytes received.
+             let len = hdrs[i].msg.msg_len as usize;
+             buffers[i].advance_mut(len);
+        }
+
+        Ok(n_msgs)
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) struct MMsgHdr;
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+impl Default for MMsgHdr {
+    fn default() -> Self {
+        Self
+    }
+}
+
 /// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
 /// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
 /// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
 /// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
 pub(crate) fn recv_from(
+
     fd: libc::c_int,
     buffer_size: Option<usize>,
 ) -> io::Result<(IpAddr, Bytes)> {
