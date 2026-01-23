@@ -70,9 +70,13 @@
 | `TT_ACME_EMAIL` | Email for Let's Encrypt | Required for LE |
 | `TT_PORT_TCP` | Host TCP port | `443` |
 | `TT_PORT_UDP` | Host UDP port | `443` |
+| `TT_QUIC_RECV_UDP_PAYLOAD_SIZE` | QUIC recv_udp_payload_size override (vpn.toml) | - |
+| `TT_QUIC_SEND_UDP_PAYLOAD_SIZE` | QUIC send_udp_payload_size override (vpn.toml) | - |
 | `TT_LISTEN_ADDRESS` | Bind address internal | `0.0.0.0:443` |
 
 > **Warning:** Do NOT change `TT_LISTEN_ADDRESS` from `0.0.0.0:443`. This is the internal container port and must match the Docker port mapping. To use a different external port, only modify `TT_PORT_TCP` and `TT_PORT_UDP`.
+
+> **Note:** For MTU 1280 paths, set both QUIC payload sizes to `1200` (or `1232` for IPv6-only paths).
 
 ## Android Client Setup (Self-Signed Certificate)
 

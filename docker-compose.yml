@@ -24,7 +24,7 @@ services:
       timeout: 10s
       retries: 3
     env_file:
-      - .env
+      - .env # copy .env.example to .env and edit values
     # environment:
     #   - TT_HOSTNAME=${TT_HOSTNAME}
     #   - TT_CREDENTIALS=${TT_CREDENTIALS}

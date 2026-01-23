@@ -12,3 +12,6 @@ vpn.toml
 credentials.toml
 hosts.toml
 rules.toml
+
+# Local-only client repo clone
+TrustTunnelFlutterClient/

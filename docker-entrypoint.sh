@@ -54,9 +54,40 @@ run_setup_wizard() {
     if [ "$TT_ACME_STAGING" = "true" ]; then
         args+=("--acme-staging")
     fi
+    
+    if [ -n "$TT_QUIC_RECV_UDP_PAYLOAD_SIZE" ]; then
+        args+=("--quic-recv-udp-payload-size" "$TT_QUIC_RECV_UDP_PAYLOAD_SIZE")
+    fi
+    
+    if [ -n "$TT_QUIC_SEND_UDP_PAYLOAD_SIZE" ]; then
+        args+=("--quic-send-udp-payload-size" "$TT_QUIC_SEND_UDP_PAYLOAD_SIZE")
+    fi
 
     echo "Running setup_wizard with: ${args[*]}"
     setup_wizard "${args[@]}"
+}
+
+apply_quic_payload_overrides() {
+    local config_file="vpn.toml"
+    local updated=0
+
+    if [ ! -f "$config_file" ]; then
+        return 0
+    fi
+
+    if [ -n "$TT_QUIC_RECV_UDP_PAYLOAD_SIZE" ]; then
+        sed -i -E "s/^([[:space:]]*recv_udp_payload_size[[:space:]]*=[[:space:]]*).*/\\1${TT_QUIC_RECV_UDP_PAYLOAD_SIZE}/" "$config_file"
+        updated=1
+    fi
+
+    if [ -n "$TT_QUIC_SEND_UDP_PAYLOAD_SIZE" ]; then
+        sed -i -E "s/^([[:space:]]*send_udp_payload_size[[:space:]]*=[[:space:]]*).*/\\1${TT_QUIC_SEND_UDP_PAYLOAD_SIZE}/" "$config_file"
+        updated=1
+    fi
+
+    if [ "$updated" -eq 1 ]; then
+        echo "Applied QUIC UDP payload size overrides to $config_file"
+    fi
 }
 
 main() {
@@ -76,6 +107,8 @@ main() {
             fi
         fi
     fi
+
+    apply_quic_payload_overrides
 
     # Setup NAT/Masquerading
     echo "Setting up NAT..."
