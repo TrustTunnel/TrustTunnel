@@ -398,8 +398,15 @@ impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
         // BACKPRESSURE FIX: Wait for capacity!
         self.sink.wait_writable().await?;
         
-        self.sink.write(encoded).await?;
-        Ok(datagram_pipe::SendStatus::Sent)
+        // write() is synchronous, do not await!
+        let unsent = self.sink.write(encoded)?;
+        
+        if unsent.is_empty() {
+            Ok(datagram_pipe::SendStatus::Sent)
+        } else {
+            // Partial write is effectively a drop for a datagram
+            Ok(datagram_pipe::SendStatus::Dropped)
+        }
     }
 }
 
