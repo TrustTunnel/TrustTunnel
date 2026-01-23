@@ -49,7 +49,7 @@ struct DatagramMultiplexer {
 
 struct DatagramEncoder<D> {
     encoder: Box<dyn http_datagram_codec::Encoder<Datagram = D>>,
-    sink: Box<dyn http_codec::DroppingSink>,
+    sink: Box<dyn pipe::Sink>,
 }
 
 struct DatagramDecoder<D> {
@@ -305,7 +305,7 @@ impl downstream::PendingRequest for DatagramMultiplexer {
                     pending_bytes: Default::default(),
                 }),
                 Box::new(DatagramEncoder {
-                    sink: sink.send_ok_response(false)?.into_datagram_sink(),
+                    sink: sink.send_ok_response(false)?.into_pipe_sink(),
                     encoder: Box::<http_udp_codec::Encoder>::default(),
                 }),
             )),
@@ -316,7 +316,7 @@ impl downstream::PendingRequest for DatagramMultiplexer {
                     pending_bytes: Default::default(),
                 }),
                 Box::new(DatagramEncoder {
-                    sink: sink.send_ok_response(false)?.into_datagram_sink(),
+                    sink: sink.send_ok_response(false)?.into_pipe_sink(),
                     encoder: Box::<http_icmp_codec::Encoder>::default(),
                 }),
             )),
@@ -381,17 +381,29 @@ impl<D> datagram_pipe::Source for DatagramDecoder<D> {
 }
 
 #[async_trait]
-impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
-    type Input = D;
+impl<D: Send> pipe::Sink for DatagramEncoder<D> {
+    fn id(&self) -> log_utils::IdChain<u64> {
+        self.sink.id()
+    }
 
-    async fn write(&mut self, datagram: D) -> io::Result<datagram_pipe::SendStatus> {
-        match self.encoder.encode_packet(&datagram) {
+    async fn  write(&mut self, data: D) -> io::Result<pipe::Data> {
+        let encoded = match self.encoder.encode_packet(&data) {
             None => {
                 debug!("Failed to encode datagram");
-                Ok(datagram_pipe::SendStatus::Dropped)
+                return Ok(pipe::Data::Chunk(Bytes::new()));
             }
-            Some(encoded) => self.sink.write(encoded),
-        }
+            Some(encoded) => encoded,
+        };
+
+        self.sink.write(encoded).map(pipe::Data::Chunk)
+    }
+
+    fn consume(&mut self, count: usize) -> io::Result<()> {
+        self.sink.consume(count)
+    }
+
+    async fn wait_writable(&mut self) -> io::Result<()> {
+        self.sink.wait_writable().await
     }
 }
 
