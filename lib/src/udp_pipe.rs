@@ -56,8 +56,13 @@ enum UdpConnectionStatus {
 impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                log::info!("LeftPipe: Waiting for packet from client...");
+            }
             let datagram = self.source.read().await?;
-            log_id!(trace, self.source.id(), "--> Datagram: {:?}", datagram);
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                log::info!("LeftPipe: Processing packet: {:?}", datagram.meta);
+            }
 
             if let Err(e) = self.on_udp_packet(&datagram.meta).await {
                 log_id!(
@@ -137,7 +142,12 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
             let datagram = match self.source.read().await? {
-                forwarder::UdpDatagramReadStatus::Read(x) => x,
+                forwarder::UdpDatagramReadStatus::Read(x) => {
+                    if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                        log::info!("RightPipe: Read packet from dispatcher: len={}", x.payload.len());
+                    }
+                    x
+                }
                 forwarder::UdpDatagramReadStatus::UdpClose(meta, e) => {
                     if let Some(c) = self.shared.udp_connections.write().unwrap().remove(&meta) {
                         log_id!(

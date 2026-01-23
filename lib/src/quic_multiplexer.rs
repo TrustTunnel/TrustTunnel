@@ -1216,6 +1216,7 @@ fn make_quic_config_with_domain_contexts(
         .map_err(|e| io::Error::new(ErrorKind::Other, format!("Failed to create QUIC config: {}", e)))?;
     cfg.set_application_protos(h3::APPLICATION_PROTOCOL)
         .unwrap();
+
     cfg.set_max_idle_timeout(core_settings.client_listener_timeout.as_millis() as u64);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);

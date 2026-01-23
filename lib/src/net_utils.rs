@@ -309,87 +309,101 @@ pub(crate) fn socket_addr_to_libc(addr: &SocketAddr) -> (libc::sockaddr_storage,
     }
 }
 
-pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> SocketAddr {
+pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> Option<SocketAddr> {
     match addr.ss_family as libc::c_int {
         libc::AF_INET => unsafe {
             let addr = &*(addr as *const _ as *const libc::sockaddr_in);
-            SocketAddrV4::new(
+            Some(SocketAddrV4::new(
                 Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
                 u16::from_be(addr.sin_port),
             )
-            .into()
+            .into())
         },
         libc::AF_INET6 => unsafe {
             let addr = &*(addr as *const _ as *const libc::sockaddr_in6);
-            SocketAddrV6::new(
+            Some(SocketAddrV6::new(
                 Ipv6Addr::from(addr.sin6_addr.s6_addr),
                 u16::from_be(addr.sin6_port),
                 addr.sin6_flowinfo,
                 addr.sin6_scope_id,
             )
-            .into()
+            .into())
         },
-        _ => unreachable!(),
+        _ => None,
     }
 }
 
-/// Helper struct to hold mmsghdr and iovec for recvmmsg
+/// Helper to hold memory for recvmmsg in a way that matches kernel expectations
 #[cfg(any(target_os = "linux", target_os = "android"))]
-pub(crate) struct MMsgHdr {
-    pub msg: libc::mmsghdr,
-    pub iov: libc::iovec,
-    pub addr: libc::sockaddr_storage,
+pub(crate) struct RecvMsgBatch {
+    pub(crate) msgs: Vec<libc::mmsghdr>,
+    pub(crate) iovecs: Vec<libc::iovec>,
+    pub(crate) addrs: Vec<libc::sockaddr_storage>,
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-impl Default for MMsgHdr {
-    fn default() -> Self {
-        unsafe { std::mem::zeroed() }
+impl RecvMsgBatch {
+    pub fn new(count: usize) -> Self {
+        Self {
+            msgs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+            iovecs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+            addrs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+        }
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe impl Send for MMsgHdr {}
+unsafe impl Send for RecvMsgBatch {}
 #[cfg(any(target_os = "linux", target_os = "android"))]
-unsafe impl Sync for MMsgHdr {}
+unsafe impl Sync for RecvMsgBatch {}
+
 /// Receive multiple datagrams at once using recvmmsg
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn recv_mmsg_dgram(
     fd: libc::c_int,
-    hdrs: &mut [MMsgHdr],
+    batch: &mut RecvMsgBatch,
     buffers: &mut [bytes::BytesMut],
 ) -> io::Result<usize> {
-    // Initialize headers with buffers
-    for (i, hdr) in hdrs.iter_mut().enumerate() {
-        if i >= buffers.len() {
-            break;
-        }
+    let count = batch.msgs.len().min(buffers.len());
+    
+    // Initialize/Update pointers for the batch
+    for i in 0..count {
         let buf = &mut buffers[i];
         
-        // Ensure buffer has capacity
-        if buf.capacity() == 0 {
-            buf.reserve(MIN_LINK_MTU);
+        // Ensure buffer is empty and we write from the very beginning
+        buf.clear();
+        if buf.capacity() < MAX_IP_PACKET_SIZE {
+            buf.reserve(MAX_IP_PACKET_SIZE);
         }
         
-        let dst = buf.chunk_mut().as_mut_ptr();
-        let capacity = buf.chunk_mut().len();
+        // Safety: We use the raw pointer to the underlying buffer.
+        // Since we just cleared it, the entire capacity is available for writing.
+        let dst = buf.as_mut_ptr();
+        let capacity = buf.capacity();
         
-        hdr.iov.iov_base = dst as *mut libc::c_void;
-        hdr.iov.iov_len = capacity;
+        // Setup iovec
+        batch.iovecs[i].iov_base = dst as *mut libc::c_void;
+        batch.iovecs[i].iov_len = capacity;
         
-        hdr.msg.msg_hdr.msg_iov = &mut hdr.iov;
-        hdr.msg.msg_hdr.msg_iovlen = 1;
-        hdr.msg.msg_hdr.msg_name = &mut hdr.addr as *mut _ as *mut libc::c_void;
-        hdr.msg.msg_hdr.msg_namelen = std::mem::size_of_val(&hdr.addr) as libc::socklen_t;
+        // Setup mmsghdr
+        let m = &mut batch.msgs[i];
+        m.msg_len = 0; // Reset received length
+        
+        let mh = &mut m.msg_hdr;
+        mh.msg_name = &mut batch.addrs[i] as *mut _ as *mut libc::c_void;
+        mh.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        mh.msg_iov = &mut batch.iovecs[i];
+        mh.msg_iovlen = 1;
+        mh.msg_control = std::ptr::null_mut();
+        mh.msg_controllen = 0;
+        mh.msg_flags = 0;
     }
     
     unsafe {
-        let diff = hdrs.len().min(buffers.len());
-        
         let ret = libc::recvmmsg(
             fd,
-            hdrs.as_mut_ptr() as *mut libc::mmsghdr,
-            diff as libc::c_uint,
+            batch.msgs.as_mut_ptr(),
+            count as libc::c_uint,
             libc::MSG_DONTWAIT,
             std::ptr::null_mut(),
         );
@@ -399,15 +413,29 @@ pub(crate) fn recv_mmsg_dgram(
             if err.kind() == io::ErrorKind::WouldBlock {
                 return Ok(0);
             }
+            log::error!("recvmmsg failed: {}", err);
             return Err(err);
         }
 
-        // Post-process: update buffer lengths
         let n_msgs = ret as usize;
+        if n_msgs > 0 {
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                 log::info!("GRO: Received batch of {} packets", n_msgs);
+                 for i in 0..n_msgs {
+                    let len = batch.msgs[i].msg_len as usize;
+                    let cap = buffers[i].capacity();
+                    let addr_str = libc_to_socket_addr(&batch.addrs[i])
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    log::info!("GRO Packet {}: len={} cap={} src={}", i, len, cap, addr_str);
+                 }
+            } else {
+                 log::info!("recvmmsg received {} packets", n_msgs);
+            }
+        }
+
         for i in 0..n_msgs {
-             // For some reason, sometimes msg_len in mmsghdr is not enough or confusing, 
-             // but usually it contains the number of bytes received.
-             let len = hdrs[i].msg.msg_len as usize;
+             let len = batch.msgs[i].msg_len as usize;
              buffers[i].advance_mut(len);
         }
 
@@ -416,14 +444,19 @@ pub(crate) fn recv_mmsg_dgram(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-pub(crate) struct MMsgHdr;
+pub(crate) struct RecvMsgBatch;
 
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-impl Default for MMsgHdr {
-    fn default() -> Self {
+impl RecvMsgBatch {
+    pub fn new(_count: usize) -> Self {
         Self
     }
 }
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+unsafe impl Send for RecvMsgBatch {}
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+unsafe impl Sync for RecvMsgBatch {}
 
 /// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
 /// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
@@ -467,7 +500,10 @@ pub(crate) fn recv_from_buf(fd: libc::c_int, buffer: &mut BytesMut) -> io::Resul
         }
 
         buffer.advance_mut(r as usize);
-        Ok(libc_to_socket_addr(&peer).ip())
+        match libc_to_socket_addr(&peer) {
+            Some(addr) => Ok(addr.ip()),
+            None => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid address family")),
+        }
     }
 }
 
@@ -710,7 +746,7 @@ mod tests {
             (*(&sa as *const libc::sockaddr_storage as *const libc::sockaddr_in)).sin_port
         });
 
-        let sa = libc_to_socket_addr(&sa);
+        let sa = libc_to_socket_addr(&sa).unwrap();
         assert_eq!(sa.ip(), ip);
         assert_eq!(sa.port(), port);
     }
@@ -727,7 +763,7 @@ mod tests {
             (*(&sa as *const libc::sockaddr_storage as *const libc::sockaddr_in6)).sin6_port
         });
 
-        let sa = libc_to_socket_addr(&sa);
+        let sa = libc_to_socket_addr(&sa).unwrap();
         assert_eq!(sa.ip(), ip);
         assert_eq!(sa.port(), port);
     }

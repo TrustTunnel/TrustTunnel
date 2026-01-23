@@ -2,7 +2,7 @@ use crate::forwarder::UdpMultiplexer;
 use crate::metrics::OutboundUdpSocketCounter;
 use crate::{core, datagram_pipe, downstream, forwarder, log_utils, net_utils};
 use async_trait::async_trait;
-use bytes::{Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut};
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, VecDeque};
 use std::io;
@@ -76,6 +76,9 @@ impl MultiplexerSource {
     fn handle_event(&mut self, event: InternalEvent) -> Option<forwarder::UdpDatagramReadStatus> {
         match event {
             InternalEvent::Payload(meta, payload) => {
+                if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                    log::info!("Dispatcher: Received payload: len={} meta={:?}", payload.len(), meta);
+                }
                 Some(forwarder::UdpDatagramReadStatus::Read(
                     forwarder::UdpDatagram {
                         meta: meta.reversed(),
@@ -110,13 +113,12 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
                 let task = tokio::spawn(async move {
                     #[cfg(any(target_os = "linux", target_os = "android"))]
                     {
-
                         // Batch size for recvmmsg
                         const BATCH_SIZE: usize = 64;
                         const RECV_BUFFER_SIZE: usize = 65536;
                         let fd = socket_clone.as_raw_fd();
-                        // Pre-allocate headers and buffers for the batch
-                        let mut hdrs: Vec<net_utils::MMsgHdr> = (0..BATCH_SIZE).map(|_| Default::default()).collect();
+                        // Pre-allocate batch storage correctly aligned for the kernel
+                        let mut batch = net_utils::RecvMsgBatch::new(BATCH_SIZE);
                         let mut buffers: Vec<BytesMut> = (0..BATCH_SIZE).map(|_| BytesMut::with_capacity(RECV_BUFFER_SIZE)).collect();
                         
                         loop {
@@ -128,7 +130,7 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
 
                             // Try to read a batch
                             match socket_clone.try_io(tokio::io::Interest::READABLE, || {
-                                net_utils::recv_mmsg_dgram(fd, &mut hdrs, &mut buffers)
+                                net_utils::recv_mmsg_dgram(fd, &mut batch, &mut buffers)
                             }) {
                                 Ok(n) => {
                                     if n == 0 {
@@ -136,11 +138,21 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
                                     }
                                     // Process the batch
                                     for i in 0..n {
-                                        let payload = buffers[i].split().freeze();
+                                        let len = buffers[i].len();
+                                        if len == 0 {
+                                            // Skip empty packets (can happen with certain edge cases)
+                                            continue;
+                                        }
+                                        let payload = buffers[i].copy_to_bytes(len);
+                                        buffers[i].clear(); // Ensure clean state for next recv
+                                        
+                                        if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                                            log::info!("Forwarder: Sent payload to channel: len={} meta={:?}", payload.len(), meta_copy);
+                                        }
+
                                         if packet_tx.send(InternalEvent::Payload(meta_copy, payload)).await.is_err() {
                                             return; // Channel closed
                                         }
-                                        // Reset buffer capacity for next use (re-use logic handled by reserve in recv_mmsg)
                                     }
                                 }
                                 Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
