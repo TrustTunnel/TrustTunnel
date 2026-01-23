@@ -395,18 +395,12 @@ impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
             Some(encoded) => encoded,
         };
 
-        // BACKPRESSURE FIX: Wait for capacity!
-        self.sink.wait_writable().await?;
+        // write_all() ensures we wait until EVERYTHING is written.
+        // This prevents partial writes which would corrupt the stream state (since we are tunneling datagrams).
+        self.sink.write_all(encoded).await?;
         
-        // write() is synchronous, do not await!
-        let unsent = self.sink.write(encoded)?;
+        Ok(datagram_pipe::SendStatus::Sent)
         
-        if unsent.is_empty() {
-            Ok(datagram_pipe::SendStatus::Sent)
-        } else {
-            // Partial write is effectively a drop for a datagram
-            Ok(datagram_pipe::SendStatus::Dropped)
-        }
     }
 }
 
