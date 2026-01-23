@@ -101,7 +101,7 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
         let key = forwarder::UdpDatagramMeta::from(meta);
         
         match connections.entry(key) {
-            Entry::Occupied(_) => Err(io::Error::new(ErrorKind::Other, "Already present")),
+            Entry::Occupied(_) => Ok(()), // Connection already exists, that's fine - reuse it
             Entry::Vacant(e) => {
                 let metrics_guard = self.context.metrics.clone().outbound_udp_socket_counter();
 
