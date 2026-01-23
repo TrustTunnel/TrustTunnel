@@ -58,7 +58,7 @@ These commands will generate the executables in the `target/release` or `target/
 To build for Linux (x86_64-unknown-linux-musl) from macOS or other platforms, use the Docker-based build:
 
 ```shell
-docker run --rm --platform linux/amd64 -v "$(pwd)":/work -w /work adguard/core-libs:2.6 sh -c '\
+docker run --rm --platform linux/amd64 -v "$(pwd)":/work -w /work adguard/core-libs:2.8 sh -c '\
     CC=x86_64-linux-musl-gcc \
     CXX=x86_64-linux-musl-g++ \
     CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc \

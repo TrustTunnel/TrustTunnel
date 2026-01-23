@@ -16,7 +16,7 @@ stages:
 Increment version:
   key: JOB1
   docker:
-    image: adguard/core-libs:2.6
+    image: adguard/core-libs:2.8
     docker-run-arguments: [ ]
   tasks:
     - !include docker-clean.yaml
