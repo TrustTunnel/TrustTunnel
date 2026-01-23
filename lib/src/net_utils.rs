@@ -11,6 +11,9 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket};
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::unix::io::AsRawFd;
+
 pub(crate) const MIN_LINK_MTU: usize = 1280;
 pub(crate) const MIN_IPV4_HEADER_SIZE: usize = 20;
 pub(crate) const MIN_IPV6_HEADER_SIZE: usize = 40;
@@ -190,6 +193,83 @@ pub(crate) fn set_socket_ttl(fd: libc::c_int, is_ipv4: bool, ttl: u8) -> io::Res
 
     Ok(())
 }
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+pub(crate) fn send_udp_gso_to(
+    socket: &tokio::net::UdpSocket,
+    data: &[u8],
+    peer: &SocketAddr,
+    segment_size: usize,
+) -> io::Result<()> {
+    if segment_size >= data.len() {
+        return match socket.try_send_to(data, *peer) {
+            Ok(_) => Ok(()),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+
+
+
+    const UDP_SEGMENT: libc::c_int = 103;
+
+    let fd = socket.as_raw_fd();
+    let (mut sockaddr, sockaddr_len) = socket_addr_to_libc(peer);
+    
+    let mut iov = libc::iovec {
+        iov_base: data.as_ptr() as *mut libc::c_void,
+        iov_len: data.len(),
+    };
+
+    let mut control = [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize }];
+    
+    let mut msg = libc::msghdr {
+        msg_name: &mut sockaddr as *mut _ as *mut libc::c_void,
+        msg_namelen: sockaddr_len,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr() as *mut libc::c_void,
+        msg_controllen: control.len() as _,
+        msg_flags: 0,
+    };
+
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if !cmsg.is_null() {
+            (*cmsg).cmsg_level = libc::SOL_UDP;
+            (*cmsg).cmsg_type = UDP_SEGMENT;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
+            *(libc::CMSG_DATA(cmsg) as *mut u16) = segment_size as u16;
+            msg.msg_controllen = (*cmsg).cmsg_len as _;
+        }
+
+        let ret = libc::sendmsg(fd, &msg, 0);
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
+    
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+pub(crate) fn send_udp_gso_to(
+    socket: &tokio::net::UdpSocket,
+    data: &[u8],
+    peer: &SocketAddr,
+    _segment_size: usize,
+) -> io::Result<()> {
+    match socket.try_send_to(data, *peer) {
+        Ok(_) => Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
 
 pub(crate) fn socket_addr_to_libc(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
     unsafe {
