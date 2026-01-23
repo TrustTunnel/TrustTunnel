@@ -167,10 +167,11 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
             let datagram_len = datagram.payload.len();
             match self.sink.write(datagram).await? {
                 datagram_pipe::SendStatus::Sent => {
+                    log::info!("RightPipe: Wrote packet to downstream sink: len={}", datagram_len);
                     (self.shared.update_metrics)(self.direction, datagram_len);
                 }
                 datagram_pipe::SendStatus::Dropped => {
-                    log_id!(trace, self.source.id(), "<-- Datagram dropped")
+                    log::warn!("RightPipe: Packet DROPPED by downstream sink: len={}", datagram_len);
                 }
             }
 
