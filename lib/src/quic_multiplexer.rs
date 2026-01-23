@@ -1220,9 +1220,6 @@ fn make_quic_config_with_domain_contexts(
     cfg.set_max_idle_timeout(core_settings.client_listener_timeout.as_millis() as u64);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);
-    #[cfg(any(target_os = "linux", target_os = "android"))]
-    cfg.set_max_send_udp_payload_size(65535);
-    #[cfg(not(any(target_os = "linux", target_os = "android")))]
     cfg.set_max_send_udp_payload_size(quic_settings.send_udp_payload_size);
 
     cfg.set_initial_max_data(quic_settings.initial_max_data);

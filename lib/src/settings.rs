@@ -655,7 +655,14 @@ impl QuicSettings {
     }
 
     pub fn default_send_udp_payload_size() -> usize {
-        1200
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        {
+            65535
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
+        {
+            1200
+        }
     }
 
     pub fn default_initial_max_data() -> u64 {
