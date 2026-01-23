@@ -217,6 +217,7 @@ impl datagram_pipe::Source for MultiplexerSource {
     }
 
     async fn read(&mut self) -> io::Result<forwarder::UdpDatagramReadStatus> {
+        log::info!("MultiplexerSource::read() ENTERED - waiting for packet from channel");
         loop {
             if let Some((meta, error)) = self.pending_closures.pop_front() {
                 return Ok(forwarder::UdpDatagramReadStatus::UdpClose(meta, error));
