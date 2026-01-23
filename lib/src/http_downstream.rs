@@ -398,6 +398,7 @@ impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
         // write_all() ensures we wait until EVERYTHING is written.
         // This prevents partial writes which would corrupt the stream state (since we are tunneling datagrams).
         self.sink.write_all(encoded).await?;
+        self.sink.flush().await?;
         
         Ok(datagram_pipe::SendStatus::Sent)
         
