@@ -105,23 +105,73 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
                 let meta_copy = key;
 
                 let task = tokio::spawn(async move {
-                    // 64KB buffer for high-throughput UDP forwarding
-                    const RECV_BUFFER_SIZE: usize = 65536;
-                    let mut buffer = BytesMut::with_capacity(RECV_BUFFER_SIZE);
-                    loop {
-                        if buffer.capacity() < RECV_BUFFER_SIZE {
-                            buffer.reserve(RECV_BUFFER_SIZE);
-                        }
-                        match socket_clone.recv_buf(&mut buffer).await {
-                            Ok(_) => {
-                                let payload = buffer.split().freeze();
-                                if packet_tx.send(InternalEvent::Payload(meta_copy, payload)).await.is_err() {
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
+                    {
+                        use std::os::unix::io::AsRawFd;
+
+                        // Batch size for recvmmsg
+                        const BATCH_SIZE: usize = 64;
+                        const RECV_BUFFER_SIZE: usize = 65536;
+                        let fd = socket_clone.as_raw_fd();
+                        // Pre-allocate headers and buffers for the batch
+                        let mut hdrs: Vec<net_utils::MMsgHdr> = (0..BATCH_SIZE).map(|_| Default::default()).collect();
+                        let mut buffers: Vec<BytesMut> = (0..BATCH_SIZE).map(|_| BytesMut::with_capacity(RECV_BUFFER_SIZE)).collect();
+                        
+                        loop {
+                            // Wait for readability
+                            if let Err(e) = socket_clone.readable().await {
+                                let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
+                                break;
+                            }
+
+                            // Try to read a batch
+                            match socket_clone.try_io(tokio::io::Interest::READABLE, || {
+                                net_utils::recv_mmsg_dgram(fd, &mut hdrs, &mut buffers)
+                            }) {
+                                Ok(n) => {
+                                    if n == 0 {
+                                        continue; 
+                                    }
+                                    // Process the batch
+                                    for i in 0..n {
+                                        let payload = buffers[i].split().freeze();
+                                        if packet_tx.send(InternalEvent::Payload(meta_copy, payload)).await.is_err() {
+                                            return; // Channel closed
+                                        }
+                                        // Reset buffer capacity for next use (re-use logic handled by reserve in recv_mmsg)
+                                    }
+                                }
+                                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                    continue;
+                                }
+                                Err(e) => {
+                                    let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
                                     break;
                                 }
                             }
-                            Err(e) => {
-                                let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
-                                break;
+                        }
+                    }
+
+                    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+                    {
+                        // 64KB buffer for high-throughput UDP forwarding
+                        const RECV_BUFFER_SIZE: usize = 65536;
+                        let mut buffer = BytesMut::with_capacity(RECV_BUFFER_SIZE);
+                        loop {
+                            if buffer.capacity() < RECV_BUFFER_SIZE {
+                                buffer.reserve(RECV_BUFFER_SIZE);
+                            }
+                            match socket_clone.recv_buf(&mut buffer).await {
+                                Ok(_) => {
+                                    let payload = buffer.split().freeze();
+                                    if packet_tx.send(InternalEvent::Payload(meta_copy, payload)).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(e) => {
+                                    let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
+                                    break;
+                                }
                             }
                         }
                     }
