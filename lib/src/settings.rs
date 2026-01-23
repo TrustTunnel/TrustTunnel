@@ -651,11 +651,11 @@ impl QuicSettings {
     }
 
     pub fn default_recv_udp_payload_size() -> usize {
-        1350
+        1200
     }
 
     pub fn default_send_udp_payload_size() -> usize {
-        1350
+        1200
     }
 
     pub fn default_initial_max_data() -> u64 {

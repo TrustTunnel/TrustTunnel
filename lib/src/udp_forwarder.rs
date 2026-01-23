@@ -182,6 +182,12 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
                                         break;
                                     }
                                 }
+                                Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                                    // ConnectionReset is common for UDP on Windows (ICMP Port Unreachable).
+                                    // We should just ignore it and continue listening.
+                                    log::debug!("UDP socket received ConnectionReset (ICMP Port Unreachable), ignoring.");
+                                    continue;
+                                }
                                 Err(e) => {
                                     let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
                                     break;
