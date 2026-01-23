@@ -8,10 +8,12 @@ use crate::pipe::DuplexPipe;
 use crate::{
     authentication, core, datagram_pipe, downstream, forwarder, log_id, log_utils, pipe, udp_pipe,
 };
+use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::ErrorKind;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 pub(crate) enum AuthenticationPolicy<'this> {
@@ -33,12 +35,12 @@ pub(crate) struct Tunnel {
 #[derive(Debug)]
 pub(crate) enum ConnectionError {
     Io(io::Error),
-    Authentication(String),
+    Authentication(Cow<'static, str>),
     Timeout,
     HostUnreachable,
     DnsNonroutable,
     DnsLoopback,
-    Other(String),
+    Other(Cow<'static, str>),
 }
 
 impl Display for ConnectionError {
@@ -117,7 +119,7 @@ impl Tunnel {
 
             let context = self.context.clone();
             let forwarder = self.forwarder.clone();
-            let tls_domain = self.downstream.tls_domain().to_string();
+            let tls_domain: Arc<str> = self.downstream.tls_domain().into();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
             let update_metrics = {
@@ -156,7 +158,7 @@ impl Tunnel {
                             Status::Pass => Some(source),
                             Status::Reject => {
                                 let err = ConnectionError::Authentication(
-                                    "Authentication failed".to_string(),
+                                    Cow::Borrowed("Authentication failed"),
                                 );
                                 log_id!(debug, request_id, "{}", err);
                                 request.fail_request(err);
@@ -171,7 +173,7 @@ impl Tunnel {
                     }),
                     (Ok(None), AuthenticationPolicy::Default, Some(_)) => {
                         let err = ConnectionError::Authentication(
-                            "Got request without authentication info on non-authenticated connection".to_string()
+                            Cow::Borrowed("Got request without authentication info on non-authenticated connection")
                         );
                         log_id!(debug, request_id, "{}", err);
                         request.fail_request(err);
@@ -244,7 +246,7 @@ impl Tunnel {
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingTcpConnectRequest>,
         forwarder_auth: Option<authentication::Source<'static>>,
-        tls_domain: String,
+        tls_domain: Arc<str>,
         update_metrics: F,
     ) -> Result<
         (),
@@ -282,13 +284,13 @@ impl Tunnel {
                 }
             },
             destination,
-            tls_domain,
+            tls_domain: tls_domain.to_string(),
             auth: forwarder_auth,
             user_agent: request.user_agent(),
         };
 
         log_id!(trace, request_id, "TCP connect: connecting to peer");
-        let connector = forwarder.lock().unwrap().tcp_connector();
+        let connector = forwarder.lock().await.tcp_connector();
         let (fwd_rx, fwd_tx) = match tokio::time::timeout(
             context.settings.connection_establishment_timeout,
             connector.connect(request_id.clone(), meta.clone()),
@@ -352,7 +354,7 @@ impl Tunnel {
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingDatagramMultiplexerRequest>,
         forwarder_auth: Option<authentication::Source<'static>>,
-        tls_domain: String,
+        tls_domain: Arc<str>,
         update_metrics: F,
     ) -> Result<
         (),
@@ -376,7 +378,7 @@ impl Tunnel {
         let user_agent = request.user_agent();
 
         if let Some(auth) = &forwarder_auth {
-            let authenticator = forwarder.lock().unwrap().datagram_mux_authenticator();
+            let authenticator = forwarder.lock().await.datagram_mux_authenticator();
             if let Err(e) = authenticator
                 .check_auth(
                     client_address,
@@ -395,12 +397,12 @@ impl Tunnel {
                 let meta = forwarder::UdpMultiplexerMeta {
                     client_address,
                     auth: forwarder_auth,
-                    tls_domain,
+                    tls_domain: tls_domain.to_string(),
                     user_agent,
                 };
                 let (fwd_shared, fwd_source, fwd_sink) = match forwarder
                     .lock()
-                    .unwrap()
+                    .await
                     .make_udp_datagram_multiplexer(request_id.clone(), meta)
                 {
                     Ok(x) => x,
@@ -423,7 +425,7 @@ impl Tunnel {
             Ok(downstream::DatagramPipeHalves::Icmp(dstr_source, dstr_sink)) => {
                 let (fwd_source, fwd_sink) = match forwarder
                     .lock()
-                    .unwrap()
+                    .await
                     .make_icmp_datagram_multiplexer(request_id.clone())
                 {
                     Ok(Some(x)) => x,
@@ -431,7 +433,7 @@ impl Tunnel {
                         return Err((
                             None,
                             "ICMP forwarding isn't set up",
-                            ConnectionError::Other("Not allowed".to_string()),
+                            ConnectionError::Other(Cow::Borrowed("Not allowed")),
                         ))
                     }
                     Err(e) => {

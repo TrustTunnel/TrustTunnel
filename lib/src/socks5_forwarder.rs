@@ -247,7 +247,7 @@ impl forwarder::TcpConnector for TcpConnector {
                     }
                 })
                 .transpose()
-                .map_err(tunnel::ConnectionError::Other)?,
+                .map_err(|e| tunnel::ConnectionError::Other(e.into()))?,
             socks5_client::Request::Connect(destination, port),
         )
         .await
@@ -272,15 +272,15 @@ impl forwarder::TcpConnector for TcpConnector {
                 Err(tunnel::ConnectionError::Timeout)
             }
             Ok(socks5_client::ConnectResult::Failure(x)) => Err(tunnel::ConnectionError::Other(
-                format!("SOCKS server replied with error code: {:?}", x),
+                format!("SOCKS server replied with error code: {:?}", x).into(),
             )),
             Err(socks5_client::Error::Io(x)) => Err(tunnel::ConnectionError::Io(x)),
             Err(socks5_client::Error::Protocol(x)) => Err(tunnel::ConnectionError::Other(format!(
                 "SOCKS protocol error: {}",
                 x
-            ))),
+            ).into())),
             Err(socks5_client::Error::Authentication(x)) => {
-                Err(tunnel::ConnectionError::Authentication(x))
+                Err(tunnel::ConnectionError::Authentication(x.into()))
             }
         }
     }
@@ -314,15 +314,15 @@ impl forwarder::DatagramMultiplexerAuthenticator for DatagramMuxAuthenticator {
             Ok(socks5_client::ConnectResult::TcpConnection(_)) => unreachable!(),
             Ok(socks5_client::ConnectResult::UdpAssociation(_)) => Ok(()),
             Ok(socks5_client::ConnectResult::Failure(x)) => Err(tunnel::ConnectionError::Other(
-                format!("SOCKS server replied with error code: {:?}", x),
+                format!("SOCKS server replied with error code: {:?}", x).into(),
             )),
             Err(socks5_client::Error::Io(x)) => Err(tunnel::ConnectionError::Io(x)),
             Err(socks5_client::Error::Protocol(x)) => Err(tunnel::ConnectionError::Other(format!(
                 "SOCKS protocol error: {}",
                 x
-            ))),
+            ).into())),
             Err(socks5_client::Error::Authentication(x)) => {
-                Err(tunnel::ConnectionError::Authentication(x))
+                Err(tunnel::ConnectionError::Authentication(x.into()))
             }
         }
     }

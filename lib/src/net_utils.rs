@@ -78,6 +78,8 @@ where
     }
 }
 
+
+
 pub(crate) fn make_udp_socket(is_v4: bool) -> io::Result<UdpSocket> {
     if is_v4 {
         UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
@@ -244,20 +246,36 @@ pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> SocketAddr {
 
 /// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
 /// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
+/// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
+/// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
 pub(crate) fn recv_from(
     fd: libc::c_int,
     buffer_size: Option<usize>,
 ) -> io::Result<(IpAddr, Bytes)> {
-    let mut buffer = BytesMut::zeroed(buffer_size.unwrap_or(MIN_LINK_MTU));
+    let mut buffer = BytesMut::with_capacity(buffer_size.unwrap_or(MIN_LINK_MTU));
+    let addr = recv_from_buf(fd, &mut buffer)?;
+    Ok((addr, buffer.freeze()))
+}
 
+pub(crate) fn recv_from_buf(fd: libc::c_int, buffer: &mut BytesMut) -> io::Result<IpAddr> {
     unsafe {
         let mut peer = std::mem::zeroed::<libc::sockaddr_storage>();
         let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
         let flags = libc::MSG_DONTWAIT;
+        
+        // Ensure we have some space
+        if buffer.capacity() == 0 {
+            buffer.reserve(MIN_LINK_MTU);
+        }
+        
+        // Get pointer to uninitialized part
+        let dst = buffer.chunk_mut().as_mut_ptr();
+        let capacity = buffer.chunk_mut().len(); // Available space
+        
         let r = libc::recvfrom(
             fd,
-            buffer.as_mut_ptr() as *mut libc::c_void,
-            buffer.len(),
+            dst as *mut libc::c_void,
+            capacity,
             flags,
             &mut peer as *mut libc::sockaddr_storage as *mut libc::sockaddr,
             &mut peer_len as *mut _,
@@ -266,9 +284,8 @@ pub(crate) fn recv_from(
             return Err(io::Error::last_os_error());
         }
 
-        buffer.truncate(r as usize);
-
-        Ok((libc_to_socket_addr(&peer).ip(), buffer.freeze()))
+        buffer.advance_mut(r as usize);
+        Ok(libc_to_socket_addr(&peer).ip())
     }
 }
 
