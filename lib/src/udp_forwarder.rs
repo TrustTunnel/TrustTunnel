@@ -13,6 +13,9 @@ use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+use std::os::unix::io::AsRawFd;
+
 struct Connection {
     socket: Arc<UdpSocket>,
     _task: JoinHandle<()>,
@@ -107,7 +110,6 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
                 let task = tokio::spawn(async move {
                     #[cfg(any(target_os = "linux", target_os = "android"))]
                     {
-                        use std::os::unix::io::AsRawFd;
 
                         // Batch size for recvmmsg
                         const BATCH_SIZE: usize = 64;

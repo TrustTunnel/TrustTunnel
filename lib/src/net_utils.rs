@@ -348,6 +348,10 @@ impl Default for MMsgHdr {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe impl Send for MMsgHdr {}
+#[cfg(any(target_os = "linux", target_os = "android"))]
+unsafe impl Sync for MMsgHdr {}
 /// Receive multiple datagrams at once using recvmmsg
 #[cfg(any(target_os = "linux", target_os = "android"))]
 pub(crate) fn recv_mmsg_dgram(
