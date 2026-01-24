@@ -12,6 +12,7 @@ use std::borrow::Cow;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::ErrorKind;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -30,6 +31,24 @@ pub(crate) struct Tunnel {
     forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
     authentication_policy: AuthenticationPolicy<'static>,
     id: log_utils::IdChain<u64>,
+    active_requests: Arc<AtomicUsize>,
+}
+
+struct ActiveRequestGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl ActiveRequestGuard {
+    fn new(counter: Arc<AtomicUsize>) -> Self {
+        counter.fetch_add(1, Ordering::Relaxed);
+        Self { counter }
+    }
+}
+
+impl Drop for ActiveRequestGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -71,6 +90,7 @@ impl Tunnel {
             forwarder: Arc::new(Mutex::new(forwarder)),
             authentication_policy,
             id,
+            active_requests: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -112,8 +132,18 @@ impl Tunnel {
                     return Err(e);
                 }
                 Err(_) => {
-                    log_id!(trace, self.id, "Tunnel listen timeout");
-                    return Err(io::Error::from(ErrorKind::TimedOut));
+                    let active = self.active_requests.load(Ordering::Relaxed);
+                    if active == 0 {
+                        log_id!(trace, self.id, "Tunnel listen timeout");
+                        return Err(io::Error::from(ErrorKind::TimedOut));
+                    }
+                    log_id!(
+                        trace,
+                        self.id,
+                        "Tunnel listen timeout with {} active requests",
+                        active
+                    );
+                    continue;
                 }
             };
 
@@ -122,6 +152,7 @@ impl Tunnel {
             let tls_domain: Arc<str> = self.downstream.tls_domain().into();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
+            let active_requests = self.active_requests.clone();
             let update_metrics = {
                 let metrics = context.metrics.clone();
                 let protocol = self.downstream.protocol();
@@ -132,6 +163,8 @@ impl Tunnel {
             };
 
             tokio::spawn(async move {
+                let _active_guard = ActiveRequestGuard::new(active_requests);
+
                 fn report_fatal_if_too_many_open_files(
                     context: &Arc<core::Context>,
                     e: &ConnectionError,

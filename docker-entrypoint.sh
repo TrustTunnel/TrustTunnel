@@ -90,6 +90,37 @@ apply_quic_payload_overrides() {
     fi
 }
 
+apply_timeout_overrides() {
+    local config_file="vpn.toml"
+    local updated=0
+
+    if [ ! -f "$config_file" ]; then
+        return 0
+    fi
+
+    if [ -n "$TT_CLIENT_LISTENER_TIMEOUT_SECS" ]; then
+        if grep -qE "^[[:space:]]*client_listener_timeout_secs[[:space:]]*=" "$config_file"; then
+            sed -i -E "s/^([[:space:]]*client_listener_timeout_secs[[:space:]]*=[[:space:]]*).*/\\1${TT_CLIENT_LISTENER_TIMEOUT_SECS}/" "$config_file"
+        else
+            printf "\nclient_listener_timeout_secs = %s\n" "$TT_CLIENT_LISTENER_TIMEOUT_SECS" >> "$config_file"
+        fi
+        updated=1
+    fi
+
+    if [ -n "$TT_UDP_CONNECTIONS_TIMEOUT_SECS" ]; then
+        if grep -qE "^[[:space:]]*udp_connections_timeout_secs[[:space:]]*=" "$config_file"; then
+            sed -i -E "s/^([[:space:]]*udp_connections_timeout_secs[[:space:]]*=[[:space:]]*).*/\\1${TT_UDP_CONNECTIONS_TIMEOUT_SECS}/" "$config_file"
+        else
+            printf "\nudp_connections_timeout_secs = %s\n" "$TT_UDP_CONNECTIONS_TIMEOUT_SECS" >> "$config_file"
+        fi
+        updated=1
+    fi
+
+    if [ "$updated" -eq 1 ]; then
+        echo "Applied timeout overrides to $config_file"
+    fi
+}
+
 main() {
     if verify_configs; then
         echo "Configuration found. Starting TrustTunnel..."
@@ -109,6 +140,7 @@ main() {
     fi
 
     apply_quic_payload_overrides
+    apply_timeout_overrides
 
     # Setup NAT/Masquerading
     echo "Setting up NAT..."
