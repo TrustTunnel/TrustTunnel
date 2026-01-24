@@ -23,6 +23,8 @@ const CERT_TYPE_PARAM_NAME: &str = "cert_type";
 const ACME_EMAIL_PARAM_NAME: &str = "acme_email";
 const ACME_CHALLENGE_PARAM_NAME: &str = "acme_challenge";
 const ACME_STAGING_PARAM_NAME: &str = "acme_staging";
+const QUIC_RECV_UDP_PAYLOAD_SIZE_PARAM_NAME: &str = "quic_recv_udp_payload_size";
+const QUIC_SEND_UDP_PAYLOAD_SIZE_PARAM_NAME: &str = "quic_send_udp_payload_size";
 
 #[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
 pub enum Mode {
@@ -47,6 +49,8 @@ pub struct PredefinedParameters {
     pub acme_email: Option<String>,
     pub acme_challenge: Option<String>,
     pub acme_staging: bool,
+    pub quic_recv_udp_payload_size: Option<usize>,
+    pub quic_send_udp_payload_size: Option<usize>,
 }
 
 lazy_static::lazy_static! {
@@ -157,6 +161,16 @@ Required in non-interactive mode."#,
                 .long("acme-staging")
                 .action(clap::ArgAction::SetTrue)
                 .help("Use Let's Encrypt staging environment (for testing)"),
+            clap::Arg::new(QUIC_RECV_UDP_PAYLOAD_SIZE_PARAM_NAME)
+                .long("quic-recv-udp-payload-size")
+                .action(clap::ArgAction::Set)
+                .value_parser(clap::value_parser!(usize))
+                .help("Override QUIC recv_udp_payload_size in generated vpn.toml"),
+            clap::Arg::new(QUIC_SEND_UDP_PAYLOAD_SIZE_PARAM_NAME)
+                .long("quic-send-udp-payload-size")
+                .action(clap::ArgAction::Set)
+                .value_parser(clap::value_parser!(usize))
+                .help("Override QUIC send_udp_payload_size in generated vpn.toml"),
         ])
         .get_matches();
 
@@ -196,6 +210,12 @@ Required in non-interactive mode."#,
         acme_email: args.get_one::<String>(ACME_EMAIL_PARAM_NAME).cloned(),
         acme_challenge: args.get_one::<String>(ACME_CHALLENGE_PARAM_NAME).cloned(),
         acme_staging: args.get_flag(ACME_STAGING_PARAM_NAME),
+        quic_recv_udp_payload_size: args
+            .get_one::<usize>(QUIC_RECV_UDP_PAYLOAD_SIZE_PARAM_NAME)
+            .copied(),
+        quic_send_udp_payload_size: args
+            .get_one::<usize>(QUIC_SEND_UDP_PAYLOAD_SIZE_PARAM_NAME)
+            .copied(),
     };
 
     println!("Welcome to the setup wizard");

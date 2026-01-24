@@ -58,6 +58,7 @@ pub(crate) struct QuicSocket {
     tls_connection_meta: tls_demultiplexer::ConnectionMeta,
     /// TLS client_random extracted from QUIC handshake
     client_random: Vec<u8>,
+    segment_size: usize,
 }
 
 pub(crate) enum QuicSocketEvent {
@@ -286,8 +287,18 @@ impl QuicMultiplexer {
                 self.update_connection_deadline(conn_id, timeout);
             }
 
-            if let Err(e) = flush_pending_data(&mut quic_conn, &self.socket, &entry.peer, &self.id)
-            {
+            if let Err(e) = flush_pending_data(
+                &mut quic_conn,
+                &self.socket,
+                &entry.peer,
+                &self.id,
+                self.core_settings
+                    .listen_protocols
+                    .quic
+                    .as_ref()
+                    .unwrap()
+                    .send_udp_payload_size,
+            ) {
                 log_id!(debug, self.id, "Failed to flush QUIC connection: {}", e);
             }
         }
@@ -579,6 +590,7 @@ impl QuicMultiplexer {
             )),
             tls_connection_meta: conn.tls_connection_meta,
             client_random: extracted_client_random,
+            segment_size: self.core_settings.listen_protocols.quic.as_ref().unwrap().send_udp_payload_size,
         })
     }
 
@@ -962,6 +974,7 @@ impl QuicSocket {
             &self.udp_socket,
             &self.peer,
             &self.id,
+            self.segment_size,
         )
     }
 
@@ -1089,11 +1102,13 @@ fn flush_pending_data(
     udp_socket: &UdpSocket,
     peer: &SocketAddr,
     id: &log_utils::IdChain<u64>,
+    segment_size: usize,
 ) -> io::Result<()> {
-    let mut out = [0; net_utils::MAX_UDP_PAYLOAD_SIZE];
+    // 64KB supports GSO max size approx
+    let mut out = [0; 65535];
     loop {
         match quic_conn.send(&mut out) {
-            Ok((n, _)) => udp_socket_send_to(udp_socket, &out[..n], peer, id)?,
+            Ok((n, _)) => udp_socket_send_to(udp_socket, &out[..n], peer, id, segment_size)?,
             Err(quiche::Error::Done) => break,
             Err(e) => return Err(io::Error::new(ErrorKind::Other, e.to_string())),
         }
@@ -1107,8 +1122,9 @@ fn udp_socket_send_to(
     data: &[u8],
     peer: &SocketAddr,
     id: &log_utils::IdChain<u64>,
+    segment_size: usize,
 ) -> io::Result<()> {
-    match socket.try_send_to(data, *peer) {
+    match net_utils::send_udp_gso_to(socket, data, peer, segment_size) {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == ErrorKind::WouldBlock || e.raw_os_error() == Some(libc::ENOBUFS) => {
             log_id!(
@@ -1211,9 +1227,11 @@ fn make_quic_config_with_domain_contexts(
     })?;
     cfg.set_application_protos(h3::APPLICATION_PROTOCOL)
         .unwrap();
+
     cfg.set_max_idle_timeout(core_settings.client_listener_timeout.as_millis() as u64);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);
     cfg.set_max_send_udp_payload_size(quic_settings.send_udp_payload_size);
+
     cfg.set_initial_max_data(quic_settings.initial_max_data);
     cfg.set_initial_max_stream_data_bidi_local(quic_settings.initial_max_stream_data_bidi_local);
     cfg.set_initial_max_stream_data_bidi_remote(quic_settings.initial_max_stream_data_bidi_remote);

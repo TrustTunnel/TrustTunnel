@@ -1,21 +1,24 @@
 use crate::forwarder::UdpMultiplexer;
 use crate::metrics::OutboundUdpSocketCounter;
-use crate::{core, datagram_pipe, downstream, forwarder, log_id, log_utils, net_utils};
+use crate::{core, datagram_pipe, downstream, forwarder, log_utils, net_utils};
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Buf, Bytes, BytesMut};
 use std::collections::hash_map::Entry;
-use std::collections::{HashMap, LinkedList};
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
-use std::ops::Deref;
-use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 use tokio::net::UdpSocket;
-use tokio::sync;
+use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
+
+
 
 struct Connection {
     socket: Arc<UdpSocket>,
+    _task: JoinHandle<()>,
+    #[allow(dead_code)]
     being_listened: bool,
     _metrics_guard: OutboundUdpSocketCounter,
 }
@@ -23,47 +26,44 @@ struct Connection {
 type Connections = HashMap<forwarder::UdpDatagramMeta, Connection>;
 
 struct MultiplexerShared {
-    connections: Mutex<Connections>,
+    connections: RwLock<Connections>,
     context: Arc<core::Context>,
+    packet_tx: mpsc::Sender<InternalEvent>,
 }
 
 struct MultiplexerSource {
-    shared: Arc<MultiplexerShared>,
-    wake_rx: sync::mpsc::Receiver<()>,
-    pending_closures: LinkedList<(forwarder::UdpDatagramMeta, io::Error)>,
+    packet_rx: mpsc::Receiver<InternalEvent>,
+    pending_closures: VecDeque<(forwarder::UdpDatagramMeta, io::Error)>,
     parent_id_chain: log_utils::IdChain<u64>,
 }
 
 struct MultiplexerSink {
     shared: Arc<MultiplexerShared>,
-    wake_tx: sync::mpsc::Sender<()>,
+    wake_tx: mpsc::Sender<()>,
 }
 
-struct SocketError {
-    meta: forwarder::UdpDatagramMeta,
-    io: io::Error,
-}
-
-enum PollStatus {
-    PendingRead(forwarder::UdpDatagramMeta),
-    SocketError(SocketError),
+enum InternalEvent {
+    Payload(forwarder::UdpDatagramMeta, Bytes),
+    Error(forwarder::UdpDatagramMeta, io::Error),
 }
 
 pub(crate) fn make_multiplexer(
     context: Arc<core::Context>,
     id: log_utils::IdChain<u64>,
 ) -> io::Result<UdpMultiplexer> {
+    let (packet_tx, packet_rx) = mpsc::channel(32768);
+    let (wake_tx, _wake_rx) = mpsc::channel(1);
+
     let shared = Arc::new(MultiplexerShared {
-        connections: Mutex::new(Default::default()),
+        connections: RwLock::new(Default::default()),
         context,
+        packet_tx,
     });
-    let (wake_tx, wake_rx) = sync::mpsc::channel(1);
 
     Ok((
         shared.clone(),
         Box::new(MultiplexerSource {
-            shared: shared.clone(),
-            wake_rx,
+            packet_rx,
             pending_closures: Default::default(),
             parent_id_chain: id,
         }),
@@ -71,97 +71,23 @@ pub(crate) fn make_multiplexer(
     ))
 }
 
-async fn listen_socket_read(
-    meta: forwarder::UdpDatagramMeta,
-    socket: Arc<UdpSocket>,
-) -> Result<forwarder::UdpDatagramMeta, SocketError> {
-    socket
-        .readable()
-        .await
-        .map(|_| meta)
-        .map_err(|io| SocketError { meta, io })
-}
-
 impl MultiplexerSource {
-    fn on_socket_error(&mut self, meta: &forwarder::UdpDatagramMeta, error: io::Error) {
-        if self
-            .shared
-            .connections
-            .lock()
-            .unwrap()
-            .remove(meta)
-            .is_some()
-        {
-            self.pending_closures.push_back((*meta, error));
-        }
-    }
-
-    fn read_pending_socket(
-        &mut self,
-        meta: &forwarder::UdpDatagramMeta,
-    ) -> Option<forwarder::UdpDatagramReadStatus> {
-        let socket = self
-            .shared
-            .connections
-            .lock()
-            .unwrap()
-            .get(meta)
-            .map(|conn| conn.socket.clone())?;
-
-        let mut buffer = Vec::with_capacity(net_utils::MAX_UDP_PAYLOAD_SIZE);
-        match socket.try_recv_buf(&mut buffer) {
-            Ok(_) => Some(forwarder::UdpDatagramReadStatus::Read(
-                forwarder::UdpDatagram {
-                    meta: meta.reversed(),
-                    payload: Bytes::from(buffer),
-                },
-            )),
-            Err(e) if e.kind() == ErrorKind::WouldBlock => None,
-            Err(e) => {
-                self.on_socket_error(meta, e);
+    fn handle_event(&mut self, event: InternalEvent) -> Option<forwarder::UdpDatagramReadStatus> {
+        match event {
+            InternalEvent::Payload(meta, payload) => {
+                if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                    log::info!("Dispatcher: Received payload: len={} meta={:?}", payload.len(), meta);
+                }
+                Some(forwarder::UdpDatagramReadStatus::Read(
+                    forwarder::UdpDatagram {
+                        meta: meta.reversed(),
+                        payload,
+                    },
+                ))
+            }
+            InternalEvent::Error(meta, error) => {
+                self.pending_closures.push_back((meta, error));
                 None
-            }
-        }
-    }
-
-    async fn poll_events(&mut self) -> io::Result<Option<PollStatus>> {
-        let futures = {
-            type Future = Box<
-                dyn futures::Future<Output = Result<forwarder::UdpDatagramMeta, SocketError>>
-                    + Send,
-            >;
-
-            let connections = self.shared.connections.lock().unwrap();
-            let mut futures: Vec<Pin<Future>> = Vec::with_capacity(1 + connections.len());
-            // add always pending future to avoid a busy loop in case of connection absence
-            futures.push(Box::pin(futures::future::pending()));
-            for (meta, conn) in connections.deref() {
-                futures.push(Box::pin(listen_socket_read(*meta, conn.socket.clone())));
-            }
-            futures
-        };
-
-        let wait_reads = futures::future::select_all(futures);
-        tokio::pin!(wait_reads);
-
-        let wait_waker = self.wake_rx.recv();
-        tokio::pin!(wait_waker);
-
-        tokio::select! {
-            reads = wait_reads => match reads.0 {
-                Ok(ready) => Ok(Some(PollStatus::PendingRead(ready))),
-                Err(e) => {
-                    log_id!(debug, self.parent_id_chain, "Error waiting for UDP read: meta={:?} error={}",
-                        e.meta, e.io);
-                    Ok(Some(PollStatus::SocketError(e)))
-                }
-            },
-            r = wait_waker => match r {
-                Some(_) => Ok(None),
-                None => {
-                    log_id!(debug, self.parent_id_chain, "Wake sender dropped");
-                    Err(io::Error::from(ErrorKind::UnexpectedEof))
-                }
             }
         }
     }
@@ -170,17 +96,75 @@ impl MultiplexerSource {
 #[async_trait]
 impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
     async fn on_new_udp_connection(&self, meta: &downstream::UdpDatagramMeta) -> io::Result<()> {
-        match self
-            .connections
-            .lock()
-            .unwrap()
-            .entry(forwarder::UdpDatagramMeta::from(meta))
-        {
-            Entry::Occupied(_) => Err(io::Error::new(ErrorKind::Other, "Already present")),
+        let ip = meta.destination.ip();
+        if ip.is_ipv6() && !self.context.settings.ipv6_available {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "IPv6 connections are disabled",
+            ));
+        }
+
+        if !net_utils::is_global_ip(&ip) && !self.context.settings.allow_private_network_connections {
+            // Special case: allow benchmarking range (198.18.0.0/15) as it is often used for internal DNS proxies
+            let octets = match ip {
+                std::net::IpAddr::V4(v4) => v4.octets(),
+                _ => [0, 0, 0, 0],
+            };
+            if !(octets[0] == 198 && (octets[1] & 0xfe) == 18) {
+                log::warn!("Dropping UDP connection to non-global IP: {} (allow_private_network_connections is false)", ip);
+                return Err(io::Error::new(
+                    ErrorKind::PermissionDenied,
+                    "Connections to private network are disabled",
+                ));
+            }
+        }
+
+        let mut connections = self.connections.write().unwrap();
+        let key = forwarder::UdpDatagramMeta::from(meta);
+        
+        match connections.entry(key) {
+            Entry::Occupied(_) => Ok(()), // Connection already exists, that's fine - reuse it
             Entry::Vacant(e) => {
                 let metrics_guard = self.context.metrics.clone().outbound_udp_socket_counter();
+
+                let socket = Arc::new(make_udp_socket(&meta.destination)?);
+                let socket_clone = socket.clone();
+                let packet_tx = self.packet_tx.clone();
+                let meta_copy = key;
+
+                let task = tokio::spawn(async move {
+                    // Standard buffer size for UDP forwarding
+                    const RECV_BUFFER_SIZE: usize = 65536;
+                    let mut buffer = BytesMut::with_capacity(RECV_BUFFER_SIZE);
+                    
+                    loop {
+                        if buffer.capacity() < RECV_BUFFER_SIZE {
+                            buffer.reserve(RECV_BUFFER_SIZE);
+                        }
+                        
+                        match socket_clone.recv_buf(&mut buffer).await {
+                            Ok(_) => {
+                                let payload = buffer.split().freeze();
+                                if packet_tx.send(InternalEvent::Payload(meta_copy, payload)).await.is_err() {
+                                    break; // Channel closed
+                                }
+                            }
+                            Err(ref e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                                // ConnectionReset is common for UDP on Windows (ICMP Port Unreachable).
+                                // We should just ignore it and continue listening.
+                                log::debug!("UDP socket received ConnectionReset (ICMP Port Unreachable), ignoring.");
+                                continue;
+                            }
+                            Err(e) => {
+                                let _ = packet_tx.send(InternalEvent::Error(meta_copy, e)).await;
+                                break;
+                            }
+                        }
+                    }
+                });
                 e.insert(Connection {
-                    socket: Arc::new(make_udp_socket(&meta.destination)?),
+                    socket,
+                    _task: task,
                     being_listened: false,
                     _metrics_guard: metrics_guard,
                 });
@@ -190,7 +174,9 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
     }
 
     fn on_connection_closed(&self, meta: &forwarder::UdpDatagramMeta) {
-        self.connections.lock().unwrap().remove(&meta.reversed());
+        if let Some(conn) = self.connections.write().unwrap().remove(meta) {
+            conn._task.abort();
+        }
     }
 }
 
@@ -203,20 +189,22 @@ impl datagram_pipe::Source for MultiplexerSource {
     }
 
     async fn read(&mut self) -> io::Result<forwarder::UdpDatagramReadStatus> {
+        if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+            log::info!("MultiplexerSource::read() ENTERED - waiting for packet from channel");
+        }
         loop {
             if let Some((meta, error)) = self.pending_closures.pop_front() {
                 return Ok(forwarder::UdpDatagramReadStatus::UdpClose(meta, error));
             }
 
-            match self.poll_events().await? {
-                None => (),
-                Some(PollStatus::PendingRead(meta)) => {
-                    if let Some(x) = self.read_pending_socket(&meta) {
-                        return Ok(x);
-                    }
+            match self.packet_rx.recv().await {
+                Some(event) => {
+                   if let Some(status) = self.handle_event(event) {
+                       return Ok(status);
+                   }
                 }
-                Some(PollStatus::SocketError(SocketError { meta, io })) => {
-                    self.on_socket_error(&meta, io)
+                None => {
+                    return Err(io::Error::from(ErrorKind::UnexpectedEof));
                 }
             }
         }
@@ -232,34 +220,17 @@ impl datagram_pipe::Sink for MultiplexerSink {
         datagram: downstream::UdpDatagram,
     ) -> io::Result<datagram_pipe::SendStatus> {
         let meta = forwarder::UdpDatagramMeta::from(&datagram.meta);
-        let socket = self
-            .shared
-            .connections
-            .lock()
-            .unwrap()
-            .get(&meta)
-            .map(|c| c.socket.clone())
-            .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
+        let socket = {
+            let connections = self.shared.connections.read().unwrap();
+            connections.get(&meta).map(|c| c.socket.clone())
+        };
 
-        socket.send(datagram.payload.as_ref()).await?;
-
-        if let Some(conn) = self.shared.connections.lock().unwrap().get_mut(&meta) {
-            if !conn.being_listened {
-                match self.wake_tx.try_send(()) {
-                    Ok(_) | Err(sync::mpsc::error::TrySendError::Full(_)) => {
-                        conn.being_listened = true;
-                    }
-                    Err(e) => {
-                        return Err(io::Error::new(
-                            ErrorKind::Other,
-                            format!("Failed to wake up UDP listener task: {}", e),
-                        ))
-                    }
-                }
-            }
+        if let Some(socket) = socket {
+            socket.send(datagram.payload.as_ref()).await?;
+            Ok(datagram_pipe::SendStatus::Sent)
+        } else {
+            Err(io::Error::from(ErrorKind::NotFound))
         }
-
-        Ok(datagram_pipe::SendStatus::Sent)
     }
 }
 

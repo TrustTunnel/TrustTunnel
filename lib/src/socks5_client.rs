@@ -732,5 +732,5 @@ fn put_u16<A>(buf: &mut SmallVec<A>, x: u16)
 where
     A: smallvec::Array<Item = u8>,
 {
-    buf.extend_from_slice(&x.to_ne_bytes())
+    buf.extend_from_slice(&x.to_be_bytes())
 }

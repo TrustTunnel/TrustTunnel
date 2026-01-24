@@ -34,13 +34,27 @@ pub fn build() -> Built {
                 }),
         )
         .unwrap();
+    let (quic_recv_udp_payload_size, quic_send_udp_payload_size) = {
+        let params = crate::get_predefined_params();
+        (
+            params.quic_recv_udp_payload_size,
+            params.quic_send_udp_payload_size,
+        )
+    };
+    let mut quic_builder = QuicSettings::builder();
+    if let Some(v) = quic_recv_udp_payload_size {
+        quic_builder = quic_builder.recv_udp_payload_size(v);
+    }
+    if let Some(v) = quic_send_udp_payload_size {
+        quic_builder = quic_builder.send_udp_payload_size(v);
+    }
 
     Built {
         settings: builder
             .listen_protocols(ListenProtocolSettings {
                 http1: Some(Http1Settings::builder().build()),
                 http2: Some(Http2Settings::builder().build()),
-                quic: Some(QuicSettings::builder().build()),
+                quic: Some(quic_builder.build()),
             })
             .build()
             .expect("Couldn't build the library settings"),

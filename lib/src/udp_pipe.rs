@@ -4,7 +4,7 @@ use futures::future;
 use futures::future::Either;
 use std::collections::HashMap;
 use std::io;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -32,7 +32,7 @@ struct RightPipe<F: Send + Sync> {
 }
 
 struct UdpPipeShared<F: Send + Sync> {
-    udp_connections: Mutex<HashMap<forwarder::UdpDatagramMeta, UdpConnection>>,
+    udp_connections: RwLock<HashMap<forwarder::UdpDatagramMeta, Mutex<UdpConnection>>>,
     forwarder_shared: Arc<dyn forwarder::UdpDatagramPipeShared>,
     update_metrics: F,
 }
@@ -56,8 +56,13 @@ enum UdpConnectionStatus {
 impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                log::info!("LeftPipe: Waiting for packet from client...");
+            }
             let datagram = self.source.read().await?;
-            log_id!(trace, self.source.id(), "--> Datagram: {:?}", datagram);
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                log::info!("LeftPipe: Processing packet: {:?}", datagram.meta);
+            }
 
             if let Err(e) = self.on_udp_packet(&datagram.meta).await {
                 log_id!(
@@ -83,43 +88,51 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
     }
 
     async fn on_udp_packet(&mut self, meta: &downstream::UdpDatagramMeta) -> io::Result<()> {
-        if let Some(conn) = self
-            .shared
-            .udp_connections
-            .lock()
-            .unwrap()
-            .get_mut(&forwarder::UdpDatagramMeta::from(meta))
-        {
-            conn.register_outgoing_packet();
+        let key = forwarder::UdpDatagramMeta::from(meta);
+        
+        // Fast path: try to find existing connection with read lock
+        if let Some(conn) = self.shared.udp_connections.read().unwrap().get(&key) {
+            conn.lock().unwrap().register_outgoing_packet();
             return Ok(());
         }
 
-        let is_plain_dns = meta.destination.port() == net_utils::PLAIN_DNS_PORT_NUMBER;
-        self.shared.udp_connections.lock().unwrap().insert(
-            forwarder::UdpDatagramMeta::from(meta),
-            UdpConnection {
-                last_activity: Instant::now(),
-                plain_dns_info: is_plain_dns.then_some(PlainDnsInfo { pending_queries: 0 }),
-                log_id: self.source.id().extended(log_utils::IdItem::new(
-                    log_utils::CONNECTION_ID_FMT,
-                    self.next_connection_id.next().unwrap(),
-                )),
-            },
-        );
+        // Slow path: insert new connection with write lock
+        {
+            let mut connections = self.shared.udp_connections.write().unwrap();
+            // Check again in case another thread inserted it
+            if let Some(conn) = connections.get(&key) {
+                conn.lock().unwrap().register_outgoing_packet();
+                return Ok(());
+            }
+
+            let is_plain_dns = meta.destination.port() == net_utils::PLAIN_DNS_PORT_NUMBER;
+            connections.insert(
+                key,
+                Mutex::new(UdpConnection {
+                    last_activity: Instant::now(),
+                    plain_dns_info: is_plain_dns.then_some(PlainDnsInfo { pending_queries: 0 }),
+                    log_id: self.source.id().extended(log_utils::IdItem::new(
+                        log_utils::CONNECTION_ID_FMT,
+                        self.next_connection_id.next().unwrap(),
+                    )),
+                }),
+            );
+        } // Lock is explicitly dropped here before await
 
         self.shared
             .forwarder_shared
             .on_new_udp_connection(meta)
             .await?;
 
+        // Re-acquire read lock to update timestamp just in case
         if let Some(c) = self
             .shared
             .udp_connections
-            .lock()
+            .read()
             .unwrap()
-            .get_mut(&forwarder::UdpDatagramMeta::from(meta))
+            .get(&key)
         {
-            c.register_outgoing_packet()
+            c.lock().unwrap().register_outgoing_packet()
         }
         Ok(())
     }
@@ -129,16 +142,23 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
             let datagram = match self.source.read().await? {
-                forwarder::UdpDatagramReadStatus::Read(x) => x,
+                forwarder::UdpDatagramReadStatus::Read(x) => {
+                    if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                        log::info!("RightPipe: Read packet from dispatcher: len={}", x.payload.len());
+                    }
+                    x
+                }
                 forwarder::UdpDatagramReadStatus::UdpClose(meta, e) => {
-                    if let Some(c) = self.shared.udp_connections.lock().unwrap().remove(&meta) {
+                    if let Some(c) = self.shared.udp_connections.write().unwrap().remove(&meta) {
                         log_id!(
                             debug,
-                            c.log_id,
+                            c.lock().unwrap().log_id,
                             "Connection closed: meta={:?} error={}",
                             meta,
                             e
                         );
+                        // Ensure forwarder also cleans up its task/socket
+                        self.shared.forwarder_shared.on_connection_closed(&meta);
                     }
                     continue;
                 }
@@ -146,40 +166,42 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
             log_id!(trace, self.source.id(), "<-- Datagram: {:?}", datagram);
 
             let meta = datagram.meta;
+            let mut datagram = datagram;
             let datagram_len = datagram.payload.len();
             match self.sink.write(datagram).await? {
                 datagram_pipe::SendStatus::Sent => {
+                    log::info!("RightPipe: Wrote packet to downstream sink: len={}", datagram_len);
                     (self.shared.update_metrics)(self.direction, datagram_len);
                 }
                 datagram_pipe::SendStatus::Dropped => {
-                    log_id!(trace, self.source.id(), "<-- Datagram dropped")
+                    log::warn!("RightPipe: Packet DROPPED by downstream sink: len={}", datagram_len);
                 }
             }
 
-            let reversed = meta.reversed();
-            let x = self.on_udp_packet(&reversed);
+            let x = self.on_udp_packet(&meta.reversed());
             match x {
                 UdpConnectionStatus::Continue => (),
                 UdpConnectionStatus::Done => {
+                    let key = meta.reversed();
                     if let Some(c) = self
                         .shared
                         .udp_connections
-                        .lock()
+                        .write()
                         .unwrap()
-                        .remove(&reversed)
+                        .remove(&key)
                     {
-                        log_id!(debug, c.log_id, "All UDP queries are completed");
+                        log_id!(debug, c.lock().unwrap().log_id, "All UDP queries are completed");
                     }
-                    self.shared.forwarder_shared.on_connection_closed(&meta);
+                    self.shared.forwarder_shared.on_connection_closed(&key);
                 }
             }
         }
     }
 
     fn on_udp_packet(&mut self, meta: &forwarder::UdpDatagramMeta) -> UdpConnectionStatus {
-        match self.shared.udp_connections.lock().unwrap().get_mut(meta) {
+        match self.shared.udp_connections.read().unwrap().get(meta) {
             None => UdpConnectionStatus::Continue,
-            Some(conn) => conn.register_incoming_packet(),
+            Some(conn) => conn.lock().unwrap().register_incoming_packet(),
         }
     }
 }
@@ -223,7 +245,7 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> DuplexPipe<F> {
         timeout: Duration,
     ) -> Self {
         let shared = Arc::new(UdpPipeShared {
-            udp_connections: Mutex::new(Default::default()),
+            udp_connections: RwLock::new(Default::default()),
             forwarder_shared: shared2,
             update_metrics,
         });
@@ -260,11 +282,15 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> DuplexPipe<F> {
     fn on_timer_tick(&mut self) {
         let last_unexpired_timestamp = Instant::now() - self.timeout;
 
-        let mut connections = self.left_pipe.shared.udp_connections.lock().unwrap();
+        let mut connections = self.left_pipe.shared.udp_connections.write().unwrap();
+        // Since we need to remove, we need write lock. 
+        // We can't use `retain` easily if we want to log the removed ones with access to internal id
+        // Actually we can, but let's stick to simple logic.
+        // We need to iterate and identify expired keys.
         let expired: Vec<_> = connections
             .iter()
-            .filter(|(_, conn)| conn.last_activity < last_unexpired_timestamp)
-            .map(|(meta, c)| (*meta, c.log_id.clone()))
+            .filter(|(_, conn)| conn.lock().unwrap().last_activity < last_unexpired_timestamp)
+            .map(|(meta, c)| (*meta, c.lock().unwrap().log_id.clone()))
             .collect();
 
         for (meta, id) in expired {
@@ -283,11 +309,23 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> datagram_pipe::DuplexPi
     for DuplexPipe<F>
 {
     async fn exchange(&mut self) -> io::Result<()> {
-        loop {
+        let res = loop {
             match tokio::time::timeout(self.timeout / 4, self.exchange_once()).await {
-                Ok(x) => return x,
+                Ok(x) => break x,
                 Err(_) => self.on_timer_tick(),
             }
+        };
+
+        // Explicitly clean up all remaining connections on exit
+        let mut connections = self.left_pipe.shared.udp_connections.write().unwrap();
+        let remaining: Vec<_> = connections.keys().cloned().collect();
+        for meta in remaining {
+            if let Some(c) = connections.remove(&meta) {
+                log_id!(debug, c.lock().unwrap().log_id, "Cleaning up connection on pipe exit: {:?}", meta);
+            }
+            self.right_pipe.shared.forwarder_shared.on_connection_closed(&meta);
         }
+
+        res
     }
 }

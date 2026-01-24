@@ -8,8 +8,10 @@ extern "C" {
 }
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use socket2::Socket;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6, UdpSocket};
+use std::os::unix::io::AsRawFd;
 
 pub(crate) const MIN_LINK_MTU: usize = 1280;
 pub(crate) const MIN_IPV4_HEADER_SIZE: usize = 20;
@@ -78,12 +80,25 @@ where
     }
 }
 
+
+
 pub(crate) fn make_udp_socket(is_v4: bool) -> io::Result<UdpSocket> {
-    if is_v4 {
-        UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))
+    let socket = if is_v4 {
+        UdpSocket::bind(SocketAddr::from((Ipv4Addr::UNSPECIFIED, 0)))?
     } else {
-        UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))
-    }
+        UdpSocket::bind(SocketAddr::from((Ipv6Addr::UNSPECIFIED, 0)))?
+    };
+
+    set_socket_buffers(&socket)?;
+    Ok(socket)
+}
+
+fn set_socket_buffers(socket: &UdpSocket) -> io::Result<()> {
+    let sock = Socket::from(socket.try_clone()?);
+    let size = 4 * 1024 * 1024; // 4MB
+    sock.set_recv_buffer_size(size)?;
+    sock.set_send_buffer_size(size)?;
+    Ok(())
 }
 
 /// https://www.rfc-editor.org/rfc/rfc9000.html#section-16
@@ -191,6 +206,83 @@ pub(crate) fn set_socket_ttl(fd: libc::c_int, is_ipv4: bool, ttl: u8) -> io::Res
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
+pub(crate) fn send_udp_gso_to(
+    socket: &tokio::net::UdpSocket,
+    data: &[u8],
+    peer: &SocketAddr,
+    segment_size: usize,
+) -> io::Result<()> {
+    if segment_size >= data.len() {
+        return match socket.try_send_to(data, *peer) {
+            Ok(_) => Ok(()),
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+            Err(e) => Err(e),
+        };
+    }
+
+
+
+    const UDP_SEGMENT: libc::c_int = 103;
+
+    let fd = socket.as_raw_fd();
+    let (mut sockaddr, sockaddr_len) = socket_addr_to_libc(peer);
+    
+    let mut iov = libc::iovec {
+        iov_base: data.as_ptr() as *mut libc::c_void,
+        iov_len: data.len(),
+    };
+
+    let mut control = [0u8; unsafe { libc::CMSG_SPACE(std::mem::size_of::<u16>() as u32) as usize }];
+    
+    let mut msg = libc::msghdr {
+        msg_name: &mut sockaddr as *mut _ as *mut libc::c_void,
+        msg_namelen: sockaddr_len,
+        msg_iov: &mut iov,
+        msg_iovlen: 1,
+        msg_control: control.as_mut_ptr() as *mut libc::c_void,
+        msg_controllen: control.len() as _,
+        msg_flags: 0,
+    };
+
+    unsafe {
+        let cmsg = libc::CMSG_FIRSTHDR(&msg);
+        if !cmsg.is_null() {
+            (*cmsg).cmsg_level = libc::SOL_UDP;
+            (*cmsg).cmsg_type = UDP_SEGMENT;
+            (*cmsg).cmsg_len = libc::CMSG_LEN(std::mem::size_of::<u16>() as u32) as _;
+            *(libc::CMSG_DATA(cmsg) as *mut u16) = segment_size as u16;
+            msg.msg_controllen = (*cmsg).cmsg_len as _;
+        }
+
+        let ret = libc::sendmsg(fd, &msg, 0);
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                return Ok(());
+            }
+            return Err(err);
+        }
+    }
+    
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn send_udp_gso_to(
+    socket: &tokio::net::UdpSocket,
+    data: &[u8],
+    peer: &SocketAddr,
+    _segment_size: usize,
+) -> io::Result<()> {
+    match socket.try_send_to(data, *peer) {
+        Ok(_) => Ok(()),
+        Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+
 pub(crate) fn socket_addr_to_libc(addr: &SocketAddr) -> (libc::sockaddr_storage, libc::socklen_t) {
     unsafe {
         let mut storage = std::mem::zeroed();
@@ -200,7 +292,7 @@ pub(crate) fn socket_addr_to_libc(addr: &SocketAddr) -> (libc::sockaddr_storage,
                 let storage = &mut storage as *mut _ as *mut libc::sockaddr_in;
                 (*storage).sin_family = libc::AF_INET as libc::sa_family_t;
                 (*storage).sin_port = addr.port().to_be();
-                (*storage).sin_addr.s_addr = u32::from_ne_bytes((*addr).ip().octets());
+                (*storage).sin_addr.s_addr = u32::from_be_bytes(addr.ip().octets());
                 std::mem::size_of::<libc::sockaddr_in>()
             }
             SocketAddr::V6(addr) => {
@@ -218,46 +310,188 @@ pub(crate) fn socket_addr_to_libc(addr: &SocketAddr) -> (libc::sockaddr_storage,
     }
 }
 
-pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> SocketAddr {
+pub(crate) fn libc_to_socket_addr(addr: &libc::sockaddr_storage) -> Option<SocketAddr> {
     match addr.ss_family as libc::c_int {
         libc::AF_INET => unsafe {
             let addr = &*(addr as *const _ as *const libc::sockaddr_in);
-            SocketAddrV4::new(
-                Ipv4Addr::from(addr.sin_addr.s_addr.to_ne_bytes()),
+            Some(SocketAddrV4::new(
+                Ipv4Addr::from(addr.sin_addr.s_addr.to_be_bytes()),
                 u16::from_be(addr.sin_port),
             )
-            .into()
+            .into())
         },
         libc::AF_INET6 => unsafe {
             let addr = &*(addr as *const _ as *const libc::sockaddr_in6);
-            SocketAddrV6::new(
+            Some(SocketAddrV6::new(
                 Ipv6Addr::from(addr.sin6_addr.s6_addr),
                 u16::from_be(addr.sin6_port),
                 addr.sin6_flowinfo,
                 addr.sin6_scope_id,
             )
-            .into()
+            .into())
         },
-        _ => unreachable!(),
+        _ => None,
     }
 }
 
+/// Helper to hold memory for recvmmsg in a way that matches kernel expectations
+#[cfg(target_os = "linux")]
+pub(crate) struct RecvMsgBatch {
+    pub(crate) msgs: Vec<libc::mmsghdr>,
+    pub(crate) iovecs: Vec<libc::iovec>,
+    pub(crate) addrs: Vec<libc::sockaddr_storage>,
+}
+
+#[cfg(target_os = "linux")]
+impl RecvMsgBatch {
+    pub fn new(count: usize) -> Self {
+        Self {
+            msgs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+            iovecs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+            addrs: (0..count).map(|_| unsafe { std::mem::zeroed() }).collect(),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+unsafe impl Send for RecvMsgBatch {}
+#[cfg(target_os = "linux")]
+unsafe impl Sync for RecvMsgBatch {}
+
+/// Receive multiple datagrams at once using recvmmsg
+#[cfg(target_os = "linux")]
+pub(crate) fn recv_mmsg_dgram(
+    fd: libc::c_int,
+    batch: &mut RecvMsgBatch,
+    buffers: &mut [bytes::BytesMut],
+) -> io::Result<usize> {
+    let count = batch.msgs.len().min(buffers.len());
+    
+    // Initialize/Update pointers for the batch
+    for i in 0..count {
+        let buf = &mut buffers[i];
+        
+        // Ensure buffer is empty and we write from the very beginning
+        buf.clear();
+        if buf.capacity() < MAX_IP_PACKET_SIZE {
+            buf.reserve(MAX_IP_PACKET_SIZE);
+        }
+        
+        // Safety: We use the raw pointer to the underlying buffer.
+        // Since we just cleared it, the entire capacity is available for writing.
+        let dst = buf.as_mut_ptr();
+        let capacity = buf.capacity();
+        
+        // Setup iovec
+        batch.iovecs[i].iov_base = dst as *mut libc::c_void;
+        batch.iovecs[i].iov_len = capacity;
+        
+        // Setup mmsghdr
+        let m = &mut batch.msgs[i];
+        m.msg_len = 0; // Reset received length
+        
+        let mh = &mut m.msg_hdr;
+        mh.msg_name = &mut batch.addrs[i] as *mut _ as *mut libc::c_void;
+        mh.msg_namelen = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
+        mh.msg_iov = &mut batch.iovecs[i];
+        mh.msg_iovlen = 1;
+        mh.msg_control = std::ptr::null_mut();
+        mh.msg_controllen = 0;
+        mh.msg_flags = 0;
+    }
+    
+    unsafe {
+        let ret = libc::recvmmsg(
+            fd,
+            batch.msgs.as_mut_ptr(),
+            count as libc::c_uint,
+            libc::MSG_DONTWAIT,
+            std::ptr::null_mut(),
+        );
+
+        if ret < 0 {
+            let err = io::Error::last_os_error();
+            if err.kind() == io::ErrorKind::WouldBlock {
+                return Ok(0);
+            }
+            log::error!("recvmmsg failed: {}", err);
+            return Err(err);
+        }
+
+        let n_msgs = ret as usize;
+        if n_msgs > 0 {
+            if std::env::var("TRUSTTUNNEL_GRO_DEBUG").unwrap_or_default() == "true" {
+                 log::info!("GRO: Received batch of {} packets", n_msgs);
+                 for i in 0..n_msgs {
+                    let len = batch.msgs[i].msg_len as usize;
+                    let cap = buffers[i].capacity();
+                    let addr_str = libc_to_socket_addr(&batch.addrs[i])
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    log::info!("GRO Packet {}: len={} cap={} src={}", i, len, cap, addr_str);
+                 }
+            } else {
+                 log::info!("recvmmsg received {} packets", n_msgs);
+            }
+        }
+
+        for i in 0..n_msgs {
+             let len = batch.msgs[i].msg_len as usize;
+             buffers[i].advance_mut(len);
+        }
+
+        Ok(n_msgs)
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) struct RecvMsgBatch;
+
+#[cfg(not(target_os = "linux"))]
+impl RecvMsgBatch {
+    pub fn new(_count: usize) -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+unsafe impl Send for RecvMsgBatch {}
+#[cfg(not(target_os = "linux"))]
+unsafe impl Sync for RecvMsgBatch {}
+
+/// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
+/// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
 /// Do [`libc::recvfrom`] over `fd` in a buffer of `buffer_size` size.
 /// If [`None`], `buffer_size` defaults to [`MIN_LINK_MTU`].
 pub(crate) fn recv_from(
+
     fd: libc::c_int,
     buffer_size: Option<usize>,
 ) -> io::Result<(IpAddr, Bytes)> {
-    let mut buffer = BytesMut::zeroed(buffer_size.unwrap_or(MIN_LINK_MTU));
+    let mut buffer = BytesMut::with_capacity(buffer_size.unwrap_or(MIN_LINK_MTU));
+    let addr = recv_from_buf(fd, &mut buffer)?;
+    Ok((addr, buffer.freeze()))
+}
 
+pub(crate) fn recv_from_buf(fd: libc::c_int, buffer: &mut BytesMut) -> io::Result<IpAddr> {
     unsafe {
         let mut peer = std::mem::zeroed::<libc::sockaddr_storage>();
         let mut peer_len = std::mem::size_of_val(&peer) as libc::socklen_t;
         let flags = libc::MSG_DONTWAIT;
+        
+        // Ensure we have some space
+        if buffer.capacity() == 0 {
+            buffer.reserve(MIN_LINK_MTU);
+        }
+        
+        // Get pointer to uninitialized part
+        let dst = buffer.chunk_mut().as_mut_ptr();
+        let capacity = buffer.chunk_mut().len(); // Available space
+        
         let r = libc::recvfrom(
             fd,
-            buffer.as_mut_ptr() as *mut libc::c_void,
-            buffer.len(),
+            dst as *mut libc::c_void,
+            capacity,
             flags,
             &mut peer as *mut libc::sockaddr_storage as *mut libc::sockaddr,
             &mut peer_len as *mut _,
@@ -266,9 +500,11 @@ pub(crate) fn recv_from(
             return Err(io::Error::last_os_error());
         }
 
-        buffer.truncate(r as usize);
-
-        Ok((libc_to_socket_addr(&peer).ip(), buffer.freeze()))
+        buffer.advance_mut(r as usize);
+        match libc_to_socket_addr(&peer) {
+            Some(addr) => Ok(addr.ip()),
+            None => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid address family")),
+        }
     }
 }
 
@@ -315,7 +551,15 @@ pub(crate) fn skip_ipv6_header(mut packet: Bytes) -> Option<(libc::c_int, Bytes)
                 }
                 next_protocol = packet.get_u8() as libc::c_int;
                 let header_ext_length = packet.get_u8() as usize;
-                packet.advance(header_ext_length);
+                let header_bytes = (header_ext_length + 1) * 8;
+                if header_bytes < 2 {
+                    return None;
+                }
+                let remaining = header_bytes - 2;
+                if packet.len() < remaining {
+                    return None;
+                }
+                packet.advance(remaining);
             }
             libc::IPPROTO_FRAGMENT => {
                 const IPV6_FRAGMENT_EXT_LENGTH: usize = 8;
@@ -511,7 +755,7 @@ mod tests {
             (*(&sa as *const libc::sockaddr_storage as *const libc::sockaddr_in)).sin_port
         });
 
-        let sa = libc_to_socket_addr(&sa);
+        let sa = libc_to_socket_addr(&sa).unwrap();
         assert_eq!(sa.ip(), ip);
         assert_eq!(sa.port(), port);
     }
@@ -528,7 +772,7 @@ mod tests {
             (*(&sa as *const libc::sockaddr_storage as *const libc::sockaddr_in6)).sin6_port
         });
 
-        let sa = libc_to_socket_addr(&sa);
+        let sa = libc_to_socket_addr(&sa).unwrap();
         assert_eq!(sa.ip(), ip);
         assert_eq!(sa.port(), port);
     }

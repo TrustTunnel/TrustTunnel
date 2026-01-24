@@ -49,7 +49,7 @@ struct DatagramMultiplexer {
 
 struct DatagramEncoder<D> {
     encoder: Box<dyn http_datagram_codec::Encoder<Datagram = D>>,
-    sink: Box<dyn http_codec::DroppingSink>,
+    sink: Box<dyn pipe::Sink>,
 }
 
 struct DatagramDecoder<D> {
@@ -301,7 +301,7 @@ impl downstream::PendingRequest for DatagramMultiplexer {
                     pending_bytes: Default::default(),
                 }),
                 Box::new(DatagramEncoder {
-                    sink: sink.send_ok_response(false)?.into_datagram_sink(),
+                    sink: sink.send_ok_response(false)?.into_pipe_sink(),
                     encoder: Box::<http_udp_codec::Encoder>::default(),
                 }),
             )),
@@ -312,7 +312,7 @@ impl downstream::PendingRequest for DatagramMultiplexer {
                     pending_bytes: Default::default(),
                 }),
                 Box::new(DatagramEncoder {
-                    sink: sink.send_ok_response(false)?.into_datagram_sink(),
+                    sink: sink.send_ok_response(false)?.into_pipe_sink(),
                     encoder: Box::<http_icmp_codec::Encoder>::default(),
                 }),
             )),
@@ -381,13 +381,24 @@ impl<D: Send> datagram_pipe::Sink for DatagramEncoder<D> {
     type Input = D;
 
     async fn write(&mut self, datagram: D) -> io::Result<datagram_pipe::SendStatus> {
-        match self.encoder.encode_packet(&datagram) {
+        let bit_len = 0; // Don't know length yet
+        
+        let encoded = match self.encoder.encode_packet(&datagram) {
             None => {
                 debug!("Failed to encode datagram");
-                Ok(datagram_pipe::SendStatus::Dropped)
+                return Ok(datagram_pipe::SendStatus::Dropped);
             }
-            Some(encoded) => self.sink.write(encoded),
-        }
+            Some(encoded) => encoded,
+        };
+
+        // write_all() ensures we wait until EVERYTHING is written.
+        // This prevents partial writes which would corrupt the stream state (since we are tunneling datagrams).
+        log::info!("HARDCORE UDP TX: len={}", encoded.len());
+        self.sink.write_all(encoded).await?;
+        self.sink.flush().await?;
+        
+        Ok(datagram_pipe::SendStatus::Sent)
+        
     }
 }
 

@@ -7,9 +7,9 @@ use crate::forwarder::IcmpMultiplexer;
 use crate::settings::Settings;
 use crate::{datagram_pipe, downstream, forwarder, icmp_utils, log_utils, net_utils, utils};
 use async_trait::async_trait;
-use bytes::Bytes;
+use bytes::{Buf, Bytes};
 use std::collections::btree_map::Entry;
-use std::collections::{BTreeMap, HashMap, LinkedList};
+use std::collections::{BTreeMap, HashMap};
 use std::io;
 use std::io::ErrorKind;
 use std::net::{IpAddr, SocketAddr};
@@ -35,7 +35,7 @@ struct ReplyWaiter {
 #[derive(Default)]
 struct Listeners {
     reply_waiters: HashMap<icmp_utils::Echo, ReplyWaiter>,
-    deadlines: BTreeMap<Instant, LinkedList<icmp_utils::Echo>>,
+    deadlines: BTreeMap<Instant, Vec<icmp_utils::Echo>>,
 }
 
 #[derive(Default)]
@@ -201,7 +201,12 @@ impl IcmpForwarder {
                 .cloned();
             match closest_deadline {
                 None => self.deadline_waker_rx.notified().await,
-                Some(x) => tokio::time::sleep_until(x).await,
+                Some(x) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep_until(x) => (),
+                        _ = self.deadline_waker_rx.notified() => (),
+                    }
+                }
             }
 
             let mut listeners = self.shared.listeners.lock().unwrap();
@@ -227,10 +232,13 @@ impl IcmpForwarder {
     }
 
     async fn listen_v4(&self) -> io::Result<(IpAddr, icmp_utils::Message)> {
+        let mut buffer = bytes::BytesMut::with_capacity(net_utils::MAX_IP_PACKET_SIZE);
         loop {
-            let (peer, packet) =
-                Self::listen_socket(self.shared.sockets.read().await.v4.as_ref().unwrap()).await?;
+            buffer.clear();
+            let peer =
+                Self::listen_socket(self.shared.sockets.read().await.v4.as_ref().unwrap(), &mut buffer).await?;
 
+            let packet = buffer.split().freeze();
             match icmp_utils::v4::Message::deserialize(packet.clone()) {
                 Ok(x) => break Ok((peer, icmp_utils::Message::from(x))),
                 Err(e) => {
@@ -247,8 +255,11 @@ impl IcmpForwarder {
 
     async fn listen_v6(&self) -> io::Result<(IpAddr, icmp_utils::Message)> {
         if let Some(socket) = self.shared.sockets.read().await.v6.as_ref() {
+            let mut buffer = bytes::BytesMut::with_capacity(net_utils::MAX_IP_PACKET_SIZE);
             loop {
-                let (peer, packet) = Self::listen_socket(socket).await?;
+                buffer.clear();
+                let peer = Self::listen_socket(socket, &mut buffer).await?;
+                let packet = buffer.split().freeze();
                 match icmp_utils::v6::Message::deserialize(packet) {
                     Ok(x) => break Ok((peer, icmp_utils::Message::from(x))),
                     Err(e) => {
@@ -262,33 +273,59 @@ impl IcmpForwarder {
         }
     }
 
-    async fn listen_socket(sock: &RawPacketStream) -> io::Result<(IpAddr, Bytes)> {
+    async fn listen_socket(sock: &RawPacketStream, buffer: &mut bytes::BytesMut) -> io::Result<IpAddr> {
         loop {
             let mut guard = sock.inner.readable().await?;
-            let (peer, packet) = match guard.try_io(|x| net_utils::recv_from(x.as_raw_fd(), None)) {
+            let peer = match guard.try_io(|x| net_utils::recv_from_buf(x.as_raw_fd(), buffer)) {
                 Ok(x) => x?,
                 Err(_would_block) => continue,
             };
+            
             trace!(
                 "Received ICMP: peer={} bytes={:?}",
                 peer,
-                utils::hex_dump(&packet)
+                utils::hex_dump(&buffer)
             );
 
             if peer.is_ipv4() {
-                match net_utils::skip_ipv4_header(packet) {
-                    None => debug!("Dropping ICMPv4 packet with invalid IP header"),
-                    Some((proto, payload)) if proto == libc::IPPROTO_ICMP => {
-                        return Ok((peer, payload))
-                    }
-                    Some((proto, payload)) => debug!(
-                        "Dropping non-ICMP packet: proto={}, payload={}",
-                        proto,
-                        utils::hex_dump(&payload)
-                    ),
+                // Parse IPv4 header directly from buffer without copying
+                // IPv4 header format: first byte contains version (high nibble) and IHL (low nibble)
+                // IHL (Internet Header Length) is in 32-bit words, so multiply by 4 for bytes
+                // Protocol field is at offset 9
+                const MIN_IPV4_HEADER_SIZE: usize = 20;
+                
+                if buffer.len() < MIN_IPV4_HEADER_SIZE {
+                    debug!("Dropping ICMPv4 packet: too short for IPv4 header");
+                    buffer.clear();
+                    continue;
+                }
+                
+                let first_byte = buffer[0];
+                let version = (first_byte >> 4) & 0x0f;
+                let header_len = ((first_byte & 0x0f) * 4) as usize;
+                
+                // Validate: must be IPv4 (version 4) and header length >= 20
+                if version != 4 || header_len < MIN_IPV4_HEADER_SIZE || header_len > buffer.len() {
+                    debug!("Dropping ICMPv4 packet with invalid IP header: version={}, header_len={}", version, header_len);
+                    buffer.clear();
+                    continue;
+                }
+                
+                // Protocol field is at offset 9 in IPv4 header
+                let proto = buffer[9] as libc::c_int;
+                
+                if proto == libc::IPPROTO_ICMP {
+                    // Strip the IPv4 header to get ICMP payload
+                    buffer.advance(header_len);
+                    return Ok(peer);
+                } else {
+                    debug!("Dropping non-ICMP packet: proto={}", proto);
+                    buffer.clear();
+                    continue;
                 }
             } else {
-                return Ok((peer, packet));
+                // IPv6 - no header stripping needed for raw sockets
+                return Ok(peer);
             }
         }
     }
@@ -360,6 +397,9 @@ impl datagram_pipe::Sink for IcmpSink {
                 .unwrap()
                 .request_timeout;
         let mut listeners = forwarder_shared.listeners.lock().unwrap();
+
+        let earliest_before = listeners.deadlines.keys().next().cloned();
+
         listeners.reply_waiters.insert(
             echo.clone(),
             ReplyWaiter {
@@ -370,14 +410,16 @@ impl datagram_pipe::Sink for IcmpSink {
 
         match listeners.deadlines.entry(deadline) {
             Entry::Vacant(e) => {
-                e.insert(LinkedList::from([echo.clone()]));
-                if listeners.deadlines.len() == 1 {
-                    forwarder_shared.deadline_waker_tx.notify_one();
-                }
+                e.insert(vec![echo.clone()]);
             }
             Entry::Occupied(mut e) => {
-                e.get_mut().push_back(echo.clone());
+                e.get_mut().push(echo.clone());
             }
+        }
+
+        let earliest_after = listeners.deadlines.keys().next().cloned();
+        if earliest_before != earliest_after {
+            forwarder_shared.deadline_waker_tx.notify_one();
         }
 
         Ok(datagram_pipe::SendStatus::Sent)

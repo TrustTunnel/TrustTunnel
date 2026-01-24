@@ -126,8 +126,8 @@ max_frame_size = 16384
 header_table_size = 65536
 
 [listen_protocols.quic]
-recv_udp_payload_size = 1350
-send_udp_payload_size = 1350
+recv_udp_payload_size = 1200
+send_udp_payload_size = 1200
 initial_max_data = 104857600
 initial_max_stream_data_bidi_local = 1048576
 initial_max_stream_data_bidi_remote = 1048576
@@ -274,8 +274,8 @@ Configure which protocols the endpoint accepts. At least one protocol must be en
 
 | Setting | Type | Default | Description |
 | ------- | ---- | ------- | ----------- |
-| `recv_udp_payload_size` | Integer | `1350` | Maximum received UDP payload size |
-| `send_udp_payload_size` | Integer | `1350` | Maximum sent UDP payload size |
+| `recv_udp_payload_size` | Integer | `1200` | Maximum received UDP payload size |
+| `send_udp_payload_size` | Integer | `1200` | Maximum sent UDP payload size |
 | `initial_max_data` | Integer | `104857600` | Initial max connection data (100 MB) |
 | `initial_max_stream_data_bidi_local` | Integer | `1048576` | Local bidirectional stream flow control (1 MB) |
 | `initial_max_stream_data_bidi_remote` | Integer | `1048576` | Remote bidirectional stream flow control (1 MB) |
