@@ -208,6 +208,7 @@ Required in non-interactive mode."#,
 
     println!("Welcome to the setup wizard");
 
+    let mut built_settings: Option<Settings> = None;
     let library_settings_path = find_existent_settings::<Settings>(".")
         .and_then(|fname| {
             ask_for_agreement(&format!("Use the existing library settings {}?", fname))
@@ -235,6 +236,7 @@ Required in non-interactive mode."#,
                 );
                 fs::write(&path, doc).expect("Couldn't write the library settings to a file");
             }
+            built_settings = Some(built.settings);
             Some(path)
         });
 
@@ -272,7 +274,16 @@ Required in non-interactive mode."#,
             .unwrap_or((None, None, None));
 
     if let (Some(l), Some(h)) = (library_settings_path, hosts_settings_path) {
-        print_setup_complete_summary(&l, &h, cert_path.as_deref(), key_path.as_deref());
+        if built_settings.is_none() {
+            built_settings = load_settings_from_file(&l);
+        }
+        print_setup_complete_summary(
+            &l,
+            &h,
+            cert_path.as_deref(),
+            key_path.as_deref(),
+            built_settings.as_ref(),
+        );
     } else {
         println!("To see the full set of available options, run the following command:");
         println!("\ttrusttunnel_endpoint -h");
@@ -284,6 +295,7 @@ fn print_setup_complete_summary(
     hosts_settings_path: &str,
     cert_path: Option<&str>,
     key_path: Option<&str>,
+    settings: Option<&Settings>,
 ) {
     println!();
     println!("═══════════════════════════════════════════════════════════════");
@@ -326,6 +338,31 @@ fn print_setup_complete_summary(
     println!("3. Use the exported config with:");
     println!("   • TrustTunnel CLI Client - Pass to setup_wizard --endpoint_config");
     println!("   • TrustTunnel Flutter Client - Enter the config manually");
+    if let Some(settings) = settings {
+        println!();
+        println!("Expected request paths:");
+        println!("  • Tunnel token: SHA-256(username:password) in hex");
+        if *settings.get_ping_enable() {
+            match settings.get_ping_path().as_ref() {
+                Some(path) => println!("  • Ping: {}", path),
+                None => println!("  • Ping: legacy markers (x-ping/sec-fetch-mode)"),
+            }
+        } else {
+            println!("  • Ping: disabled");
+        }
+        if *settings.get_speedtest_enable() {
+            match settings.get_speedtest_path().as_ref() {
+                Some(path) => println!("  • Speedtest: {}", path),
+                None => println!("  • Speedtest: legacy /speed/..."),
+            }
+        } else {
+            println!("  • Speedtest: disabled");
+        }
+        println!(
+            "  • Allow without token: {}",
+            settings.get_allow_without_token()
+        );
+    }
     println!();
     const CONFIG_URL: &str =
         "https://github.com/TrustTunnel/TrustTunnel/blob/master/CONFIGURATION.md";
@@ -334,6 +371,12 @@ fn print_setup_complete_summary(
         CONFIG_URL, CONFIG_URL
     );
     println!("═══════════════════════════════════════════════════════════════");
+}
+
+fn load_settings_from_file(path: &str) -> Option<Settings> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| toml::from_str::<Settings>(&content).ok())
 }
 
 fn find_existent_settings<T: serde::de::DeserializeOwned>(path: &str) -> Option<String> {
