@@ -49,6 +49,8 @@ pub(crate) enum Channel {
     Speedtest,
     /// The connection is used for proxying requests further (see [`crate::reverse_proxy`])
     ReverseProxy,
+    /// The connection should be rejected with a generic HTTP response
+    Deny,
 }
 
 pub(crate) type HostnamePort = (String, u16);
