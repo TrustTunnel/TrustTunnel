@@ -1,5 +1,6 @@
 use crate::user_interaction::{ask_for_agreement, ask_for_input, checked_overwrite};
 use std::fs;
+use std::io::IsTerminal;
 use std::sync::{Mutex, MutexGuard};
 use trusttunnel::settings::{Settings, TlsHostsSettings};
 
@@ -166,6 +167,13 @@ Required in non-interactive mode."#,
         Some("interactive") => Mode::Interactive,
         _ => unreachable!(),
     };
+
+    if *MODE.lock().unwrap() == Mode::Interactive && !std::io::stdin().is_terminal() {
+        eprintln!("Error: Interactive mode requires a terminal (TTY).");
+        eprintln!("Please run setup_wizard from a terminal, or use non-interactive mode:");
+        eprintln!("  {} --help", std::env::args().next().unwrap_or_default());
+        std::process::exit(1);
+    }
 
     *PREDEFINED_PARAMS.lock().unwrap() = PredefinedParameters {
         listen_address: args.get_one::<String>(LISTEN_ADDRESS_PARAM_NAME).cloned(),
