@@ -181,6 +181,7 @@ pub struct Settings {
 }
 
 #[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
 pub struct TlsHostInfo {
     /// Used as a key for selecting a certificate chain in TLS handshake.
@@ -206,6 +207,7 @@ pub struct TlsHostInfo {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(test, derive(Default))]
 #[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
 pub struct TlsHostsSettings {
@@ -242,6 +244,7 @@ pub struct TlsHostsSettings {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
 pub struct ReverseProxySettings {
     /// The origin server address
@@ -269,9 +272,11 @@ pub enum ForwardProtocolSettings {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirectForwarderSettings {}
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct Socks5ForwarderSettings {
     /// The address of a proxy
@@ -287,6 +292,7 @@ pub struct Socks5ForwarderSettingsBuilder {
 
 /// The set of enabled client listener codecs
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
 pub struct ListenProtocolSettings {
     /// HTTP/1.1 listener settings
@@ -303,6 +309,7 @@ pub struct ListenProtocolSettings {
 /// The ICMP forwarding settings.
 /// Setting up this feature requires superuser rights on some systems.
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct IcmpSettings {
     /// The name of a network interface to bind the outbound ICMP socket to
@@ -326,6 +333,7 @@ pub struct IcmpSettings {
 
 /// The metrics gathering request handler settings
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct MetricsSettings {
     /// The address to listen on for settings export requests
@@ -343,6 +351,7 @@ pub struct MetricsSettings {
 
 /// The set of HTTP/1.1 listener codec settings
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct Http1Settings {
     /// Buffer size for outgoing traffic
@@ -352,6 +361,7 @@ pub struct Http1Settings {
 
 /// The set of HTTP/2 listener codec settings
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct Http2Settings {
     /// The initial window size (in octets) for connection-level flow control for received data
@@ -373,6 +383,7 @@ pub struct Http2Settings {
 
 /// The set of QUIC listener codec settings
 #[derive(Serialize, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct QuicSettings {
     /// The size of UDP payloads that the endpoint is willing to receive. UDP datagrams with
@@ -387,20 +398,25 @@ pub struct QuicSettings {
     pub(crate) initial_max_data: u64,
     /// The initial flow control limit for locally initiated bidirectional streams
     #[serde(default = "QuicSettings::default_initial_max_stream_data_bidi_local")]
+    #[serde(alias = "max_stream_data_bidi_local")]
     pub(crate) initial_max_stream_data_bidi_local: u64,
     /// The initial flow control limit for peer-initiated bidirectional streams
     #[serde(default = "QuicSettings::default_initial_max_stream_data_bidi_remote")]
+    #[serde(alias = "max_stream_data_bidi_remote")]
     pub(crate) initial_max_stream_data_bidi_remote: u64,
     /// The initial flow control limit for unidirectional streams
     #[serde(default = "QuicSettings::default_initial_max_stream_data_uni")]
+    #[serde(alias = "max_stream_data_uni")]
     pub(crate) initial_max_stream_data_uni: u64,
     /// The initial maximum number of bidirectional streams the endpoint that receives this
     /// transport parameter is permitted to initiate
     #[serde(default = "QuicSettings::default_initial_max_streams_bidi")]
+    #[serde(alias = "max_streams_bidi")]
     pub(crate) initial_max_streams_bidi: u64,
     /// The initial maximum number of unidirectional streams the endpoint that receives this
     /// transport parameter is permitted to initiate
     #[serde(default = "QuicSettings::default_initial_max_streams_uni")]
+    #[serde(alias = "max_streams_uni")]
     pub(crate) initial_max_streams_uni: u64,
     /// The maximum size of the connection window
     #[serde(default = "QuicSettings::default_max_connection_window")]
