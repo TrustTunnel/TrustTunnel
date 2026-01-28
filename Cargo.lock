@@ -3381,6 +3381,7 @@ dependencies = [
  "log",
  "once_cell",
  "rcgen",
+ "ring",
  "serde",
  "tokio",
  "toml",

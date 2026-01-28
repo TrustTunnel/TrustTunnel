@@ -203,6 +203,9 @@ pub async fn run_endpoint(listen_address: &SocketAddr) {
         })
         .allow_private_network_connections(true)
         .speedtest_enable(true)
+        .ping_enable(true)
+        .ping_path("/ping")
+        .speedtest_path("/speed")
         .build()
         .unwrap();
 

@@ -141,7 +141,8 @@ impl Http3Codec {
                 Ok(None)
             }
             QuicSocketEvent::Close(stream_id) => {
-                let _ = self.on_stream_shutdown(stream_id, None);
+                // Client finished sending request body; keep write side open for response.
+                let _ = self.on_stream_shutdown(stream_id, Some(quiche::Shutdown::Read));
                 Ok(None)
             }
         }

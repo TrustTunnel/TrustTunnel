@@ -2,6 +2,7 @@ use crate::http_codec::HttpCodec;
 use crate::shutdown::Shutdown;
 use crate::{http_codec, log_id, log_utils, pipe};
 use bytes::Bytes;
+use std::borrow::Cow;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -27,6 +28,7 @@ pub(crate) async fn listen(
     shutdown: Arc<Mutex<Shutdown>>,
     mut codec: Box<dyn HttpCodec>,
     timeout: Duration,
+    base_path: Option<String>,
     log_id: log_utils::IdChain<u64>,
 ) {
     let (mut shutdown_notification, _shutdown_completion) = {
@@ -41,7 +43,7 @@ pub(crate) async fn listen(
                 Err(e) => log_id!(debug, log_id, "Shutdown notification failure: {}", e),
             }
         },
-        _ = listen_inner(codec.as_mut(), timeout, &log_id) => (),
+        _ = listen_inner(codec.as_mut(), timeout, base_path.as_deref(), &log_id) => (),
     }
 
     if let Err(e) = codec.graceful_shutdown().await {
@@ -52,6 +54,7 @@ pub(crate) async fn listen(
 async fn listen_inner(
     codec: &mut dyn HttpCodec,
     timeout: Duration,
+    base_path: Option<&str>,
     log_id: &log_utils::IdChain<u64>,
 ) {
     let manager = Arc::new(SpeedtestManager::default());
@@ -60,7 +63,7 @@ async fn listen_inner(
             Ok(Ok(Some(x))) => {
                 let request_headers = x.request().request();
                 log_id!(trace, x.id(), "Received request: {:?}", request_headers);
-                match prepare_speedtest(request_headers) {
+                match prepare_speedtest(request_headers, base_path) {
                     Ok(Speedtest::Download(n)) => {
                         manager.running_tests_num.fetch_add(1, Ordering::AcqRel);
                         tokio::spawn({
@@ -122,16 +125,32 @@ async fn listen_inner(
     }
 }
 
-fn prepare_speedtest(request: &http_codec::RequestHeaders) -> Result<Speedtest, String> {
-    let path = if let Some(x) = request
-        .uri
-        .path()
+fn prepare_speedtest(
+    request: &http_codec::RequestHeaders,
+    base_path: Option<&str>,
+) -> Result<Speedtest, String> {
+    let original_path = request.uri.path();
+    let path = if let Some(base_path) = base_path {
+        if let Some(x) = original_path.strip_prefix(base_path) {
+            if x.starts_with('/') {
+                Cow::Borrowed(x)
+            } else {
+                Cow::Owned(format!("/{x}"))
+            }
+        } else {
+            Cow::Borrowed(original_path)
+        }
+    } else {
+        Cow::Borrowed(original_path)
+    };
+
+    let path = if let Some(x) = path
         .strip_prefix('/')
         .and_then(|x| x.strip_prefix(SKIPPABLE_PATH_SEGMENT))
     {
         x
     } else {
-        request.uri.path()
+        path.as_ref()
     };
 
     match request.method {
