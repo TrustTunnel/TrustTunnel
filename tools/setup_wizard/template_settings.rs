@@ -196,15 +196,15 @@ send_udp_payload_size = {}
 {}
 initial_max_data = {}
 {}
-max_stream_data_bidi_local = {}
+initial_max_stream_data_bidi_local = {}
 {}
-max_stream_data_bidi_remote = {}
+initial_max_stream_data_bidi_remote = {}
 {}
-max_stream_data_uni = {}
+initial_max_stream_data_uni = {}
 {}
-max_streams_bidi = {}
+initial_max_streams_bidi = {}
 {}
-max_streams_uni = {}
+initial_max_streams_uni = {}
 {}
 max_connection_window = {}
 {}
