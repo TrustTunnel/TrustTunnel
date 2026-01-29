@@ -1,10 +1,11 @@
 #include <unistd.h>
 #include <memory.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
 #ifdef __linux__
 #include <linux/icmp.h>
 #endif
 #include <netinet/icmp6.h>
-#include <sys/socket.h>
 
 
 /**
@@ -49,7 +50,7 @@ int set_icmpv6_filter(int fd) {
 }
 
 int bind_to_interface_by_index(int fd, int family, unsigned idx) {
-#ifndef __linux__
+#ifdef __APPLE__
     int level = IPPROTO_IP;
     int option = IP_BOUND_IF;
     if (family == AF_INET6) {
@@ -59,6 +60,7 @@ int bind_to_interface_by_index(int fd, int family, unsigned idx) {
 
     return setsockopt(fd, level, option, &idx, sizeof(idx));
 #else
+    /* Linux and FreeBSD don't have IP_BOUND_IF */
     (void)fd;
     (void)family;
     (void)idx;

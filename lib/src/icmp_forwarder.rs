@@ -397,7 +397,7 @@ impl RawPacketStream {
         };
 
         unsafe {
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             let fd = libc::socket(family, libc::SOCK_RAW, protocol);
             #[cfg(target_os = "macos")]
             let fd = libc::socket(family, libc::SOCK_DGRAM, protocol);
