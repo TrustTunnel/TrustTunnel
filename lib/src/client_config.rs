@@ -1,4 +1,7 @@
-use crate::{authentication::registry_based, settings::TlsHostsSettings, utils::ToTomlComment};
+use crate::{
+    authentication, authentication::registry_based, settings::TlsHostsSettings,
+    utils::ToTomlComment,
+};
 #[cfg(feature = "rt_doc")]
 use macros::{Getter, RuntimeDoc};
 use once_cell::sync::Lazy;
@@ -27,6 +30,7 @@ pub fn build(
         has_ipv6: true, // Hardcoded to true, client could change this himself
         username: user.username.clone(),
         password: user.password.clone(),
+        tunnel_token: authentication::tunnel_token_from_credentials(&user.username, &user.password),
         skip_verification: false,
         certificate: std::fs::read_to_string(&host.cert_chain_path)
             .expect("Failed to load certificate"),
@@ -48,6 +52,8 @@ pub struct ClientConfig {
     username: String,
     /// Password for authorization
     password: String,
+    /// Tunnel token for `X-Tunnel-Token` header (SHA-256 of `username:password`, hex)
+    tunnel_token: String,
     /// Skip the endpoint certificate verification?
     /// That is, any certificate is accepted with this one set to true.
     skip_verification: bool,
@@ -71,6 +77,7 @@ impl ClientConfig {
         doc["has_ipv6"] = value(self.has_ipv6);
         doc["username"] = value(&self.username);
         doc["password"] = value(&self.password);
+        doc["tunnel_token"] = value(&self.tunnel_token);
         doc["skip_verification"] = value(self.skip_verification);
         doc["certificate"] = value(&self.certificate);
         doc["upstream_protocol"] = value(&self.upstream_protocol);
@@ -101,6 +108,9 @@ username = ""
 password = ""
 
 {}
+tunnel_token = ""
+
+{}
 skip_verification = false
 
 {}
@@ -120,6 +130,7 @@ anti_dpi = false
         ClientConfig::doc_has_ipv6().to_toml_comment(),
         ClientConfig::doc_username().to_toml_comment(),
         ClientConfig::doc_password().to_toml_comment(),
+        ClientConfig::doc_tunnel_token().to_toml_comment(),
         ClientConfig::doc_skip_verification().to_toml_comment(),
         ClientConfig::doc_certificate().to_toml_comment(),
         ClientConfig::doc_upstream_protocol().to_toml_comment(),
