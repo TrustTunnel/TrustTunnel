@@ -4,9 +4,9 @@ use crate::net_utils::TcpDestination;
 use crate::tls_demultiplexer::Protocol;
 use crate::{
     authentication, core, datagram_pipe, downstream, http_codec, http_datagram_codec,
-    http_demultiplexer, http_forwarded_stream, http_icmp_codec, http_ping_handler,
-    http_speedtest_handler, http_udp_codec, log_id, log_utils, net_utils, pipe, reverse_proxy,
-    tunnel,
+    http_deny_handler, http_demultiplexer, http_forwarded_stream, http_icmp_codec,
+    http_ping_handler, http_speedtest_handler, http_udp_codec, log_id, log_utils, net_utils,
+    pipe, reverse_proxy, tunnel,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -112,7 +112,7 @@ impl Downstream for HttpDownstream {
             match channel {
                 net_utils::Channel::Tunnel => {
                     log_id!(trace, stream_id, "HTTP downstream: tunnel request");
-                    break Ok(Some(Box::new(PendingRequest {
+                    return Ok(Some(Box::new(PendingRequest {
                         stream,
                         id: stream_id,
                     })));
@@ -136,6 +136,7 @@ impl Downstream for HttpDownstream {
                             context.shutdown.clone(),
                             Box::new(http_codec::stream_into_codec(stream, protocol)),
                             context.settings.tls_handshake_timeout,
+                            context.settings.speedtest_path.clone(),
                             stream_id,
                         )
                         .await
@@ -154,6 +155,18 @@ impl Downstream for HttpDownstream {
                             )
                             .await
                         }
+                    });
+                }
+                net_utils::Channel::Deny => {
+                    log_id!(trace, stream_id, "HTTP downstream: deny request");
+                    tokio::spawn(async move {
+                        http_deny_handler::listen(
+                            context.shutdown.clone(),
+                            Box::new(http_codec::stream_into_codec(stream, protocol)),
+                            context.settings.tls_handshake_timeout,
+                            stream_id,
+                        )
+                        .await
                     });
                 }
             }

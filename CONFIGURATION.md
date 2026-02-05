@@ -249,6 +249,17 @@ action = "deny"
 | `udp_connections_timeout_secs` | Integer | `300` | UDP connection timeout (5 minutes) |
 | `credentials_file` | String | - | Path to credentials file |
 | `rules_file` | String | - | Path to rules file (optional) |
+| `speedtest_enable` | Boolean | `false` | Enable speedtest handler on main hosts |
+| `ping_enable` | Boolean | `false` | Enable ping handler on main hosts |
+| `ping_path` | String | - | Optional path prefix for ping on main hosts |
+| `speedtest_path` | String | - | Optional path prefix for speedtest on main hosts |
+| `allow_without_token` | Boolean | `true` | Allow tunnel requests without token (legacy compatibility) |
+
+Ping and speedtest are matched only via their configured paths. If a path is not set,
+the corresponding handler will not match requests on main hosts. Tunnel requests can be
+identified with `X-Tunnel-Token`, which is `SHA-256(username:password)` in hex. If the
+token header is present but invalid, requests fall back to reverse proxy when configured,
+otherwise they are denied with a generic `404 Not Found`.
 
 ### Listen Protocol Settings
 

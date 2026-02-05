@@ -3,6 +3,7 @@ use crate::user_interaction::{
 };
 use crate::Mode;
 use std::fs;
+use ring::rand::{SecureRandom, SystemRandom};
 use toml_edit::{ArrayOfTables, Item, Key, Table};
 use trusttunnel::authentication::registry_based::Client;
 use trusttunnel::settings::{
@@ -19,7 +20,7 @@ pub struct Built {
 }
 
 pub fn build() -> Built {
-    let builder = Settings::builder()
+    let mut builder = Settings::builder()
         .listen_address(
             crate::get_predefined_params()
                 .listen_address
@@ -36,7 +37,34 @@ pub fn build() -> Built {
         )
         .unwrap();
 
-    // Collect credentials first, then build settings
+    let allow_without_token =
+        select_variant("Allow tunnel without token? (legacy)", &["no", "yes"], Some(0)) == "yes";
+    builder = builder.allow_without_token(allow_without_token);
+
+    let ping_enable = select_variant("Enable ping check?", &["yes", "no"], Some(0)) == "yes";
+    if ping_enable {
+        let ping_path_default = default_path("ping");
+        let ping_path = ask_for_input::<String>(
+            "Ping check path (default: random)",
+            Some(ping_path_default),
+        );
+        builder = builder.ping_enable(true).ping_path(ping_path);
+    } else {
+        builder = builder.ping_enable(false);
+    }
+
+    let speedtest_enable =
+        select_variant("Enable speedtest?", &["yes", "no"], Some(1)) == "yes";
+    if speedtest_enable {
+        let speedtest_path_default = default_path("speedtest");
+        let speedtest_path = ask_for_input::<String>(
+            "Speedtest path (default: random)",
+            Some(speedtest_path_default),
+        );
+        builder = builder.speedtest_enable(true).speedtest_path(speedtest_path);
+    }
+
+    // Collect credentials last, then build settings
     let (credentials_path, clients) = build_credentials();
 
     Built {
@@ -52,6 +80,16 @@ pub fn build() -> Built {
         credentials_path,
         rules_path: build_rules(),
     }
+}
+
+fn random_token() -> String {
+    let mut bytes = [0u8; 16];
+    SystemRandom::new().fill(&mut bytes).unwrap();
+    hex::encode(bytes)
+}
+
+fn default_path(prefix: &str) -> String {
+    format!("/{prefix}-{}", random_token())
 }
 
 fn build_credentials() -> (String, Vec<Client>) {

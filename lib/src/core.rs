@@ -16,9 +16,10 @@ use crate::tls_demultiplexer::TlsDemux;
 use crate::tls_listener::{TlsAcceptor, TlsListener};
 use crate::tunnel::Tunnel;
 use crate::{
-    authentication, http_ping_handler, http_speedtest_handler, log_id, log_utils, metrics,
-    net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
+    authentication, http_deny_handler, http_ping_handler, http_speedtest_handler, log_id,
+    log_utils, metrics, net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
 };
+use log::warn;
 use socket2::SockRef;
 use std::io;
 use std::io::ErrorKind;
@@ -112,6 +113,8 @@ impl Core {
                 .map_err(Error::SettingsValidation)?;
         }
 
+        Self::warn_legacy_settings(&settings);
+
         let settings = Arc::new(settings);
 
         let (fatal_error, _fatal_error_rx) = watch::channel(None);
@@ -136,6 +139,27 @@ impl Core {
                 next_tunnel_id: Default::default(),
             }),
         })
+    }
+
+    fn warn_legacy_settings(settings: &Settings) {
+        if settings.ping_enable && settings.ping_path.is_none() {
+            warn!("Ping is enabled but ping_path is not set; ping requests will not match.");
+        }
+        if settings.speedtest_enable && settings.speedtest_path.is_none() {
+            warn!(
+                "Speedtest is enabled but speedtest_path is not set; speedtest requests will not match."
+            );
+        }
+        if settings.reverse_proxy.is_none() {
+            warn!(
+                "Reverse proxy is not configured; non-matching requests will be denied with 404."
+            );
+        }
+        if settings.allow_without_token {
+            warn!(
+                "Tunnel token is not enforced; tunnel requests without token are allowed."
+            );
+        }
     }
 
     /// Run an endpoint instance inside the caller provided asynchronous runtime.
@@ -490,6 +514,7 @@ impl Core {
                         }
                     },
                     context.settings.tls_handshake_timeout,
+                    context.settings.speedtest_path.clone(),
                     client_id,
                 )
                 .await
@@ -509,6 +534,25 @@ impl Core {
                         }
                     },
                     tls_connection_meta.sni,
+                    client_id,
+                )
+                .await
+            }
+            net_utils::Channel::Deny => {
+                http_deny_handler::listen(
+                    context.shutdown.clone(),
+                    match Self::make_tcp_http_codec(
+                        tls_connection_meta.protocol,
+                        core_settings,
+                        stream,
+                        client_id.clone(),
+                    ) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            return Err((client_id, format!("Failed to create HTTP codec: {}", e)))
+                        }
+                    },
+                    context.settings.tls_handshake_timeout,
                     client_id,
                 )
                 .await
@@ -579,6 +623,7 @@ impl Core {
                     context.shutdown.clone(),
                     Box::new(Http3Codec::new(socket, client_id.clone())),
                     context.settings.tls_handshake_timeout,
+                    context.settings.speedtest_path.clone(),
                     client_id,
                 )
                 .await
@@ -590,6 +635,15 @@ impl Core {
                     context.clone(),
                     Box::new(Http3Codec::new(socket, client_id.clone())),
                     sni,
+                    client_id,
+                )
+                .await
+            }
+            net_utils::Channel::Deny => {
+                http_deny_handler::listen(
+                    context.shutdown.clone(),
+                    Box::new(Http3Codec::new(socket, client_id.clone())),
+                    context.settings.tls_handshake_timeout,
                     client_id,
                 )
                 .await
