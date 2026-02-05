@@ -166,6 +166,101 @@ pub(crate) fn bind_to_interface(
     }
 }
 
+#[cfg(target_os = "freebsd")]
+pub(crate) fn bind_to_interface(
+    fd: libc::c_int,
+    family: libc::c_int,
+    name: &str,
+) -> io::Result<()> {
+    use std::ffi::CString;
+
+    // FreeBSD doesn't have SO_BINDTODEVICE (Linux) or IP_BOUND_IF (macOS).
+    // We bind the socket to the interface's IP address instead, which achieves
+    // the same effect of restricting traffic to that interface.
+    let c_name = CString::new(name).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidInput, "invalid interface name")
+    })?;
+
+    let mut ifaddrs: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs writes to our pointer, which we'll free with freeifaddrs
+    if unsafe { libc::getifaddrs(&mut ifaddrs) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    // RAII guard to ensure freeifaddrs is called
+    struct IfAddrsGuard(*mut libc::ifaddrs);
+    impl Drop for IfAddrsGuard {
+        fn drop(&mut self) {
+            // SAFETY: self.0 was allocated by getifaddrs
+            unsafe { libc::freeifaddrs(self.0) };
+        }
+    }
+    let _guard = IfAddrsGuard(ifaddrs);
+
+    let mut current = ifaddrs;
+    let mut bind_addr: Option<libc::sockaddr_storage> = None;
+
+    while !current.is_null() {
+        // SAFETY: current is not null (checked above) and points to valid ifaddrs from getifaddrs
+        let ifa = unsafe { &*current };
+
+        let names_match = !ifa.ifa_name.is_null() && {
+            // SAFETY: ifa_name is not null (checked above) and is a valid C string from getifaddrs
+            unsafe { libc::strcmp(ifa.ifa_name, c_name.as_ptr()) == 0 }
+        };
+
+        if names_match && !ifa.ifa_addr.is_null() {
+            // SAFETY: ifa_addr is not null (checked above)
+            let sa_family = unsafe { (*ifa.ifa_addr).sa_family } as libc::c_int;
+            if sa_family == family {
+                // SAFETY: zeroed sockaddr_storage is valid
+                let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
+                let len = if family == libc::AF_INET {
+                    std::mem::size_of::<libc::sockaddr_in>()
+                } else {
+                    std::mem::size_of::<libc::sockaddr_in6>()
+                };
+                // SAFETY: ifa_addr points to valid sockaddr of the appropriate family,
+                // and storage has enough space for either sockaddr_in or sockaddr_in6
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        ifa.ifa_addr as *const u8,
+                        &mut storage as *mut _ as *mut u8,
+                        len,
+                    );
+                }
+                bind_addr = Some(storage);
+                break;
+            }
+        }
+        current = ifa.ifa_next;
+    }
+
+    let storage = bind_addr.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "no {} address found for interface {}",
+                if family == libc::AF_INET { "IPv4" } else { "IPv6" },
+                name
+            ),
+        )
+    })?;
+
+    let addr_len = if family == libc::AF_INET {
+        std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t
+    } else {
+        std::mem::size_of::<libc::sockaddr_in6>() as libc::socklen_t
+    };
+
+    // SAFETY: storage contains a valid sockaddr_in or sockaddr_in6, fd is a valid socket
+    if unsafe { libc::bind(fd, &storage as *const _ as *const libc::sockaddr, addr_len) } != 0 {
+        return Err(io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
 pub(crate) fn set_socket_ttl(fd: libc::c_int, is_ipv4: bool, ttl: u8) -> io::Result<()> {
     unsafe {
         let (level, name) = if is_ipv4 {
