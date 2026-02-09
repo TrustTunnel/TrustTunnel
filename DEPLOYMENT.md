@@ -47,14 +47,15 @@
         ```bash
         nano /etc/docker/daemon.json
         ```
-    2.  Add the following configuration:
+    2.  Add the following configuration (using a Unique Local Address range `fd00::/8` is safer than public ranges for internal Docker networks):
         ```json
         {
           "ipv6": true,
-          "fixed-cidr-v6": "2001:db8:1::/64",
+          "fixed-cidr-v6": "fd00:0:0:1::/64",
           "ip6tables": true
         }
         ```
+        *Note: On newer Docker versions (v27+), some of these settings might be optional depending on your setup, but this configuration ensures consistent behavior across versions.*
     3.  Restart Docker:
         ```bash
         systemctl restart docker
