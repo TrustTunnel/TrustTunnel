@@ -1,5 +1,7 @@
 # CHANGELOG
 
+## 0.9.127
+
 - [Feature] Added GPG signing of the endpoint binaries.
 
 ## 0.9.122
