@@ -208,10 +208,10 @@ Required in non-interactive mode."#,
 
     println!("Welcome to the setup wizard");
 
-    let library_settings_path = find_existent_settings::<Settings>(".")
+    let library_settings_and_credentials_paths = find_existent_settings::<Settings>(".")
         .and_then(|fname| {
             ask_for_agreement(&format!("Use the existing library settings {}?", fname))
-                .then_some(fname)
+                .then_some((fname, library_settings::DEFAULT_CREDENTIALS_PATH.into()))
         })
         .or_else(|| {
             println!("Let's build the library settings");
@@ -235,7 +235,7 @@ Required in non-interactive mode."#,
                 );
                 fs::write(&path, doc).expect("Couldn't write the library settings to a file");
             }
-            Some(path)
+            Some((path, built.credentials_path))
         });
 
     let (hosts_settings_path, cert_path, key_path) =
@@ -271,8 +271,8 @@ Required in non-interactive mode."#,
             .map(|(p, c, k)| (Some(p), c, k))
             .unwrap_or((None, None, None));
 
-    if let (Some(l), Some(h)) = (library_settings_path, hosts_settings_path) {
-        print_setup_complete_summary(&l, &h, cert_path.as_deref(), key_path.as_deref());
+    if let (Some((l, c)), Some(h)) = (library_settings_and_credentials_paths, hosts_settings_path) {
+        print_setup_complete_summary(&l, &h, &c, cert_path.as_deref(), key_path.as_deref());
     } else {
         println!("To see the full set of available options, run the following command:");
         println!("\ttrusttunnel_endpoint -h");
@@ -282,6 +282,7 @@ Required in non-interactive mode."#,
 fn print_setup_complete_summary(
     lib_settings_path: &str,
     hosts_settings_path: &str,
+    credentials_path: &str,
     cert_path: Option<&str>,
     key_path: Option<&str>,
 ) {
@@ -298,7 +299,7 @@ fn print_setup_complete_summary(
     println!("  • {}    - TLS host configuration", hosts_settings_path);
     println!(
         "  • {}  - User credentials",
-        library_settings::DEFAULT_CREDENTIALS_PATH
+        credentials_path
     );
     if let Some(cert) = cert_path {
         println!("  • {}    - TLS certificate", cert);
