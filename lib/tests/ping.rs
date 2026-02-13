@@ -34,12 +34,9 @@ ping_tests! {
     sni_h1: sni_h1_client,
     sni_h2: sni_h2_client,
     sni_h3: sni_h3_client,
-    x_ping_h1: x_ping_h1_client,
-    x_ping_h2: x_ping_h2_client,
-    x_ping_h3: x_ping_h3_client,
-    navigate_h1: navigate_h1_client,
-    navigate_h2: navigate_h2_client,
-    navigate_h3: navigate_h3_client,
+    path_h1: path_h1_client,
+    path_h2: path_h2_client,
+    path_h3: path_h3_client,
 }
 
 async fn sni_h1_client(endpoint_address: &SocketAddr) -> http::StatusCode {
@@ -110,7 +107,7 @@ async fn sni_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
     conn.recv_response().await.status
 }
 
-async fn x_ping_h1_client(endpoint_address: &SocketAddr) -> http::StatusCode {
+async fn path_h1_client(endpoint_address: &SocketAddr) -> http::StatusCode {
     let stream =
         common::establish_tls_connection(common::MAIN_DOMAIN_NAME, endpoint_address, None).await;
 
@@ -118,18 +115,18 @@ async fn x_ping_h1_client(endpoint_address: &SocketAddr) -> http::StatusCode {
         stream,
         http::Version::HTTP_11,
         &format!(
-            "https://{}:{}",
+            "https://{}:{}/ping",
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ),
-        &[("x-ping", "1")],
+        &[],
     )
     .await
     .0
     .status
 }
 
-async fn x_ping_h2_client(endpoint_address: &SocketAddr) -> http::StatusCode {
+async fn path_h2_client(endpoint_address: &SocketAddr) -> http::StatusCode {
     let stream = common::establish_tls_connection(
         common::MAIN_DOMAIN_NAME,
         endpoint_address,
@@ -141,87 +138,26 @@ async fn x_ping_h2_client(endpoint_address: &SocketAddr) -> http::StatusCode {
         stream,
         http::Version::HTTP_2,
         &format!(
-            "https://{}:{}",
+            "https://{}:{}/ping",
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ),
-        &[("x-ping", "1")],
+        &[],
     )
     .await
     .0
     .status
 }
 
-async fn x_ping_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
+async fn path_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
     let mut conn =
         common::Http3Session::connect(endpoint_address, common::MAIN_DOMAIN_NAME, None).await;
     conn.send_request(
         Request::get(format!(
-            "https://{}:{}",
+            "https://{}:{}/ping",
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
-        .header("x-ping", "1")
-        .body(hyper::Body::empty())
-        .unwrap(),
-    )
-    .await;
-
-    conn.recv_response().await.status
-}
-
-async fn navigate_h1_client(endpoint_address: &SocketAddr) -> http::StatusCode {
-    let stream =
-        common::establish_tls_connection(common::MAIN_DOMAIN_NAME, endpoint_address, None).await;
-
-    common::do_get_request(
-        stream,
-        http::Version::HTTP_11,
-        &format!(
-            "https://{}:{}",
-            common::MAIN_DOMAIN_NAME,
-            endpoint_address.port()
-        ),
-        &[("sec-fetch-mode", "navigate")],
-    )
-    .await
-    .0
-    .status
-}
-
-async fn navigate_h2_client(endpoint_address: &SocketAddr) -> http::StatusCode {
-    let stream = common::establish_tls_connection(
-        common::MAIN_DOMAIN_NAME,
-        endpoint_address,
-        Some(net_utils::HTTP2_ALPN.as_bytes()),
-    )
-    .await;
-
-    common::do_get_request(
-        stream,
-        http::Version::HTTP_2,
-        &format!(
-            "https://{}:{}",
-            common::MAIN_DOMAIN_NAME,
-            endpoint_address.port()
-        ),
-        &[("sec-fetch-mode", "navigate")],
-    )
-    .await
-    .0
-    .status
-}
-
-async fn navigate_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
-    let mut conn =
-        common::Http3Session::connect(endpoint_address, common::MAIN_DOMAIN_NAME, None).await;
-    conn.send_request(
-        Request::get(format!(
-            "https://{}:{}",
-            common::MAIN_DOMAIN_NAME,
-            endpoint_address.port()
-        ))
-        .header("sec-fetch-mode", "navigate")
         .body(hyper::Body::empty())
         .unwrap(),
     )

@@ -22,6 +22,7 @@ mod http2_codec;
 mod http3_codec;
 mod http_codec;
 mod http_datagram_codec;
+mod http_deny_handler;
 mod http_demultiplexer;
 mod http_downstream;
 mod http_forwarded_stream;

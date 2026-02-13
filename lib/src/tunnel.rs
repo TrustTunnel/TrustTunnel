@@ -105,6 +105,10 @@ impl Tunnel {
                     log_id!(trace, self.id, "Tunnel received request");
                     r
                 }
+                Ok(Err(e)) if e.kind() == ErrorKind::UnexpectedEof => {
+                    log_id!(debug, self.id, "Tunnel closed gracefully");
+                    return Ok(());
+                }
                 Ok(Err(e)) => {
                     log_id!(trace, self.id, "Tunnel listen error: {}", e);
                     return Err(e);

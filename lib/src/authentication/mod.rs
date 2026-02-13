@@ -28,6 +28,12 @@ pub trait Authenticator: Send + Sync {
     fn authenticate(&self, source: &Source<'_>, log_id: &log_utils::IdChain<u64>) -> Status;
 }
 
+pub fn tunnel_token_from_credentials(username: &str, password: &str) -> String {
+    let data = format!("{username}:{password}");
+    let digest = ring::digest::digest(&ring::digest::SHA256, data.as_bytes());
+    hex::encode(digest.as_ref())
+}
+
 impl Source<'_> {
     pub fn into_owned(self) -> Source<'static> {
         match self {
