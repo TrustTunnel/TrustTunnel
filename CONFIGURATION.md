@@ -111,6 +111,8 @@ credentials_file = "credentials.toml"
 
 [auth]
 mode = "credentials" # credentials | jwt | mixed
+cache_ttl_seconds = 5 # cache TTL for Basic/JWT auth checks
+revocation_sync_seconds = 15 # periodic auth cache flush for revocation sync
 
 [auth.jwt]
 algorithm = "RS256" # RS256 | HS256
@@ -267,6 +269,8 @@ action = "deny"
 | `credentials_file` | String | - | Path to credentials file |
 | `rules_file` | String | - | Path to rules file (optional) |
 | `auth.mode` | String | `credentials` | Auth mode: `credentials`, `jwt`, or `mixed` |
+| `auth.cache_ttl_seconds` | Integer | `5` | TTL for cached Basic/JWT validation results to reduce LK/DB load |
+| `auth.revocation_sync_seconds` | Integer | `15` | Periodic cache flush interval for revocation synchronization |
 
 ### JWT Authentication Settings (`[auth.jwt]`)
 

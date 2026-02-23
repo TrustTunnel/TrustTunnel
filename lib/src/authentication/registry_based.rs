@@ -6,6 +6,8 @@ use crate::metrics;
 use ring::digest::{digest, SHA256};
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// A client descriptor
 #[derive(Deserialize, Clone)]
@@ -25,6 +27,16 @@ pub struct Client {
 pub struct CredentialsAuth {
     clients_by_username: HashMap<String, Client>,
     clients_by_device_user: HashMap<String, String>,
+    basic_cache: Mutex<HashMap<String, CacheEntry>>,
+    cache_ttl: Duration,
+    revocation_interval: Duration,
+    next_revocation_sync: Mutex<Instant>,
+}
+
+#[derive(Clone, Copy)]
+struct CacheEntry {
+    passed: bool,
+    expires_at: Instant,
 }
 
 /// Backward-compatible wrapper for previous authenticator type.
@@ -66,7 +78,21 @@ impl CredentialsAuth {
         Self {
             clients_by_username,
             clients_by_device_user,
+            basic_cache: Mutex::new(HashMap::new()),
+            cache_ttl: Duration::from_secs(5),
+            revocation_interval: Duration::from_secs(15),
+            next_revocation_sync: Mutex::new(Instant::now() + Duration::from_secs(15)),
         }
+    }
+
+    pub fn with_cache_tuning(mut self, cache_ttl: Duration, revocation_interval: Duration) -> Self {
+        self.cache_ttl = cache_ttl;
+        self.revocation_interval = revocation_interval;
+        *self
+            .next_revocation_sync
+            .lock()
+            .expect("cache lock poisoned") = Instant::now() + revocation_interval;
+        self
     }
 
     pub fn find_client_by_login(&self, login: &str) -> Option<&Client> {
@@ -94,19 +120,89 @@ impl CredentialsAuth {
         // Backward compatibility for plaintext credentials.
         expected_password == provided_password
     }
+
+    fn maybe_sync_revocation(&self) {
+        if self.revocation_interval.is_zero() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut next_sync = self
+            .next_revocation_sync
+            .lock()
+            .expect("cache lock poisoned");
+        if now < *next_sync {
+            return;
+        }
+
+        self.basic_cache
+            .lock()
+            .expect("cache lock poisoned")
+            .clear();
+        *next_sync = now + self.revocation_interval;
+    }
+
+    fn cache_key(username: &str, password: &str) -> String {
+        let digest_hex = hex::encode(digest(
+            &SHA256,
+            format!("{username}\0{password}").as_bytes(),
+        ));
+        format!("basic:{digest_hex}")
+    }
 }
 
 impl AuthProvider for CredentialsAuth {
     fn authenticate(&self, username: &str, password: &str) -> Result<(), AuthError> {
+        self.maybe_sync_revocation();
+        let cache_key = Self::cache_key(username, password);
+        let now = Instant::now();
+        if let Some(cached) = self
+            .basic_cache
+            .lock()
+            .expect("cache lock poisoned")
+            .get(&cache_key)
+            .copied()
+            .filter(|entry| entry.expires_at >= now)
+        {
+            if cached.passed {
+                metrics::add_auth_basic_success();
+                return Ok(());
+            }
+
+            metrics::add_auth_basic_failure();
+            return Err(AuthError::InvalidCredentials);
+        }
+
         let client = self.find_client_by_login(username).ok_or_else(|| {
             metrics::add_auth_basic_failure();
             AuthError::InvalidCredentials
         })?;
 
         if Self::verify_password(&client.password, password) {
+            self.basic_cache
+                .lock()
+                .expect("cache lock poisoned")
+                .insert(
+                    cache_key,
+                    CacheEntry {
+                        passed: true,
+                        expires_at: now + self.cache_ttl,
+                    },
+                );
             metrics::add_auth_basic_success();
             return Ok(());
         }
+
+        self.basic_cache
+            .lock()
+            .expect("cache lock poisoned")
+            .insert(
+                cache_key,
+                CacheEntry {
+                    passed: false,
+                    expires_at: now + self.cache_ttl,
+                },
+            );
 
         metrics::add_auth_basic_failure();
         Err(AuthError::InvalidCredentials)

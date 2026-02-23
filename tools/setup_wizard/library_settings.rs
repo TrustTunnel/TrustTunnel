@@ -80,7 +80,12 @@ fn build_credentials() -> (String, Vec<Client>) {
 
     let clients = users
         .into_iter()
-        .map(|(username, password)| Client { username, password })
+        .map(|(username, password)| Client {
+            username,
+            password,
+            device_user: None,
+            device_id: None,
+        })
         .collect();
 
     (path, clients)
@@ -97,6 +102,8 @@ fn read_credentials_file(path: &str) -> Option<Vec<Client>> {
                 Some(Client {
                     username: t.get("username")?.as_str()?.to_string(),
                     password: t.get("password")?.as_str()?.to_string(),
+                    device_user: None,
+                    device_id: None,
                 })
             })
             .collect(),

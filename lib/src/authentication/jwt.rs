@@ -8,6 +8,9 @@ use boring::pkey::PKey;
 use boring::sign::Verifier;
 use ring::hmac;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum JwtAlgorithm {
@@ -41,8 +44,19 @@ pub struct JwtAuth {
     username_claim: String,
     device_id_claim: Option<String>,
     metrics_jwt_error_enabled: bool,
+    jwt_cache: Mutex<HashMap<String, JwtCacheEntry>>,
+    cache_ttl: Duration,
+    revocation_interval: Duration,
+    next_revocation_sync: Mutex<Instant>,
 }
 
+#[derive(Clone)]
+struct JwtCacheEntry {
+    result: Result<JwtClaims, AuthError>,
+    expires_at: Instant,
+}
+
+#[derive(Clone)]
 pub struct JwtClaims {
     pub username: String,
     pub device_id: Option<String>,
@@ -71,7 +85,21 @@ impl JwtAuth {
             username_claim: config.username_claim.clone(),
             device_id_claim: config.device_id_claim.clone(),
             metrics_jwt_error_enabled: config.metrics_jwt_error_enabled,
+            jwt_cache: Mutex::new(HashMap::new()),
+            cache_ttl: Duration::from_secs(5),
+            revocation_interval: Duration::from_secs(15),
+            next_revocation_sync: Mutex::new(Instant::now() + Duration::from_secs(15)),
         })
+    }
+
+    pub fn with_cache_tuning(mut self, cache_ttl: Duration, revocation_interval: Duration) -> Self {
+        self.cache_ttl = cache_ttl;
+        self.revocation_interval = revocation_interval;
+        *self
+            .next_revocation_sync
+            .lock()
+            .expect("cache lock poisoned") = Instant::now() + revocation_interval;
+        self
     }
 }
 
@@ -94,7 +122,46 @@ impl AuthProvider for JwtAuth {
 }
 
 impl JwtAuth {
+    fn maybe_sync_revocation(&self) {
+        if self.revocation_interval.is_zero() {
+            return;
+        }
+
+        let now = Instant::now();
+        let mut next_sync = self
+            .next_revocation_sync
+            .lock()
+            .expect("cache lock poisoned");
+        if now < *next_sync {
+            return;
+        }
+
+        self.jwt_cache.lock().expect("cache lock poisoned").clear();
+        *next_sync = now + self.revocation_interval;
+    }
+
+    fn token_cache_key(token: &str) -> String {
+        hex::encode(ring::digest::digest(
+            &ring::digest::SHA256,
+            token.as_bytes(),
+        ))
+    }
+
     pub fn validate_token(&self, token: &str) -> Result<JwtClaims, AuthError> {
+        self.maybe_sync_revocation();
+        let cache_key = Self::token_cache_key(token);
+        let cache_now = Instant::now();
+        if let Some(entry) = self
+            .jwt_cache
+            .lock()
+            .expect("cache lock poisoned")
+            .get(&cache_key)
+            .cloned()
+            .filter(|entry| entry.expires_at >= cache_now)
+        {
+            return entry.result;
+        }
+
         let (header_b64, payload_b64, signature_b64) =
             split_token(token).map_err(|e| self.observe_jwt_error(e))?;
         let header = URL_SAFE_NO_PAD
@@ -188,10 +255,20 @@ impl JwtAuth {
             })
             .transpose()?;
 
-        Ok(JwtClaims {
+        let claims = JwtClaims {
             username: token_username,
             device_id: token_device_id,
-        })
+        };
+
+        self.jwt_cache.lock().expect("cache lock poisoned").insert(
+            cache_key,
+            JwtCacheEntry {
+                result: Ok(claims.clone()),
+                expires_at: cache_now + self.cache_ttl,
+            },
+        );
+
+        Ok(claims)
     }
 
     pub fn authenticate_with_registry(
