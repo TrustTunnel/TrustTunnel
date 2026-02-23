@@ -159,9 +159,21 @@ impl Core {
         };
 
         let listen_metrics = async {
-            metrics::listen(self.context.clone(), log_utils::IdChain::empty())
-                .await
-                .map_err(|e| io::Error::new(e.kind(), format!("Metrics listener failure: {}", e)))
+            if self
+                .context
+                .settings
+                .metrics
+                .as_ref()
+                .is_some_and(|x| x.enabled)
+            {
+                metrics::listen(self.context.clone(), log_utils::IdChain::empty())
+                    .await
+                    .map_err(|e| {
+                        io::Error::new(e.kind(), format!("Metrics listener failure: {}", e))
+                    })
+            } else {
+                Ok(())
+            }
         };
 
         let (mut shutdown_notification, _shutdown_completion) = {
@@ -397,6 +409,8 @@ impl Core {
             "Accepting TLS connection with protocol {:?}",
             tls_connection_meta.protocol
         );
+        let handshake_started = std::time::Instant::now();
+        let handshake_protocol = tls_connection_meta.protocol;
         let stream = match tokio::time::timeout(
             context.settings.tls_handshake_timeout,
             acceptor.accept(
@@ -409,6 +423,9 @@ impl Core {
         .await
         {
             Ok(Ok(s)) => {
+                context
+                    .metrics
+                    .observe_handshake_duration(handshake_protocol, handshake_started.elapsed());
                 log_id!(debug, client_id, "New TLS client: {:?}", s);
                 s
             }
@@ -490,6 +507,7 @@ impl Core {
                         }
                     },
                     context.settings.tls_handshake_timeout,
+                    context.metrics.clone(),
                     client_id,
                 )
                 .await
@@ -579,6 +597,7 @@ impl Core {
                     context.shutdown.clone(),
                     Box::new(Http3Codec::new(socket, client_id.clone())),
                     context.settings.tls_handshake_timeout,
+                    context.metrics.clone(),
                     client_id,
                 )
                 .await

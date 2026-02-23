@@ -143,6 +143,7 @@ impl Tunnel {
 
                 let request_id = request.id();
                 log_id!(trace, request_id, "Processing tunnel request");
+                let _request_latency = context.metrics.clone().request_latency_observer("tunnel");
                 let auth_info = request
                     .auth_info()
                     .map(|x| x.map(authentication::Source::into_owned));
@@ -195,6 +196,8 @@ impl Tunnel {
                     }
                     Ok(Some(PendingDemultiplexedRequest::TcpConnect(request))) => {
                         log_id!(trace, request_id, "Handling TCP connect request");
+                        let _active_connection =
+                            context.metrics.clone().active_connection_counter("tcp");
                         if let Err((request, message, e)) = Tunnel::on_tcp_connect_request(
                             context.clone(),
                             forwarder,
@@ -214,6 +217,10 @@ impl Tunnel {
                     }
                     Ok(Some(PendingDemultiplexedRequest::DatagramMultiplexer(request))) => {
                         log_id!(trace, request_id, "Handling datagram multiplexer request");
+                        let _active_connection = context
+                            .metrics
+                            .clone()
+                            .active_connection_counter("udp_or_icmp");
                         if let Err((request, message, e)) = Tunnel::on_datagram_mux_request(
                             context.clone(),
                             forwarder,

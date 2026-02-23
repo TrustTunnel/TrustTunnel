@@ -3,11 +3,13 @@ use crate::http_codec::HttpCodec;
 use crate::tls_demultiplexer::Protocol;
 use crate::{core, http_codec, log_id, log_utils};
 use bytes::Bytes;
+use once_cell::sync::Lazy;
 use prometheus::Encoder;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 
 const LOG_FMT: &str = "METRICS={}";
@@ -17,8 +19,12 @@ const METRICS_PATH: &str = "/metrics";
 pub(crate) struct Metrics {
     _registry: prometheus::Registry,
     client_sessions: prometheus::IntGaugeVec,
+    active_connections: prometheus::IntGaugeVec,
     inbound_traffic: prometheus::IntCounterVec,
     outbound_traffic: prometheus::IntCounterVec,
+    traffic_bytes: prometheus::IntCounterVec,
+    handshake_duration_seconds: prometheus::HistogramVec,
+    request_latency_seconds: prometheus::HistogramVec,
     outbound_tcp_sockets: prometheus::IntGauge,
     outbound_udp_sockets: prometheus::IntGauge,
 }
@@ -36,14 +42,52 @@ pub(crate) struct OutboundUdpSocketCounter {
     metrics: Arc<Metrics>,
 }
 
+pub(crate) struct ActiveConnectionCounter {
+    metrics: Arc<Metrics>,
+    connection_type: &'static str,
+}
+
+pub(crate) struct RequestLatencyObserver {
+    metrics: Arc<Metrics>,
+    tunnel_type: &'static str,
+    started: Instant,
+}
+
+static JWT_VALIDATION_ERRORS_TOTAL: Lazy<prometheus::IntCounterVec> = Lazy::new(|| {
+    let mut labels = std::collections::HashMap::new();
+    labels.insert("instance".to_string(), default_node_label());
+
+    let counter = prometheus::Opts::new(
+        "vpn_jwt_validation_errors_total",
+        "Total number of failed JWT validation attempts",
+    )
+    .const_labels(labels);
+
+    let metric = prometheus::IntCounterVec::new(counter, &["reason"]).unwrap();
+    prometheus::default_registry()
+        .register(Box::new(metric.clone()))
+        .ok();
+    metric
+});
+
 impl Metrics {
     pub fn new() -> io::Result<Arc<Self>> {
-        let registry = prometheus::Registry::new();
+        let mut labels = std::collections::HashMap::new();
+        labels.insert("instance".to_string(), default_node_label());
+        let registry =
+            prometheus::Registry::new_custom(None, Some(labels)).map_err(prometheus_to_io_error)?;
         Ok(Arc::new(Self {
             client_sessions: prometheus::register_int_gauge_vec_with_registry!(
                 "client_sessions",
                 "Number of active client sessions",
                 &["protocol_type"],
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            active_connections: prometheus::register_int_gauge_vec_with_registry!(
+                "vpn_active_connections",
+                "Current number of active tunnels",
+                &["connection_type"],
                 registry,
             )
             .map_err(prometheus_to_io_error)?,
@@ -58,6 +102,29 @@ impl Metrics {
                 "outbound_traffic_bytes",
                 "Total number of bytes downloaded by clients",
                 &["protocol_type"],
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            traffic_bytes: prometheus::register_int_counter_vec_with_registry!(
+                "vpn_traffic_bytes_total",
+                "Total number of tunneled bytes split by direction",
+                &["protocol_type", "direction"],
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            handshake_duration_seconds: prometheus::register_histogram_vec_with_registry!(
+                "vpn_handshake_duration_seconds",
+                "Duration of TLS handshake/channel establishment",
+                &["protocol"],
+                vec![0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0],
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            request_latency_seconds: prometheus::register_histogram_vec_with_registry!(
+                "vpn_request_latency_seconds",
+                "Tunnel request processing latency",
+                &["tunnel_type"],
+                vec![0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0],
                 registry,
             )
             .map_err(prometheus_to_io_error)?,
@@ -93,12 +160,38 @@ impl Metrics {
         self.inbound_traffic
             .with_label_values(&[protocol.as_str()])
             .inc_by(n as u64);
+        self.traffic_bytes
+            .with_label_values(&[protocol.as_str(), "in"])
+            .inc_by(n as u64);
     }
 
     pub fn add_outbound_bytes(&self, protocol: Protocol, n: usize) {
         self.outbound_traffic
             .with_label_values(&[protocol.as_str()])
             .inc_by(n as u64);
+        self.traffic_bytes
+            .with_label_values(&[protocol.as_str(), "out"])
+            .inc_by(n as u64);
+    }
+
+    pub fn active_connection_counter(
+        self: Arc<Self>,
+        connection_type: &'static str,
+    ) -> ActiveConnectionCounter {
+        ActiveConnectionCounter::new(self, connection_type)
+    }
+
+    pub fn request_latency_observer(
+        self: Arc<Self>,
+        tunnel_type: &'static str,
+    ) -> RequestLatencyObserver {
+        RequestLatencyObserver::new(self, tunnel_type)
+    }
+
+    pub fn observe_handshake_duration(&self, protocol: Protocol, duration: Duration) {
+        self.handshake_duration_seconds
+            .with_label_values(&[protocol.as_str()])
+            .observe(duration.as_secs_f64());
     }
 
     fn collect(&self) -> (String, Bytes) {
@@ -153,6 +246,58 @@ impl OutboundUdpSocketCounter {
     }
 }
 
+impl ActiveConnectionCounter {
+    fn new(metrics: Arc<Metrics>, connection_type: &'static str) -> Self {
+        metrics
+            .active_connections
+            .with_label_values(&[connection_type])
+            .inc();
+
+        Self {
+            metrics,
+            connection_type,
+        }
+    }
+}
+
+impl Drop for ActiveConnectionCounter {
+    fn drop(&mut self) {
+        self.metrics
+            .active_connections
+            .with_label_values(&[self.connection_type])
+            .dec();
+    }
+}
+
+impl RequestLatencyObserver {
+    fn new(metrics: Arc<Metrics>, tunnel_type: &'static str) -> Self {
+        Self {
+            metrics,
+            tunnel_type,
+            started: Instant::now(),
+        }
+    }
+}
+
+impl Drop for RequestLatencyObserver {
+    fn drop(&mut self) {
+        self.metrics
+            .request_latency_seconds
+            .with_label_values(&[self.tunnel_type])
+            .observe(self.started.elapsed().as_secs_f64());
+    }
+}
+
+pub(crate) fn add_jwt_validation_error(reason: &str) {
+    JWT_VALIDATION_ERRORS_TOTAL
+        .with_label_values(&[reason])
+        .inc();
+}
+
+fn default_node_label() -> String {
+    std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
+}
+
 impl Drop for OutboundUdpSocketCounter {
     fn drop(&mut self) {
         self.metrics.outbound_udp_sockets.dec();
@@ -184,7 +329,7 @@ async fn listen_inner(
     log_chain: log_utils::IdChain<u64>,
 ) -> io::Result<()> {
     let settings = context.settings.metrics.as_ref();
-    if settings.is_none() {
+    if !settings.is_some_and(|x| x.enabled) {
         return Ok(());
     }
 
@@ -315,5 +460,39 @@ fn prometheus_to_io_error(e: prometheus::Error) -> io::Error {
     match e {
         prometheus::Error::Io(e) => e,
         e => io::Error::new(ErrorKind::Other, e.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_connections_gauge_changes() {
+        let metrics = Metrics::new().unwrap();
+        {
+            let _guard = metrics.clone().active_connection_counter("tcp");
+            assert_eq!(
+                metrics.active_connections.with_label_values(&["tcp"]).get(),
+                1
+            );
+        }
+
+        assert_eq!(
+            metrics.active_connections.with_label_values(&["tcp"]).get(),
+            0
+        );
+    }
+
+    #[test]
+    fn jwt_error_counter_increments() {
+        let before = JWT_VALIDATION_ERRORS_TOTAL
+            .with_label_values(&["invalid_token"])
+            .get();
+        add_jwt_validation_error("invalid_token");
+        let after = JWT_VALIDATION_ERRORS_TOTAL
+            .with_label_values(&["invalid_token"])
+            .get();
+        assert_eq!(after, before + 1);
     }
 }

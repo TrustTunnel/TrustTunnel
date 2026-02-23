@@ -171,6 +171,8 @@ direct = {}
 
 # Metrics settings (optional)
 # [metrics]
+# enabled = true
+# jwt_error_enabled = true
 # address = "127.0.0.1:1987"
 # request_timeout_secs = 3
 ```
@@ -390,12 +392,16 @@ Optional. Enables Prometheus-compatible metrics endpoint.
 
 ```toml
 [metrics]
+enabled = true
+jwt_error_enabled = true
 address = "127.0.0.1:1987"
 request_timeout_secs = 3
 ```
 
 | Setting | Type | Default | Description |
 | ------- | ---- | ------- | ----------- |
+| `enabled` | Boolean | `true` | Enables metrics listener (`false` disables `/metrics` and `/health-check`) |
+| `jwt_error_enabled` | Boolean | `true` | Enables `vpn_jwt_validation_errors_total` increments |
 | `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
 

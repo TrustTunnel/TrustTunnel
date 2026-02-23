@@ -256,6 +256,7 @@ impl JwtSettings {
             leeway_seconds: self.leeway_seconds,
             username_claim: self.username_claim.clone(),
             device_id_claim: Some(self.device_id_claim.clone()),
+            metrics_jwt_error_enabled: MetricsSettings::default_jwt_error_enabled(),
             public_key_path: self.public_key_path.clone(),
             hmac_secret_env: self.hmac_secret_env.clone(),
         }
@@ -419,6 +420,12 @@ pub struct IcmpSettings {
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct MetricsSettings {
+    /// Enable metrics listener
+    #[serde(default = "MetricsSettings::default_enabled")]
+    pub(crate) enabled: bool,
+    /// Enable JWT validation error counters
+    #[serde(default = "MetricsSettings::default_jwt_error_enabled")]
+    pub(crate) jwt_error_enabled: bool,
     /// The address to listen on for settings export requests
     #[serde(default = "MetricsSettings::default_listen_address")]
     pub(crate) address: SocketAddr,
@@ -867,6 +874,14 @@ impl MetricsSettings {
         MetricsSettingsBuilder::new()
     }
 
+    pub fn default_enabled() -> bool {
+        true
+    }
+
+    pub fn default_jwt_error_enabled() -> bool {
+        true
+    }
+
     pub fn default_listen_address() -> SocketAddr {
         (Ipv4Addr::LOCALHOST, 1987).into()
     }
@@ -879,6 +894,8 @@ impl MetricsSettings {
 impl Default for MetricsSettings {
     fn default() -> Self {
         Self {
+            enabled: MetricsSettings::default_enabled(),
+            jwt_error_enabled: MetricsSettings::default_jwt_error_enabled(),
             address: MetricsSettings::default_listen_address(),
             request_timeout: MetricsSettings::default_request_timeout(),
         }
@@ -1377,6 +1394,18 @@ impl MetricsSettingsBuilder {
         Self {
             settings: Default::default(),
         }
+    }
+
+    /// Enable/disable metrics listener
+    pub fn enabled(mut self, v: bool) -> Self {
+        self.settings.enabled = v;
+        self
+    }
+
+    /// Enable/disable JWT validation error counters
+    pub fn jwt_error_enabled(mut self, v: bool) -> Self {
+        self.settings.jwt_error_enabled = v;
+        self
     }
 
     /// Set the address to listen on for settings export requests

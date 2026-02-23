@@ -136,6 +136,7 @@ impl Downstream for HttpDownstream {
                             context.shutdown.clone(),
                             Box::new(http_codec::stream_into_codec(stream, protocol)),
                             context.settings.tls_handshake_timeout,
+                            context.metrics.clone(),
                             stream_id,
                         )
                         .await

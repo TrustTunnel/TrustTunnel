@@ -1,4 +1,5 @@
 use crate::authentication::{AuthError, AuthProvider};
+use crate::metrics;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use boring::hash::MessageDigest;
@@ -21,6 +22,7 @@ pub struct JwtAuthConfig {
     pub leeway_seconds: u64,
     pub username_claim: String,
     pub device_id_claim: Option<String>,
+    pub metrics_jwt_error_enabled: bool,
     pub public_key_path: Option<String>,
     pub hmac_secret_env: Option<String>,
 }
@@ -37,6 +39,7 @@ pub struct JwtAuth {
     leeway_seconds: u64,
     username_claim: String,
     device_id_claim: Option<String>,
+    metrics_jwt_error_enabled: bool,
 }
 
 impl JwtAuth {
@@ -61,89 +64,104 @@ impl JwtAuth {
             leeway_seconds: config.leeway_seconds,
             username_claim: config.username_claim.clone(),
             device_id_claim: config.device_id_claim.clone(),
+            metrics_jwt_error_enabled: config.metrics_jwt_error_enabled,
         })
     }
 }
 
 impl AuthProvider for JwtAuth {
     fn authenticate(&self, username: &str, token: &str) -> Result<(), AuthError> {
-        let (header_b64, payload_b64, signature_b64) = split_token(token)?;
+        let (header_b64, payload_b64, signature_b64) =
+            split_token(token).map_err(|e| self.observe_jwt_error(e))?;
         let header = URL_SAFE_NO_PAD
             .decode(header_b64)
-            .map_err(|_| AuthError::InvalidToken)?;
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
         let payload = URL_SAFE_NO_PAD
             .decode(payload_b64)
-            .map_err(|_| AuthError::InvalidToken)?;
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
         let signature = URL_SAFE_NO_PAD
             .decode(signature_b64)
-            .map_err(|_| AuthError::InvalidToken)?;
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
 
-        let header_str = std::str::from_utf8(&header).map_err(|_| AuthError::InvalidToken)?;
-        let payload_str = std::str::from_utf8(&payload).map_err(|_| AuthError::InvalidToken)?;
+        let header_str = std::str::from_utf8(&header)
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
+        let payload_str = std::str::from_utf8(&payload)
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
 
-        verify_algorithm(header_str, &self.verifier)?;
+        verify_algorithm(header_str, &self.verifier).map_err(|e| self.observe_jwt_error(e))?;
 
         let signing_input = format!("{}.{}", header_b64, payload_b64);
         match &self.verifier {
             JwtVerifier::Rs256(public_key_der) => {
                 let key = PKey::public_key_from_pem(public_key_der)
-                    .map_err(|_| AuthError::InvalidToken)?;
+                    .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
                 let mut verifier = Verifier::new(MessageDigest::sha256(), &key)
-                    .map_err(|_| AuthError::InvalidToken)?;
+                    .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
                 verifier
                     .update(signing_input.as_bytes())
-                    .map_err(|_| AuthError::InvalidToken)?;
+                    .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
                 let valid = verifier
                     .verify(&signature)
-                    .map_err(|_| AuthError::InvalidToken)?;
+                    .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
                 if !valid {
-                    return Err(AuthError::InvalidToken);
+                    return Err(self.observe_jwt_error(AuthError::InvalidToken));
                 }
             }
             JwtVerifier::Hs256(secret) => {
                 let key = hmac::Key::new(hmac::HMAC_SHA256, secret);
                 hmac::verify(&key, signing_input.as_bytes(), &signature)
-                    .map_err(|_| AuthError::InvalidToken)?;
+                    .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?;
             }
         }
 
-        let exp = parse_u64_claim(payload_str, "exp").ok_or(AuthError::InvalidToken)?;
+        let exp = parse_u64_claim(payload_str, "exp")
+            .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| AuthError::InvalidToken)?
+            .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?
             .as_secs();
         if exp + self.leeway_seconds < now {
-            return Err(AuthError::InvalidToken);
+            return Err(self.observe_jwt_error(AuthError::InvalidToken));
         }
 
         if let Some(issuer) = &self.issuer {
-            let iss = parse_string_claim(payload_str, "iss").ok_or(AuthError::InvalidToken)?;
+            let iss = parse_string_claim(payload_str, "iss")
+                .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
             if iss != *issuer {
-                return Err(AuthError::InvalidToken);
+                return Err(self.observe_jwt_error(AuthError::InvalidToken));
             }
         }
 
         if let Some(audience) = &self.audience {
             if !claim_matches_audience(payload_str, audience) {
-                return Err(AuthError::InvalidToken);
+                return Err(self.observe_jwt_error(AuthError::InvalidToken));
             }
         }
 
-        let token_username =
-            parse_string_claim(payload_str, &self.username_claim).ok_or(AuthError::InvalidToken)?;
+        let token_username = parse_string_claim(payload_str, &self.username_claim)
+            .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
         if token_username != username {
-            return Err(AuthError::InvalidToken);
+            return Err(self.observe_jwt_error(AuthError::InvalidToken));
         }
 
         if let Some(device_id_claim) = &self.device_id_claim {
-            let device_id =
-                parse_string_claim(payload_str, device_id_claim).ok_or(AuthError::InvalidToken)?;
+            let device_id = parse_string_claim(payload_str, device_id_claim)
+                .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
             if device_id.is_empty() {
-                return Err(AuthError::InvalidToken);
+                return Err(self.observe_jwt_error(AuthError::InvalidToken));
             }
         }
 
         Ok(())
+    }
+}
+
+impl JwtAuth {
+    fn observe_jwt_error(&self, error: AuthError) -> AuthError {
+        if self.metrics_jwt_error_enabled && matches!(error, AuthError::InvalidToken) {
+            metrics::add_jwt_validation_error("invalid_token");
+        }
+        error
     }
 }
 
@@ -286,6 +304,7 @@ IwIDAQAB
             leeway_seconds: 0,
             username_claim: "sub".into(),
             device_id_claim: None,
+            metrics_jwt_error_enabled: true,
             public_key_path: Some(f.path().to_string_lossy().to_string()),
             hmac_secret_env: None,
         })
@@ -303,6 +322,7 @@ IwIDAQAB
             leeway_seconds: 0,
             username_claim: "sub".into(),
             device_id_claim: None,
+            metrics_jwt_error_enabled: true,
             public_key_path: None,
             hmac_secret_env: Some("JWT_SECRET".into()),
         })
@@ -382,6 +402,7 @@ IwIDAQAB
             leeway_seconds: 0,
             username_claim: "sub".into(),
             device_id_claim: Some("device_id".into()),
+            metrics_jwt_error_enabled: true,
             public_key_path: None,
             hmac_secret_env: Some("JWT_SECRET".into()),
         })
@@ -437,6 +458,7 @@ IwIDAQAB
             leeway_seconds: 0,
             username_claim: "sub".into(),
             device_id_claim: None,
+            metrics_jwt_error_enabled: true,
             public_key_path: None,
             hmac_secret_env: Some("JWT_SECRET".into()),
         })

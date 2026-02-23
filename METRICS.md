@@ -15,6 +15,8 @@ use vpn_libs_endpoint::Settings;
 
 let settings = Settings::builder()
     .metrics(MetricsSettings {
+        enabled: true,
+        jwt_error_enabled: true,
         address: "127.0.0.1:1987".parse().unwrap(),
         request_timeout: Duration::from_secs(3),
     })
@@ -156,6 +158,46 @@ Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 - Decremented when the association is closed
 - Includes sockets through direct forwarder and SOCKS5 UDP associations
 - Each unique source-destination pair counts as one socket
+
+### VPN Handshake Duration
+
+**Name:** `vpn_handshake_duration_seconds`  
+**Type:** Histogram  
+**Labels:** `protocol`
+
+Tracks TLS/channel handshake duration for incoming VPN sessions.
+
+### JWT Validation Errors
+
+**Name:** `vpn_jwt_validation_errors_total`  
+**Type:** Counter  
+**Labels:** `reason`
+
+Counts failed JWT validations (expired/invalid/signature/device claim issues).
+
+### Active VPN Connections
+
+**Name:** `vpn_active_connections`  
+**Type:** Gauge  
+**Labels:** `connection_type`
+
+Current number of active tunnel handlers (`tcp`, `udp_or_icmp`, `speedtest`).
+
+### VPN Request Latency
+
+**Name:** `vpn_request_latency_seconds`  
+**Type:** Histogram  
+**Labels:** `tunnel_type`
+
+Latency of processing tunnel requests.
+
+### Directional Traffic Counters
+
+**Name:** `vpn_traffic_bytes_total`  
+**Type:** Counter  
+**Labels:** `protocol_type`, `direction`
+
+Bytes split by direction (`in`, `out`).
 
 ## Metric Types
 

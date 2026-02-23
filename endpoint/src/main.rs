@@ -346,9 +346,13 @@ fn main() {
                     .get_jwt()
                     .as_ref()
                     .expect("[auth.jwt] must be configured for mode=jwt");
+                let mut jwt_auth_config = jwt_settings.to_auth_config();
+                jwt_auth_config.metrics_jwt_error_enabled = settings
+                    .get_metrics()
+                    .as_ref()
+                    .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
                 Some(Box::new(
-                    JwtAuth::from_config(&jwt_settings.to_auth_config())
-                        .expect("Couldn't initialize JWT auth"),
+                    JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
                 ))
             }
             AuthMode::Mixed => {
@@ -357,9 +361,14 @@ fn main() {
                     .get_jwt()
                     .as_ref()
                     .expect("[auth.jwt] must be configured for mode=mixed");
+                let mut jwt_auth_config = jwt_settings.to_auth_config();
+                jwt_auth_config.metrics_jwt_error_enabled = settings
+                    .get_metrics()
+                    .as_ref()
+                    .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
                 Some(Box::new(MixedAuth::new(
                     Box::new(
-                        JwtAuth::from_config(&jwt_settings.to_auth_config())
+                        JwtAuth::from_config(&jwt_auth_config)
                             .expect("Couldn't initialize JWT auth"),
                     ),
                     Box::new(CredentialsAuth::new(settings.get_clients())),
