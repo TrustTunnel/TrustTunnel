@@ -94,7 +94,8 @@ mode = "credentials" # credentials | jwt | mixed
 
 ### `jwt` (часто это и называют «новый режим»)
 - endpoint ожидает JWT-токен (вместо обычного пароля в Basic auth);
-- обязательно заполнить секцию `[auth.jwt]`.
+- обязательно заполнить секцию `[auth.jwt]`;
+- по умолчанию JWT должен содержать непустой claim `device_id` (настраивается через `device_id_claim`).
 
 ### `mixed`
 - endpoint принимает и обычные credentials, и JWT.
@@ -191,6 +192,7 @@ issuer = "https://issuer.example"
 audience = "trusttunnel"
 leeway_seconds = 30
 username_claim = "sub"
+device_id_claim = "device_id"
 hmac_secret_env = "TRUSTTUNNEL_JWT_SECRET"
 ```
 

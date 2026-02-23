@@ -20,6 +20,7 @@ pub struct JwtAuthConfig {
     pub audience: Option<String>,
     pub leeway_seconds: u64,
     pub username_claim: String,
+    pub device_id_claim: Option<String>,
     pub public_key_path: Option<String>,
     pub hmac_secret_env: Option<String>,
 }
@@ -35,6 +36,7 @@ pub struct JwtAuth {
     audience: Option<String>,
     leeway_seconds: u64,
     username_claim: String,
+    device_id_claim: Option<String>,
 }
 
 impl JwtAuth {
@@ -58,6 +60,7 @@ impl JwtAuth {
             audience: config.audience.clone(),
             leeway_seconds: config.leeway_seconds,
             username_claim: config.username_claim.clone(),
+            device_id_claim: config.device_id_claim.clone(),
         })
     }
 }
@@ -130,6 +133,14 @@ impl AuthProvider for JwtAuth {
             parse_string_claim(payload_str, &self.username_claim).ok_or(AuthError::InvalidToken)?;
         if token_username != username {
             return Err(AuthError::InvalidToken);
+        }
+
+        if let Some(device_id_claim) = &self.device_id_claim {
+            let device_id =
+                parse_string_claim(payload_str, device_id_claim).ok_or(AuthError::InvalidToken)?;
+            if device_id.is_empty() {
+                return Err(AuthError::InvalidToken);
+            }
         }
 
         Ok(())
@@ -274,6 +285,7 @@ IwIDAQAB
             audience: Some("aud".into()),
             leeway_seconds: 0,
             username_claim: "sub".into(),
+            device_id_claim: None,
             public_key_path: Some(f.path().to_string_lossy().to_string()),
             hmac_secret_env: None,
         })
@@ -290,6 +302,7 @@ IwIDAQAB
             audience: Some("aud".into()),
             leeway_seconds: 0,
             username_claim: "sub".into(),
+            device_id_claim: None,
             public_key_path: None,
             hmac_secret_env: Some("JWT_SECRET".into()),
         })
@@ -357,5 +370,89 @@ IwIDAQAB
         );
         bad.push('x');
         assert!(auth.authenticate("alice", &bad).is_err());
+    }
+
+    #[test]
+    fn validates_device_id_claim_if_configured() {
+        std::env::set_var("JWT_SECRET", "secret");
+        let auth = JwtAuth::from_config(&JwtAuthConfig {
+            algorithm: JwtAlgorithm::HS256,
+            issuer: Some("iss".into()),
+            audience: Some("aud".into()),
+            leeway_seconds: 0,
+            username_claim: "sub".into(),
+            device_id_claim: Some("device_id".into()),
+            public_key_path: None,
+            hmac_secret_env: Some("JWT_SECRET".into()),
+        })
+        .unwrap();
+
+        assert!(auth
+            .authenticate(
+                "alice",
+                &hs_token(
+                    &format!(
+                        r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud","device_id":"dev-1"}}"#,
+                        now() + 300
+                    ),
+                    "secret"
+                )
+            )
+            .is_ok());
+
+        assert!(auth
+            .authenticate(
+                "alice",
+                &hs_token(
+                    &format!(
+                        r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud"}}"#,
+                        now() + 300
+                    ),
+                    "secret"
+                )
+            )
+            .is_err());
+
+        assert!(auth
+            .authenticate(
+                "alice",
+                &hs_token(
+                    &format!(
+                        r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud","device_id":""}}"#,
+                        now() + 300
+                    ),
+                    "secret"
+                )
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn skips_device_id_claim_check_if_not_configured() {
+        std::env::set_var("JWT_SECRET", "secret");
+        let auth = JwtAuth::from_config(&JwtAuthConfig {
+            algorithm: JwtAlgorithm::HS256,
+            issuer: Some("iss".into()),
+            audience: Some("aud".into()),
+            leeway_seconds: 0,
+            username_claim: "sub".into(),
+            device_id_claim: None,
+            public_key_path: None,
+            hmac_secret_env: Some("JWT_SECRET".into()),
+        })
+        .unwrap();
+
+        assert!(auth
+            .authenticate(
+                "alice",
+                &hs_token(
+                    &format!(
+                        r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud"}}"#,
+                        now() + 300
+                    ),
+                    "secret"
+                )
+            )
+            .is_ok());
     }
 }
