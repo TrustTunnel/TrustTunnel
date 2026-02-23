@@ -355,7 +355,7 @@ fn main() {
             jwt_auth_config.metrics_jwt_error_enabled = settings
                 .get_metrics()
                 .as_ref()
-                .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
+                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
             Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
                 JwtAuth::from_config(&jwt_auth_config)
                     .expect("Couldn't initialize JWT auth")
@@ -375,7 +375,7 @@ fn main() {
             jwt_auth_config.metrics_jwt_error_enabled = settings
                 .get_metrics()
                 .as_ref()
-                .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
+                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
             Some(Arc::new(MixedAuth::new(
                 JwtAuth::from_config(&jwt_auth_config)
                     .expect("Couldn't initialize JWT auth")

@@ -54,7 +54,7 @@ impl<'a> TlvParser<'a> {
 
     /// Parse the next TLV field, returning (tag, value_bytes).
     /// Returns None when end of data is reached.
-    fn next_field(&mut self) -> Option<Result<(u64, Option<TlvTag>, Vec<u8>)>> {
+    fn next_field(&mut self) -> Option<Result<ParsedField>> {
         if self.offset >= self.data.len() {
             return None;
         }
@@ -93,6 +93,8 @@ impl<'a> TlvParser<'a> {
         Some(Ok((tag_u64, tag, value)))
     }
 }
+
+type ParsedField = (u64, Option<TlvTag>, Vec<u8>);
 
 /// Decode a TLV binary payload into a DeepLinkConfig.
 pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
