@@ -54,7 +54,7 @@ impl<'a> TlvParser<'a> {
 
     /// Parse the next TLV field, returning (tag, value_bytes).
     /// Returns None when end of data is reached.
-    fn next_field(&mut self) -> Option<Result<(Option<TlvTag>, Vec<u8>)>> {
+    fn next_field(&mut self) -> Option<Result<(u64, Option<TlvTag>, Vec<u8>)>> {
         if self.offset >= self.data.len() {
             return None;
         }
@@ -66,7 +66,7 @@ impl<'a> TlvParser<'a> {
         };
         self.offset = new_offset;
 
-        let tag = TlvTag::from_u8(tag_u64 as u8);
+        let tag = TlvTag::from_u64(tag_u64);
 
         // Decode length
         let (length, new_offset) = match decode_varint(self.data, self.offset) {
@@ -90,7 +90,7 @@ impl<'a> TlvParser<'a> {
         let value = self.data[self.offset..self.offset + length].to_vec();
         self.offset += length;
 
-        Some(Ok((tag, value)))
+        Some(Ok((tag_u64, tag, value)))
     }
 }
 
@@ -109,9 +109,8 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
     let mut upstream_protocol: Protocol = Protocol::Http2; // default
     let mut anti_dpi: bool = false; // default
     let mut client_random_prefix: Option<String> = None;
-
     while let Some(field_result) = parser.next_field() {
-        let (tag_opt, value) = field_result?;
+        let (_tag_u64, tag_opt, value) = field_result?;
 
         // Unknown tags are ignored per spec (forward compatibility)
         let tag = match tag_opt {
@@ -120,6 +119,16 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
         };
 
         match tag {
+            TlvTag::Version => {
+                if value.len() != 1 {
+                    return Err(DeepLinkError::InvalidVersionLength(value.len()));
+                }
+
+                let version = value[0];
+                if version != 0 {
+                    return Err(DeepLinkError::UnsupportedVersion(version));
+                }
+            }
             TlvTag::Hostname => {
                 hostname = Some(decode_string(&value)?);
             }
@@ -216,6 +225,7 @@ pub fn decode(uri: &str) -> Result<DeepLinkConfig> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::varint::encode_varint;
 
     #[test]
     fn test_decode_string() {
@@ -252,7 +262,8 @@ mod tests {
         let data = vec![0x01, 0x05, b'h', b'e', b'l', b'l', b'o'];
         let mut parser = TlvParser::new(&data);
 
-        let (tag, value) = parser.next_field().unwrap().unwrap();
+        let (tag_u64, tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag_u64, 0x01);
         assert_eq!(tag, Some(TlvTag::Hostname));
         assert_eq!(value, b"hello");
 
@@ -266,9 +277,22 @@ mod tests {
         let data = vec![0x0C, 0x03, 0x01, 0x02, 0x03];
         let mut parser = TlvParser::new(&data);
 
-        let (tag, value) = parser.next_field().unwrap().unwrap();
+        let (_tag_u64, tag, value) = parser.next_field().unwrap().unwrap();
         assert_eq!(tag, None); // Unknown tag
         assert_eq!(value, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_tlv_parser_large_unknown_tag_not_wrapped_to_u8() {
+        let mut data = encode_varint(511).unwrap();
+        data.push(0x03);
+        data.extend([0xAA, 0xBB, 0xCC]);
+        let mut parser = TlvParser::new(&data);
+
+        let (tag_u64, tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag_u64, 511);
+        assert_eq!(tag, None);
+        assert_eq!(value, vec![0xAA, 0xBB, 0xCC]);
     }
 
     #[test]
@@ -285,5 +309,54 @@ mod tests {
     fn test_decode_invalid_scheme() {
         let result = decode("http://example.com");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_accepts_explicit_version_zero_tag() {
+        // version=0, hostname=vpn.example.com, username=alice, password=secret, address=1.2.3.4:443
+        let payload = vec![
+            0x00, 0x01, 0x00, // version = 0
+            0x01, 0x0F, b'v', b'p', b'n', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.',
+            b'c', b'o', b'm', 0x05, 0x05, b'a', b'l', b'i', b'c', b'e', 0x06, 0x06, b's', b'e',
+            b'c', b'r', b'e', b't', 0x02, 0x0B, b'1', b'.', b'2', b'.', b'3', b'.', b'4', b':',
+            b'4', b'4', b'3',
+        ];
+        let encoded = URL_SAFE_NO_PAD.encode(&payload);
+        let uri = format!("tt://{}", encoded);
+
+        let config = decode(&uri).unwrap();
+        assert_eq!(config.hostname, "vpn.example.com");
+        assert_eq!(config.username, "alice");
+    }
+
+    #[test]
+    fn test_decode_rejects_unsupported_version() {
+        let payload = vec![
+            0x00, 0x01, 0x01, // version = 1
+            0x01, 0x0F, b'v', b'p', b'n', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.',
+            b'c', b'o', b'm', 0x05, 0x05, b'a', b'l', b'i', b'c', b'e', 0x06, 0x06, b's', b'e',
+            b'c', b'r', b'e', b't', 0x02, 0x0B, b'1', b'.', b'2', b'.', b'3', b'.', b'4', b':',
+            b'4', b'4', b'3',
+        ];
+
+        let result = decode_tlv_payload(&payload);
+        assert!(matches!(result, Err(DeepLinkError::UnsupportedVersion(1))));
+    }
+
+    #[test]
+    fn test_decode_rejects_invalid_version_length() {
+        let payload = vec![
+            0x00, 0x02, 0x00, 0x00, // version has invalid length=2
+            0x01, 0x0F, b'v', b'p', b'n', b'.', b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.',
+            b'c', b'o', b'm', 0x05, 0x05, b'a', b'l', b'i', b'c', b'e', 0x06, 0x06, b's', b'e',
+            b'c', b'r', b'e', b't', 0x02, 0x0B, b'1', b'.', b'2', b'.', b'3', b'.', b'4', b':',
+            b'4', b'4', b'3',
+        ];
+
+        let result = decode_tlv_payload(&payload);
+        assert!(matches!(
+            result,
+            Err(DeepLinkError::InvalidVersionLength(2))
+        ));
     }
 }

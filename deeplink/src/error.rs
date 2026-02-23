@@ -42,6 +42,12 @@ pub enum DeepLinkError {
     #[error("Invalid URI scheme: expected 'tt://', got '{0}'")]
     InvalidScheme(String),
 
+    #[error("Unsupported deep-link format version: {0} (supported: 0)")]
+    UnsupportedVersion(u8),
+
+    #[error("Invalid version field length: expected 1 byte, got {0}")]
+    InvalidVersionLength(usize),
+
     #[error("IO error: {0}")]
     Io(#[from] io::Error),
 
