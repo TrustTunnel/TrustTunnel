@@ -9,6 +9,8 @@ use std::time::Duration;
 use tokio::io::AsyncReadExt;
 use tokio::net::TcpListener;
 use trusttunnel::authentication;
+use trusttunnel::authentication::jwt::{JwtAlgorithm, JwtAuth, JwtAuthConfig};
+use trusttunnel::authentication::AuthProvider;
 use trusttunnel::settings::{
     ForwardProtocolSettings, Http1Settings, ListenProtocolSettings, Settings,
     Socks5ForwarderSettings, TlsHostInfo, TlsHostsSettings,
@@ -221,4 +223,86 @@ fn make_socks_server_harness() -> (SocketAddr, impl Future<Output = Vec<u8>>) {
     };
 
     (server_addr, task)
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+}
+
+fn hs256_token(payload: &str, secret: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use ring::hmac;
+
+    let header = URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+    let body = URL_SAFE_NO_PAD.encode(payload);
+    let signing_input = format!("{}.{}", header, body);
+    let key = hmac::Key::new(hmac::HMAC_SHA256, secret.as_bytes());
+    let signature = hmac::sign(&key, signing_input.as_bytes());
+    format!(
+        "{}.{}",
+        signing_input,
+        URL_SAFE_NO_PAD.encode(signature.as_ref())
+    )
+}
+
+#[test]
+fn jwt_auth_requires_device_id_claim_by_default_config() {
+    std::env::set_var("JWT_SECRET", "secret");
+    let auth = JwtAuth::from_config(&JwtAuthConfig {
+        algorithm: JwtAlgorithm::HS256,
+        issuer: Some("iss".into()),
+        audience: Some("aud".into()),
+        leeway_seconds: 0,
+        username_claim: "sub".into(),
+        device_id_claim: Some("device_id".into()),
+        public_key_path: None,
+        hmac_secret_env: Some("JWT_SECRET".into()),
+    })
+    .unwrap();
+
+    let ok = hs256_token(
+        &format!(
+            r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud","device_id":"dev-1"}}"#,
+            now_unix() + 60
+        ),
+        "secret",
+    );
+    assert!(auth.authenticate("alice", &ok).is_ok());
+
+    let no_device = hs256_token(
+        &format!(
+            r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud"}}"#,
+            now_unix() + 60
+        ),
+        "secret",
+    );
+    assert!(auth.authenticate("alice", &no_device).is_err());
+}
+
+#[test]
+fn jwt_auth_skips_device_id_claim_if_not_configured() {
+    std::env::set_var("JWT_SECRET", "secret");
+    let auth = JwtAuth::from_config(&JwtAuthConfig {
+        algorithm: JwtAlgorithm::HS256,
+        issuer: Some("iss".into()),
+        audience: Some("aud".into()),
+        leeway_seconds: 0,
+        username_claim: "sub".into(),
+        device_id_claim: None,
+        public_key_path: None,
+        hmac_secret_env: Some("JWT_SECRET".into()),
+    })
+    .unwrap();
+
+    let token = hs256_token(
+        &format!(
+            r#"{{"sub":"alice","exp":{},"iss":"iss","aud":"aud"}}"#,
+            now_unix() + 60
+        ),
+        "secret",
+    );
+    assert!(auth.authenticate("alice", &token).is_ok());
 }

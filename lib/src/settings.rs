@@ -227,6 +227,8 @@ pub struct JwtSettings {
     pub(crate) leeway_seconds: u64,
     #[serde(default = "JwtSettings::default_username_claim")]
     pub(crate) username_claim: String,
+    #[serde(default = "JwtSettings::default_device_id_claim")]
+    pub(crate) device_id_claim: String,
     #[serde(default)]
     pub(crate) public_key_path: Option<String>,
     #[serde(default)]
@@ -242,6 +244,10 @@ impl JwtSettings {
         "sub".to_string()
     }
 
+    fn default_device_id_claim() -> String {
+        "device_id".to_string()
+    }
+
     pub fn to_auth_config(&self) -> JwtAuthConfig {
         JwtAuthConfig {
             algorithm: self.algorithm.clone(),
@@ -249,6 +255,7 @@ impl JwtSettings {
             audience: self.audience.clone(),
             leeway_seconds: self.leeway_seconds,
             username_claim: self.username_claim.clone(),
+            device_id_claim: Some(self.device_id_claim.clone()),
             public_key_path: self.public_key_path.clone(),
             hmac_secret_env: self.hmac_secret_env.clone(),
         }

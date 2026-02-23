@@ -118,6 +118,7 @@ issuer = "https://lk.securesoft.dev" # optional
 audience = "trusttunnel" # optional
 leeway_seconds = 30
 username_claim = "sub"
+device_id_claim = "device_id"
 public_key_path = "jwt/public.pem" # required for RS256
 # hmac_secret_env = "TRUSTTUNNEL_JWT_SECRET" # required for HS256
 
@@ -272,6 +273,7 @@ action = "deny"
 | `audience` | String | - | Optional `aud` claim check |
 | `leeway_seconds` | Integer | `30` | Allowed clock skew for `exp` |
 | `username_claim` | String | `sub` | Claim that must match Basic username |
+| `device_id_claim` | String | `device_id` | Claim that must contain non-empty device identifier |
 | `public_key_path` | String | - | PEM public key path for RS256 |
 | `hmac_secret_env` | String | - | Env var containing HMAC secret for HS256 |
 
@@ -280,6 +282,7 @@ In JWT mode, the client still sends Basic auth, but password must be the JWT tok
 `proxy-authorization: Basic base64("username:JWT_TOKEN")`
 
 `username` from Basic must strictly match the configured `username_claim` (default: `sub`).
+If `device_id_claim` is configured (default: `device_id`), the token must include this non-empty claim.
 
 ### Listen Protocol Settings
 
