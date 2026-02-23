@@ -17,6 +17,13 @@ pub enum Source<'this> {
     /// A client tries to authenticate using
     /// [the basic authentication scheme](https://datatracker.ietf.org/doc/html/rfc7617)
     ProxyBasic(Cow<'this, str>),
+    /// A client tries to authenticate using bearer token in Authorization header.
+    ProxyBearer(Cow<'this, str>),
+    /// A client provided both Bearer and Basic credentials.
+    ProxyBearerAndBasic {
+        bearer: Cow<'this, str>,
+        basic: Cow<'this, str>,
+    },
 }
 
 /// Authentication procedure status
@@ -98,6 +105,11 @@ impl Source<'_> {
         match self {
             Source::Sni(x) => Source::Sni(Cow::Owned(x.into_owned())),
             Source::ProxyBasic(x) => Source::ProxyBasic(Cow::Owned(x.into_owned())),
+            Source::ProxyBearer(x) => Source::ProxyBearer(Cow::Owned(x.into_owned())),
+            Source::ProxyBearerAndBasic { bearer, basic } => Source::ProxyBearerAndBasic {
+                bearer: Cow::Owned(bearer.into_owned()),
+                basic: Cow::Owned(basic.into_owned()),
+            },
         }
     }
 }

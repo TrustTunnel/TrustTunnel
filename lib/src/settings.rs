@@ -227,8 +227,8 @@ pub struct JwtSettings {
     pub(crate) leeway_seconds: u64,
     #[serde(default = "JwtSettings::default_username_claim")]
     pub(crate) username_claim: String,
-    #[serde(default = "JwtSettings::default_device_id_claim")]
-    pub(crate) device_id_claim: String,
+    #[serde(default)]
+    pub(crate) device_id_claim: Option<String>,
     #[serde(default)]
     pub(crate) public_key_path: Option<String>,
     #[serde(default)]
@@ -244,10 +244,6 @@ impl JwtSettings {
         "sub".to_string()
     }
 
-    fn default_device_id_claim() -> String {
-        "device_id".to_string()
-    }
-
     pub fn to_auth_config(&self) -> JwtAuthConfig {
         JwtAuthConfig {
             algorithm: self.algorithm.clone(),
@@ -255,7 +251,7 @@ impl JwtSettings {
             audience: self.audience.clone(),
             leeway_seconds: self.leeway_seconds,
             username_claim: self.username_claim.clone(),
-            device_id_claim: Some(self.device_id_claim.clone()),
+            device_id_claim: self.device_id_claim.clone(),
             metrics_jwt_error_enabled: MetricsSettings::default_jwt_error_enabled(),
             public_key_path: self.public_key_path.clone(),
             hmac_secret_env: self.hmac_secret_env.clone(),
@@ -1541,6 +1537,14 @@ where
         .map(|(idx, x)| {
             let username = demangle_toml_string(x["username"].to_string());
             let password = demangle_toml_string(x["password"].to_string());
+            let device_user = x
+                .get("device_user")
+                .map(|x| demangle_toml_string(x.to_string()))
+                .filter(|x| !x.is_empty());
+            let device_id = x
+                .get("device_id")
+                .map(|x| demangle_toml_string(x.to_string()))
+                .filter(|x| !x.is_empty());
 
             if username.is_empty() {
                 return Err(serde::de::Error::custom(format!(
@@ -1555,11 +1559,17 @@ where
                 )));
             }
 
-            Ok(Client { username, password })
+            Ok(Client {
+                username,
+                password,
+                device_user,
+                device_id,
+            })
         })
         .collect::<Result<Vec<_>, _>>()?;
 
     let mut seen_usernames = HashSet::new();
+    let mut seen_device_users = HashSet::new();
     for (idx, client) in res.iter().enumerate() {
         if !seen_usernames.insert(client.username.as_str()) {
             return Err(serde::de::Error::custom(format!(
@@ -1567,6 +1577,16 @@ where
                 idx + 1,
                 client.username
             )));
+        }
+
+        if let Some(device_user) = client.device_user.as_deref() {
+            if !seen_device_users.insert(device_user) {
+                return Err(serde::de::Error::custom(format!(
+                    "Client #{}: duplicate device_user '{}'",
+                    idx + 1,
+                    device_user
+                )));
+            }
         }
     }
 

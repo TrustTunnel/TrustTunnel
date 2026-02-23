@@ -134,6 +134,8 @@ async fn run_endpoint(
             authentication::registry_based::Client {
                 username: "a".into(),
                 password: "b".into(),
+                device_user: None,
+                device_id: None,
             },
         )));
     }
@@ -258,6 +260,7 @@ fn jwt_auth_requires_device_id_claim_by_default_config() {
         leeway_seconds: 0,
         username_claim: "sub".into(),
         device_id_claim: Some("device_id".into()),
+        metrics_jwt_error_enabled: true,
         public_key_path: None,
         hmac_secret_env: Some("JWT_SECRET".into()),
     })
@@ -292,6 +295,7 @@ fn jwt_auth_skips_device_id_claim_if_not_configured() {
         leeway_seconds: 0,
         username_claim: "sub".into(),
         device_id_claim: None,
+        metrics_jwt_error_enabled: true,
         public_key_path: None,
         hmac_secret_env: Some("JWT_SECRET".into()),
     })

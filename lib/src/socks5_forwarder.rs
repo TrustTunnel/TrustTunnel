@@ -522,6 +522,12 @@ fn make_auth(auth: authentication::Source) -> Result<socks5_client::Authenticati
                 ),
             )
         }
+        authentication::Source::ProxyBearer(_)
+        | authentication::Source::ProxyBearerAndBasic { .. } => {
+            return Err(
+                "Bearer authentication is not supported for SOCKS5 upstream auth".to_string(),
+            )
+        }
     })
 }
 
@@ -549,6 +555,12 @@ fn make_extended_auth<'a>(
         authentication::Source::ProxyBasic(x) => values.push(
             socks5_client::ExtendedAuthenticationValue::BasicProxyAuth(x),
         ),
+        authentication::Source::ProxyBearer(_)
+        | authentication::Source::ProxyBearerAndBasic { .. } => {
+            return Err(
+                "Bearer authentication is not supported for SOCKS5 upstream auth".to_string(),
+            )
+        }
     }
 
     Ok(socks5_client::Authentication::Extended(values))

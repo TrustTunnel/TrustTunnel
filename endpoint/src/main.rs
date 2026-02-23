@@ -6,7 +6,7 @@ use tokio::signal;
 use trusttunnel::authentication::jwt::JwtAuth;
 use trusttunnel::authentication::mixed::MixedAuth;
 use trusttunnel::authentication::registry_based::CredentialsAuth;
-use trusttunnel::authentication::{AuthProvider, Authenticator, ProxyBasicAuthenticator};
+use trusttunnel::authentication::{Authenticator, ProxyBasicAuthenticator};
 use trusttunnel::client_config;
 use trusttunnel::core::Core;
 use trusttunnel::settings::{AuthMode, Settings};
@@ -331,54 +331,47 @@ fn main() {
     };
 
     let shutdown = Shutdown::new();
-    let authenticator: Option<Arc<dyn Authenticator>> = {
-        let auth_provider: Option<Box<dyn AuthProvider>> = match *settings.get_auth().get_mode() {
-            AuthMode::Credentials => {
-                if settings.get_clients().is_empty() {
-                    None
-                } else {
-                    Some(Box::new(CredentialsAuth::new(settings.get_clients())))
-                }
+    let authenticator: Option<Arc<dyn Authenticator>> = match *settings.get_auth().get_mode() {
+        AuthMode::Credentials => {
+            if settings.get_clients().is_empty() {
+                None
+            } else {
+                Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
+                    CredentialsAuth::new(settings.get_clients()),
+                ))))
             }
-            AuthMode::Jwt => {
-                let jwt_settings = settings
-                    .get_auth()
-                    .get_jwt()
-                    .as_ref()
-                    .expect("[auth.jwt] must be configured for mode=jwt");
-                let mut jwt_auth_config = jwt_settings.to_auth_config();
-                jwt_auth_config.metrics_jwt_error_enabled = settings
-                    .get_metrics()
-                    .as_ref()
-                    .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
-                Some(Box::new(
-                    JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
-                ))
-            }
-            AuthMode::Mixed => {
-                let jwt_settings = settings
-                    .get_auth()
-                    .get_jwt()
-                    .as_ref()
-                    .expect("[auth.jwt] must be configured for mode=mixed");
-                let mut jwt_auth_config = jwt_settings.to_auth_config();
-                jwt_auth_config.metrics_jwt_error_enabled = settings
-                    .get_metrics()
-                    .as_ref()
-                    .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
-                Some(Box::new(MixedAuth::new(
-                    Box::new(
-                        JwtAuth::from_config(&jwt_auth_config)
-                            .expect("Couldn't initialize JWT auth"),
-                    ),
-                    Box::new(CredentialsAuth::new(settings.get_clients())),
-                )))
-            }
-        };
-
-        auth_provider.map(|provider| {
-            Arc::new(ProxyBasicAuthenticator::new(provider)) as Arc<dyn Authenticator>
-        })
+        }
+        AuthMode::Jwt => {
+            let jwt_settings = settings
+                .get_auth()
+                .get_jwt()
+                .as_ref()
+                .expect("[auth.jwt] must be configured for mode=jwt");
+            let mut jwt_auth_config = jwt_settings.to_auth_config();
+            jwt_auth_config.metrics_jwt_error_enabled = settings
+                .get_metrics()
+                .as_ref()
+                .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
+            Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
+                JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
+            ))))
+        }
+        AuthMode::Mixed => {
+            let jwt_settings = settings
+                .get_auth()
+                .get_jwt()
+                .as_ref()
+                .expect("[auth.jwt] must be configured for mode=mixed");
+            let mut jwt_auth_config = jwt_settings.to_auth_config();
+            jwt_auth_config.metrics_jwt_error_enabled = settings
+                .get_metrics()
+                .as_ref()
+                .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
+            Some(Arc::new(MixedAuth::new(
+                JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
+                CredentialsAuth::new(settings.get_clients()),
+            )))
+        }
     };
     let core = Arc::new(
         Core::new(
