@@ -167,6 +167,15 @@ Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 
 Tracks TLS/channel handshake duration for incoming VPN sessions.
 
+
+### Authentication Counters
+
+**Names:** `auth_basic_success_total`, `auth_basic_failure_total`, `auth_jwt_success_total`, `auth_jwt_failure_total`  
+**Type:** Counter  
+**Labels:** None
+
+Tracks successful and failed authentication attempts split by auth type (Basic vs JWT).
+
 ### JWT Validation Errors
 
 **Name:** `vpn_jwt_validation_errors_total`  

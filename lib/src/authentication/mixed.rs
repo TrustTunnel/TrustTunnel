@@ -3,6 +3,7 @@ use crate::authentication::registry_based::CredentialsAuth;
 use crate::authentication::{AuthProvider, Authenticator, Source, Status};
 use crate::log_id;
 use crate::log_utils;
+use crate::metrics;
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
 
@@ -20,6 +21,7 @@ impl MixedAuth {
         let decoded = match BASE64_ENGINE.decode(basic) {
             Ok(value) => value,
             Err(_) => {
+                metrics::add_auth_basic_failure();
                 return Status::Reject;
             }
         };
@@ -27,6 +29,7 @@ impl MixedAuth {
         let credentials = match String::from_utf8(decoded) {
             Ok(value) => value,
             Err(_) => {
+                metrics::add_auth_basic_failure();
                 return Status::Reject;
             }
         };
@@ -35,12 +38,14 @@ impl MixedAuth {
         let username = match split.next() {
             Some(value) if !value.is_empty() => value,
             _ => {
+                metrics::add_auth_basic_failure();
                 return Status::Reject;
             }
         };
         let password = match split.next() {
             Some(value) => value,
             None => {
+                metrics::add_auth_basic_failure();
                 return Status::Reject;
             }
         };

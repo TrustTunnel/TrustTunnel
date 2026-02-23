@@ -2,6 +2,7 @@ use log::{debug, error, info, warn, LevelFilter};
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
 use trusttunnel::authentication::jwt::JwtAuth;
 use trusttunnel::authentication::mixed::MixedAuth;
@@ -337,7 +338,10 @@ fn main() {
                 None
             } else {
                 Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
-                    CredentialsAuth::new(settings.get_clients()),
+                    CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
                 ))))
             }
         }
@@ -353,7 +357,12 @@ fn main() {
                 .as_ref()
                 .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
             Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
-                JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
+                JwtAuth::from_config(&jwt_auth_config)
+                    .expect("Couldn't initialize JWT auth")
+                    .with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
             ))))
         }
         AuthMode::Mixed => {
@@ -368,8 +377,16 @@ fn main() {
                 .as_ref()
                 .map_or(true, |x| x.get_jwt_error_enabled().to_owned());
             Some(Arc::new(MixedAuth::new(
-                JwtAuth::from_config(&jwt_auth_config).expect("Couldn't initialize JWT auth"),
-                CredentialsAuth::new(settings.get_clients()),
+                JwtAuth::from_config(&jwt_auth_config)
+                    .expect("Couldn't initialize JWT auth")
+                    .with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
+                CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
+                    Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                    Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                ),
             )))
         }
     };

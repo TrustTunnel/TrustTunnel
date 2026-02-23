@@ -202,6 +202,10 @@ pub struct AuthSettings {
     pub(crate) mode: AuthMode,
     #[serde(default)]
     pub(crate) jwt: Option<JwtSettings>,
+    #[serde(default = "AuthSettings::default_cache_ttl_seconds")]
+    pub(crate) cache_ttl_seconds: u64,
+    #[serde(default = "AuthSettings::default_revocation_sync_seconds")]
+    pub(crate) revocation_sync_seconds: u64,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default, PartialEq)]
@@ -259,11 +263,23 @@ impl JwtSettings {
     }
 }
 
+impl AuthSettings {
+    fn default_cache_ttl_seconds() -> u64 {
+        5
+    }
+
+    fn default_revocation_sync_seconds() -> u64 {
+        15
+    }
+}
+
 impl Default for AuthSettings {
     fn default() -> Self {
         Self {
             mode: AuthMode::Credentials,
             jwt: None,
+            cache_ttl_seconds: Self::default_cache_ttl_seconds(),
+            revocation_sync_seconds: Self::default_revocation_sync_seconds(),
         }
     }
 }

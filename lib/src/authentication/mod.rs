@@ -41,7 +41,7 @@ pub trait Authenticator: Send + Sync {
     fn authenticate(&self, source: &Source<'_>, log_id: &log_utils::IdChain<u64>) -> Status;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AuthError {
     InvalidCredentials,
     InvalidToken,
@@ -72,22 +72,34 @@ impl Authenticator for ProxyBasicAuthenticator {
 
         let decoded = match BASE64_ENGINE.decode(basic.as_ref()) {
             Ok(value) => value,
-            Err(_) => return Status::Reject,
+            Err(_) => {
+                crate::metrics::add_auth_basic_failure();
+                return Status::Reject;
+            }
         };
 
         let credentials = match String::from_utf8(decoded) {
             Ok(value) => value,
-            Err(_) => return Status::Reject,
+            Err(_) => {
+                crate::metrics::add_auth_basic_failure();
+                return Status::Reject;
+            }
         };
 
         let mut split = credentials.splitn(2, ':');
         let username = match split.next() {
             Some(value) if !value.is_empty() => value,
-            _ => return Status::Reject,
+            _ => {
+                crate::metrics::add_auth_basic_failure();
+                return Status::Reject;
+            }
         };
         let password = match split.next() {
             Some(value) => value,
-            None => return Status::Reject,
+            None => {
+                crate::metrics::add_auth_basic_failure();
+                return Status::Reject;
+            }
         };
 
         match self.provider.authenticate(username, password) {
