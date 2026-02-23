@@ -1,0 +1,28 @@
+global:
+  scrape_interval: 15s
+  scrape_timeout: 5s
+
+scrape_configs:
+  - job_name: 'lk'
+    static_configs:
+      - targets: ['lk-1:9090', 'lk-2:9090']
+        labels:
+          app: lk
+
+  - job_name: 'trusttunnel'
+    static_configs:
+      - targets: ['node-1:1987', 'node-2:1987']
+        labels:
+          app: trusttunnel
+
+  - job_name: 'subs-service'
+    static_configs:
+      - targets: ['subs-service:9090']
+        labels:
+          app: subs-service
+
+  - job_name: 'xray-agent'
+    static_configs:
+      - targets: ['xray-agent:9090']
+        labels:
+          app: xray-agent

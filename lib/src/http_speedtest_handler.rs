@@ -1,6 +1,6 @@
 use crate::http_codec::HttpCodec;
 use crate::shutdown::Shutdown;
-use crate::{http_codec, log_id, log_utils, pipe};
+use crate::{http_codec, log_id, log_utils, metrics, pipe};
 use bytes::Bytes;
 use std::io::ErrorKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -27,6 +27,7 @@ pub(crate) async fn listen(
     shutdown: Arc<Mutex<Shutdown>>,
     mut codec: Box<dyn HttpCodec>,
     timeout: Duration,
+    metrics: Arc<metrics::Metrics>,
     log_id: log_utils::IdChain<u64>,
 ) {
     let (mut shutdown_notification, _shutdown_completion) = {
@@ -41,7 +42,7 @@ pub(crate) async fn listen(
                 Err(e) => log_id!(debug, log_id, "Shutdown notification failure: {}", e),
             }
         },
-        _ = listen_inner(codec.as_mut(), timeout, &log_id) => (),
+        _ = listen_inner(codec.as_mut(), timeout, metrics, &log_id) => (),
     }
 
     if let Err(e) = codec.graceful_shutdown().await {
@@ -52,6 +53,7 @@ pub(crate) async fn listen(
 async fn listen_inner(
     codec: &mut dyn HttpCodec,
     timeout: Duration,
+    metrics: Arc<metrics::Metrics>,
     log_id: &log_utils::IdChain<u64>,
 ) {
     let manager = Arc::new(SpeedtestManager::default());
@@ -65,7 +67,10 @@ async fn listen_inner(
                         manager.running_tests_num.fetch_add(1, Ordering::AcqRel);
                         tokio::spawn({
                             let manager = manager.clone();
+                            let metrics = metrics.clone();
                             async move {
+                                let _active_connection =
+                                    metrics.active_connection_counter("speedtest");
                                 run_download_test(x, n).await;
                                 manager.running_tests_num.fetch_sub(1, Ordering::AcqRel);
                             }
@@ -75,7 +80,10 @@ async fn listen_inner(
                         tokio::spawn({
                             manager.running_tests_num.fetch_add(1, Ordering::AcqRel);
                             let manager = manager.clone();
+                            let metrics = metrics.clone();
                             async move {
+                                let _active_connection =
+                                    metrics.active_connection_counter("speedtest");
                                 run_upload_test(x, n).await;
                                 manager.running_tests_num.fetch_sub(1, Ordering::AcqRel);
                             }

@@ -1,0 +1,12 @@
+{
+  "title": "TrustTunnel & LK Overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {"type": "timeseries", "title": "LK requests rate", "targets": [{"expr": "sum(rate(http_requests_total{app=\"lk\"}[5m]))"}]},
+    {"type": "timeseries", "title": "LK p99 latency", "targets": [{"expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{app=\"lk\"}[5m])) by (le))"}]},
+    {"type": "timeseries", "title": "VPN active connections", "targets": [{"expr": "sum(vpn_active_connections{app=\"trusttunnel\"}) by (connection_type)"}]},
+    {"type": "timeseries", "title": "TLS handshake latency p95", "targets": [{"expr": "histogram_quantile(0.95, sum(rate(vpn_handshake_duration_seconds_bucket{app=\"trusttunnel\"}[5m])) by (le))"}]},
+    {"type": "timeseries", "title": "JWT errors", "targets": [{"expr": "sum(rate(vpn_jwt_validation_errors_total{app=\"trusttunnel\"}[5m]))"}]}
+  ]
+}

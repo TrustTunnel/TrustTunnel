@@ -1,0 +1,22 @@
+apiVersion: 1
+groups:
+  - name: trusttunnel-critical
+    interval: 1m
+    rules:
+      - uid: high-jwt-errors
+        title: High JWT validation error rate
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(vpn_jwt_validation_errors_total[5m])) > 5
+
+      - uid: high-latency
+        title: High LK p95 latency
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1

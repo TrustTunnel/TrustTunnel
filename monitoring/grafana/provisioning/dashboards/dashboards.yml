@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: TrustTunnel
+    orgId: 1
+    folder: TrustTunnel
+    type: file
+    disableDeletion: false
+    options:
+      path: /var/lib/grafana/dashboards

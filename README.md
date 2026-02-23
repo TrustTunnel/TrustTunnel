@@ -483,3 +483,27 @@ Stay tuned for this feature in upcoming releases.
 ## License
 
 This project is licensed under the Apache 2.0 License. See [LICENSE](LICENSE) for details.
+
+## Monitoring
+
+TrustTunnel exposes Prometheus metrics on `/metrics` when `[metrics]` is enabled in `settings.toml`.
+
+Example:
+
+```toml
+[metrics]
+enabled = true
+jwt_error_enabled = true
+address = "127.0.0.1:1987"
+request_timeout_secs = 3
+```
+
+Key metrics include:
+
+- `vpn_handshake_duration_seconds`
+- `vpn_jwt_validation_errors_total`
+- `vpn_active_connections`
+- `vpn_request_latency_seconds`
+- `vpn_traffic_bytes_total`
+
+See [METRICS.md](METRICS.md) and `monitoring/` for Prometheus + Grafana examples.
