@@ -7,6 +7,7 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum TlvTag {
+    Version = 0x00,
     Hostname = 0x01,
     Address = 0x02,
     CustomSni = 0x03,
@@ -27,6 +28,7 @@ impl TlvTag {
 
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
+            0x00 => Some(TlvTag::Version),
             0x01 => Some(TlvTag::Hostname),
             0x02 => Some(TlvTag::Address),
             0x03 => Some(TlvTag::CustomSni),
@@ -40,6 +42,11 @@ impl TlvTag {
             0x0B => Some(TlvTag::ClientRandomPrefix),
             _ => None,
         }
+    }
+
+    pub fn from_u64(value: u64) -> Option<Self> {
+        let value = u8::try_from(value).ok()?;
+        Self::from_u8(value)
     }
 }
 
@@ -253,9 +260,13 @@ mod tests {
 
     #[test]
     fn test_tlv_tag_conversions() {
+        assert_eq!(TlvTag::Version.as_u8(), 0x00);
+        assert_eq!(TlvTag::from_u8(0x00), Some(TlvTag::Version));
         assert_eq!(TlvTag::Hostname.as_u8(), 0x01);
         assert_eq!(TlvTag::from_u8(0x01), Some(TlvTag::Hostname));
         assert_eq!(TlvTag::from_u8(0xFF), None);
+        assert_eq!(TlvTag::from_u64(0x01), Some(TlvTag::Hostname));
+        assert_eq!(TlvTag::from_u64(0x1FF), None);
     }
 
     #[test]
