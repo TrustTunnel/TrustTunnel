@@ -50,26 +50,42 @@ pub(crate) trait PendingRequest: Send {
 
     /// Get the authorization info if some
     fn auth_info(&self) -> io::Result<Option<authentication::Source>> {
-        let header = match self
-            .request()
-            .headers
-            .get(http::header::PROXY_AUTHORIZATION)
-        {
-            None => return Ok(None),
-            Some(x) => x,
-        };
+        let headers = &self.request().headers;
+        let mut basic_auth: Option<&str> = None;
+        let mut bearer_auth: Option<&str> = None;
 
-        header
-            .to_str()
-            .ok()
-            .and_then(|s| s.strip_prefix("Basic "))
-            .map(|s| Some(authentication::Source::ProxyBasic(s.into())))
-            .ok_or_else(|| {
+        for header_name in [
+            http::header::AUTHORIZATION,
+            http::header::PROXY_AUTHORIZATION,
+        ] {
+            let Some(raw_header) = headers.get(header_name) else {
+                continue;
+            };
+
+            let header = raw_header.to_str().map_err(|_| {
                 io::Error::new(
                     ErrorKind::Other,
                     format!("Unexpected authorization header: {:?}", self.request()),
                 )
-            })
+            })?;
+
+            if bearer_auth.is_none() {
+                bearer_auth = header.strip_prefix("Bearer ");
+            }
+            if basic_auth.is_none() {
+                basic_auth = header.strip_prefix("Basic ");
+            }
+        }
+
+        Ok(match (bearer_auth, basic_auth) {
+            (Some(bearer), Some(basic)) => Some(authentication::Source::ProxyBearerAndBasic {
+                bearer: bearer.into(),
+                basic: basic.into(),
+            }),
+            (Some(bearer), None) => Some(authentication::Source::ProxyBearer(bearer.into())),
+            (None, Some(basic)) => Some(authentication::Source::ProxyBasic(basic.into())),
+            (None, None) => None,
+        })
     }
 
     /// Get the request authority

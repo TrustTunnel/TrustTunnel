@@ -118,7 +118,7 @@ issuer = "https://lk.securesoft.dev" # optional
 audience = "trusttunnel" # optional
 leeway_seconds = 30
 username_claim = "sub"
-device_id_claim = "device_id"
+device_id_claim = "device_id" # optional
 public_key_path = "jwt/public.pem" # required for RS256
 # hmac_secret_env = "TRUSTTUNNEL_JWT_SECRET" # required for HS256
 
@@ -214,11 +214,13 @@ Contains client authentication credentials. Example:
 ```toml
 [[client]]
 username = "user1"
-password = "secure_password_1"
+password = "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+device_user = "device-user-1" # optional login alias for Basic
+device_id = "dev-1" # optional LK device id for JWT binding
 
 [[client]]
 username = "user2"
-password = "secure_password_2"
+password = "sha256:60303ae22b9988617223f230e363dc4a63e7b445f31f7f8132d0ebf7e0fd4cae"
 ```
 
 ### Rules File (rules.toml)
@@ -274,17 +276,30 @@ action = "deny"
 | `issuer` | String | - | Optional `iss` claim check |
 | `audience` | String | - | Optional `aud` claim check |
 | `leeway_seconds` | Integer | `30` | Allowed clock skew for `exp` |
-| `username_claim` | String | `sub` | Claim that must match Basic username |
-| `device_id_claim` | String | `device_id` | Claim that must contain non-empty device identifier |
+| `username_claim` | String | `sub` | JWT claim used as LK username and matched with `credentials.toml` |
+| `device_id_claim` | String | - | Optional JWT claim matched against `client.device_id` in `credentials.toml` |
 | `public_key_path` | String | - | PEM public key path for RS256 |
 | `hmac_secret_env` | String | - | Env var containing HMAC secret for HS256 |
 
-In JWT mode, the client still sends Basic auth, but password must be the JWT token:
+In JWT mode, client sends Basic auth and uses JWT as password:
 
 `proxy-authorization: Basic base64("username:JWT_TOKEN")`
 
-`username` from Basic must strictly match the configured `username_claim` (default: `sub`).
-If `device_id_claim` is configured (default: `device_id`), the token must include this non-empty claim.
+In Mixed mode both methods are active at the same time:
+- first `Authorization: Bearer <token>` is validated;
+- if Bearer is missing/invalid and Basic is provided, server validates Basic credentials.
+
+JWT claims are validated against `credentials.toml`:
+- `username_claim` must match LK username (`client.username`);
+- if `device_id_claim` is configured, it must match `client.device_id`.
+
+### Migration and backward compatibility
+
+- Users on JWT-only mode do not need any changes.
+- To enable Basic + JWT simultaneously:
+  1. create `credentials.toml`;
+  2. set `auth.mode = "mixed"`;
+  3. configure `[auth.jwt]`.
 
 ### Listen Protocol Settings
 

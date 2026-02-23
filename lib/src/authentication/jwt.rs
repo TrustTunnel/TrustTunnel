@@ -1,3 +1,4 @@
+use crate::authentication::registry_based::CredentialsAuth;
 use crate::authentication::{AuthError, AuthProvider};
 use crate::metrics;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -42,6 +43,11 @@ pub struct JwtAuth {
     metrics_jwt_error_enabled: bool,
 }
 
+pub struct JwtClaims {
+    pub username: String,
+    pub device_id: Option<String>,
+}
+
 impl JwtAuth {
     pub fn from_config(config: &JwtAuthConfig) -> Result<Self, AuthError> {
         let verifier = match config.algorithm {
@@ -71,6 +77,24 @@ impl JwtAuth {
 
 impl AuthProvider for JwtAuth {
     fn authenticate(&self, username: &str, token: &str) -> Result<(), AuthError> {
+        let claims = match self.validate_token(token) {
+            Ok(claims) => claims,
+            Err(error) => {
+                metrics::add_auth_jwt_failure();
+                return Err(error);
+            }
+        };
+        if claims.username != username {
+            metrics::add_auth_jwt_failure();
+            return Err(self.observe_jwt_error(AuthError::InvalidToken));
+        }
+        metrics::add_auth_jwt_success();
+        Ok(())
+    }
+}
+
+impl JwtAuth {
+    pub fn validate_token(&self, token: &str) -> Result<JwtClaims, AuthError> {
         let (header_b64, payload_b64, signature_b64) =
             split_token(token).map_err(|e| self.observe_jwt_error(e))?;
         let header = URL_SAFE_NO_PAD
@@ -114,8 +138,10 @@ impl AuthProvider for JwtAuth {
             }
         }
 
-        let exp = parse_u64_claim(payload_str, "exp")
-            .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
+        let exp = parse_u64_claim(payload_str, "exp").ok_or_else(|| {
+            metrics::add_auth_jwt_failure();
+            self.observe_jwt_error(AuthError::InvalidToken)
+        })?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|_| self.observe_jwt_error(AuthError::InvalidToken))?
@@ -125,8 +151,10 @@ impl AuthProvider for JwtAuth {
         }
 
         if let Some(issuer) = &self.issuer {
-            let iss = parse_string_claim(payload_str, "iss")
-                .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
+            let iss = parse_string_claim(payload_str, "iss").ok_or_else(|| {
+                metrics::add_auth_jwt_failure();
+                self.observe_jwt_error(AuthError::InvalidToken)
+            })?;
             if iss != *issuer {
                 return Err(self.observe_jwt_error(AuthError::InvalidToken));
             }
@@ -138,25 +166,73 @@ impl AuthProvider for JwtAuth {
             }
         }
 
-        let token_username = parse_string_claim(payload_str, &self.username_claim)
-            .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
-        if token_username != username {
+        let token_username =
+            parse_string_claim(payload_str, &self.username_claim).ok_or_else(|| {
+                metrics::add_auth_jwt_failure();
+                self.observe_jwt_error(AuthError::InvalidToken)
+            })?;
+
+        let token_device_id = self
+            .device_id_claim
+            .as_ref()
+            .map(|device_id_claim| {
+                parse_string_claim(payload_str, device_id_claim)
+                    .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))
+                    .and_then(|device_id| {
+                        if device_id.is_empty() {
+                            Err(self.observe_jwt_error(AuthError::InvalidToken))
+                        } else {
+                            Ok(device_id)
+                        }
+                    })
+            })
+            .transpose()?;
+
+        Ok(JwtClaims {
+            username: token_username,
+            device_id: token_device_id,
+        })
+    }
+
+    pub fn authenticate_with_registry(
+        &self,
+        token: &str,
+        credentials: &CredentialsAuth,
+    ) -> Result<(), AuthError> {
+        let claims = match self.validate_token(token) {
+            Ok(claims) => claims,
+            Err(error) => {
+                metrics::add_auth_jwt_failure();
+                return Err(error);
+            }
+        };
+        let client = credentials
+            .find_client_by_login(&claims.username)
+            .ok_or_else(|| {
+                metrics::add_auth_jwt_failure();
+                self.observe_jwt_error(AuthError::InvalidToken)
+            })?;
+
+        if client.username != claims.username {
+            metrics::add_auth_jwt_failure();
             return Err(self.observe_jwt_error(AuthError::InvalidToken));
         }
 
-        if let Some(device_id_claim) = &self.device_id_claim {
-            let device_id = parse_string_claim(payload_str, device_id_claim)
-                .ok_or_else(|| self.observe_jwt_error(AuthError::InvalidToken))?;
-            if device_id.is_empty() {
+        if let Some(token_device_id) = claims.device_id.as_deref() {
+            let expected_device_id = client.device_id.as_deref().ok_or_else(|| {
+                metrics::add_auth_jwt_failure();
+                self.observe_jwt_error(AuthError::InvalidToken)
+            })?;
+            if expected_device_id != token_device_id {
+                metrics::add_auth_jwt_failure();
                 return Err(self.observe_jwt_error(AuthError::InvalidToken));
             }
         }
 
+        metrics::add_auth_jwt_success();
         Ok(())
     }
-}
 
-impl JwtAuth {
     fn observe_jwt_error(&self, error: AuthError) -> AuthError {
         if self.metrics_jwt_error_enabled && matches!(error, AuthError::InvalidToken) {
             metrics::add_jwt_validation_error("invalid_token");

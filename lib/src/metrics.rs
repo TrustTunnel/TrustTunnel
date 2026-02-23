@@ -53,6 +53,54 @@ pub(crate) struct RequestLatencyObserver {
     started: Instant,
 }
 
+static AUTH_BASIC_SUCCESS_TOTAL: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    let counter = prometheus::IntCounter::new(
+        "auth_basic_success_total",
+        "Total number of successful Basic authentication attempts",
+    )
+    .unwrap();
+    prometheus::default_registry()
+        .register(Box::new(counter.clone()))
+        .ok();
+    counter
+});
+
+static AUTH_BASIC_FAILURE_TOTAL: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    let counter = prometheus::IntCounter::new(
+        "auth_basic_failure_total",
+        "Total number of failed Basic authentication attempts",
+    )
+    .unwrap();
+    prometheus::default_registry()
+        .register(Box::new(counter.clone()))
+        .ok();
+    counter
+});
+
+static AUTH_JWT_SUCCESS_TOTAL: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    let counter = prometheus::IntCounter::new(
+        "auth_jwt_success_total",
+        "Total number of successful JWT authentication attempts",
+    )
+    .unwrap();
+    prometheus::default_registry()
+        .register(Box::new(counter.clone()))
+        .ok();
+    counter
+});
+
+static AUTH_JWT_FAILURE_TOTAL: Lazy<prometheus::IntCounter> = Lazy::new(|| {
+    let counter = prometheus::IntCounter::new(
+        "auth_jwt_failure_total",
+        "Total number of failed JWT authentication attempts",
+    )
+    .unwrap();
+    prometheus::default_registry()
+        .register(Box::new(counter.clone()))
+        .ok();
+    counter
+});
+
 static JWT_VALIDATION_ERRORS_TOTAL: Lazy<prometheus::IntCounterVec> = Lazy::new(|| {
     let mut labels = std::collections::HashMap::new();
     labels.insert("instance".to_string(), default_node_label());
@@ -294,6 +342,22 @@ pub(crate) fn add_jwt_validation_error(reason: &str) {
         .inc();
 }
 
+pub(crate) fn add_auth_basic_success() {
+    AUTH_BASIC_SUCCESS_TOTAL.inc();
+}
+
+pub(crate) fn add_auth_basic_failure() {
+    AUTH_BASIC_FAILURE_TOTAL.inc();
+}
+
+pub(crate) fn add_auth_jwt_success() {
+    AUTH_JWT_SUCCESS_TOTAL.inc();
+}
+
+pub(crate) fn add_auth_jwt_failure() {
+    AUTH_JWT_FAILURE_TOTAL.inc();
+}
+
 fn default_node_label() -> String {
     std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
 }
@@ -494,5 +558,23 @@ mod tests {
             .with_label_values(&["invalid_token"])
             .get();
         assert_eq!(after, before + 1);
+    }
+
+    #[test]
+    fn auth_method_counters_increment() {
+        let before_basic_success = AUTH_BASIC_SUCCESS_TOTAL.get();
+        let before_basic_failure = AUTH_BASIC_FAILURE_TOTAL.get();
+        let before_jwt_success = AUTH_JWT_SUCCESS_TOTAL.get();
+        let before_jwt_failure = AUTH_JWT_FAILURE_TOTAL.get();
+
+        add_auth_basic_success();
+        add_auth_basic_failure();
+        add_auth_jwt_success();
+        add_auth_jwt_failure();
+
+        assert_eq!(AUTH_BASIC_SUCCESS_TOTAL.get(), before_basic_success + 1);
+        assert_eq!(AUTH_BASIC_FAILURE_TOTAL.get(), before_basic_failure + 1);
+        assert_eq!(AUTH_JWT_SUCCESS_TOTAL.get(), before_jwt_success + 1);
+        assert_eq!(AUTH_JWT_FAILURE_TOTAL.get(), before_jwt_failure + 1);
     }
 }
