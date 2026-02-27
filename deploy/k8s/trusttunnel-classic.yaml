@@ -69,6 +69,10 @@ spec:
         - name: trusttunnel_sidecar_agent
           image: ghcr.io/example/trusttunnel-sidecar-agent:latest
           imagePullPolicy: IfNotPresent
+          ports:
+            - name: agent-http
+              containerPort: 9105
+              protocol: TCP
           envFrom:
             # Keep INTERNAL_AGENT_TOKEN and other sensitive envs in this Secret.
             - secretRef:
@@ -97,6 +101,8 @@ spec:
               value: "1"
             - name: AGENT_PORT
               value: "9105"
+            - name: TRUSTTUNNEL_TCP_ADDR
+              value: "127.0.0.1:8443"
           volumeMounts:
             - name: runtime
               mountPath: /runtime
@@ -163,3 +169,19 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: trusttunnel-sidecar-agent
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  podMetricsEndpoints:
+    - port: agent-http
+      path: /metrics
+      interval: 30s
