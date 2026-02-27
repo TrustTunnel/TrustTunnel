@@ -261,14 +261,54 @@ async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<Snapsh
 }
 
 fn validate_checksum(snapshot: &SnapshotResponse) -> Result<()> {
-    let raw = toml::to_string(&CredentialsFile {
-        client: snapshot.credentials.clone(),
-    })?;
-    let checksum = format!("{:x}", Sha256::digest(raw.as_bytes()));
+    let checksum = canonical_checksum(&snapshot.credentials);
     if checksum != snapshot.checksum {
         anyhow::bail!("snapshot checksum mismatch");
     }
     Ok(())
+}
+
+fn canonical_checksum(credentials: &[Credential]) -> String {
+    let mut canonical_credentials = credentials.to_vec();
+    canonical_credentials.sort_by(|a, b| {
+        a.username
+            .cmp(&b.username)
+            .then_with(|| a.password.cmp(&b.password))
+    });
+
+    let entries = canonical_credentials
+        .iter()
+        .map(|credential| {
+            format!(
+                "{{\"username\":\"{}\",\"password\":\"{}\"}}",
+                escape_json_string(&credential.username),
+                escape_json_string(&credential.password)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let raw = format!("{{\"credentials\":[{}]}}", entries);
+
+    format!("{:x}", Sha256::digest(raw.as_bytes()))
+}
+
+fn escape_json_string(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            '\u{08}' => escaped.push_str("\\b"),
+            '\u{0C}' => escaped.push_str("\\f"),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if c.is_control() => escaped.push_str(&format!("\\u{:04x}", c as u32)),
+            c => escaped.push(c),
+        }
+    }
+
+    escaped
 }
 
 fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Result<()> {
@@ -536,6 +576,10 @@ mod tests {
     }
 
     fn checksum_for(credentials: Vec<Credential>) -> String {
+        canonical_checksum(&credentials)
+    }
+
+    fn legacy_toml_checksum_for(credentials: Vec<Credential>) -> String {
         let raw = toml::to_string(&CredentialsFile {
             client: credentials,
         })
@@ -661,6 +705,44 @@ mod tests {
 
         assert!(result.is_ok());
         success_report.assert_async().await;
+    }
+
+    #[test]
+    fn checksum_rejects_legacy_toml_algorithm() {
+        let snapshot = SnapshotResponse {
+            version: "v-legacy".to_string(),
+            credentials: vec![Credential {
+                username: "alice".to_string(),
+                password: "secret".to_string(),
+            }],
+            checksum: legacy_toml_checksum_for(vec![Credential {
+                username: "alice".to_string(),
+                password: "secret".to_string(),
+            }]),
+        };
+
+        assert!(validate_checksum(&snapshot).is_err());
+    }
+
+    #[test]
+    fn checksum_accepts_documented_canonical_example() {
+        let snapshot = SnapshotResponse {
+            version: "v-doc-example".to_string(),
+            credentials: vec![
+                Credential {
+                    username: "bob".to_string(),
+                    password: "pw2".to_string(),
+                },
+                Credential {
+                    username: "alice".to_string(),
+                    password: "pw1".to_string(),
+                },
+            ],
+            checksum: "84cf9958ba7047e33b96652394c2ee7314185913a2517bf89954472c1bdafb14"
+                .to_string(),
+        };
+
+        assert!(validate_checksum(&snapshot).is_ok());
     }
 
     #[derive(Default)]
