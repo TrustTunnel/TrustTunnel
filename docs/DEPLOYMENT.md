@@ -71,26 +71,26 @@ For Classic production mode run two containers in one Pod:
 - `trusttunnel_endpoint`
 - `trusttunnel_sidecar_agent`
 
-Both containers share writable volume `/shared`:
-- agent writes `/shared/credentials.toml` atomically;
+Both containers share writable volume `/runtime`:
+- agent writes `/runtime/accounts.toml` atomically;
 - endpoint reads same file through `credentials_file` in `vpn.toml`;
-- agent sends `SIGHUP` to endpoint process, endpoint reloads auth data without restart.
+- with `TRUSTTUNNEL_RELOAD_MODE=signal` agent sends `SIGHUP` to `TRUSTTUNNEL_PID` (default `1`).
 
 Required sidecar env:
 - `LK_INTERNAL_BASE_URL`
 - `INTERNAL_AGENT_TOKEN`
 - `NODE_ID`
-- `SYNC_INTERVAL_SECONDS` (default: `60`)
-- `CREDENTIALS_PATH` (default: `/shared/credentials.toml`)
-- `TRUSTTUNNEL_RELOAD_SIGNAL` (default: `SIGHUP`)
-- `TRUSTTUNNEL_HEALTH_ADDR` (default: `localhost:443`)
-- `HEALTH_CHECK_INTERVAL_SECONDS` (default: `15`)
-- `METRICS_PUSH_INTERVAL` (default: `30`)
+- `SYNC_INTERVAL_SECONDS` (default: `30`)
+- `HEARTBEAT_INTERVAL_SECONDS` (default: `10`)
+- `CREDENTIALS_PATH` (default: `/runtime/accounts.toml`)
+- `TRUSTTUNNEL_RELOAD_MODE` (default: `signal`)
+- `TRUSTTUNNEL_PID` (default: `1`)
+- `AGENT_PORT` (default: `9105`)
 
 Metrics semantics in sidecar:
-- health probing (`TRUSTTUNNEL_HEALTH_ADDR`) runs on `HEALTH_CHECK_INTERVAL_SECONDS` cadence and stores the last known state;
-- metrics push uses the latest known health state instead of doing an on-demand health TCP dial;
-- if endpoint is down, sidecar reports `active_connections=0` and marks degraded state via `error_rate=1.0`.
+- heartbeat push runs on `HEARTBEAT_INTERVAL_SECONDS` cadence;
+- sidecar health probe checks `127.0.0.1:AGENT_PORT` before posting heartbeat;
+- if endpoint is down, sidecar reports `active_connections=0` and degraded status.
 
 Kubernetes notes:
 - use `envFrom.secretRef` for `INTERNAL_AGENT_TOKEN`;
