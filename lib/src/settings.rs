@@ -28,6 +28,8 @@ pub enum ValidationError {
     ReverseProxy(String),
     /// Invalid [`Settings.listen_protocols`]
     ListenProtocols(String),
+    /// Invalid request path configuration
+    InvalidPath(String),
     /// Invalid rules file
     RulesFile(String),
     /// No credentials configured while listening on a public address
@@ -43,6 +45,7 @@ impl Debug for ValidationError {
             Self::SpeedTlsHostInfo(x) => write!(f, "Invalid speedtest TLS hosts: {}", x),
             Self::ReverseProxy(x) => write!(f, "Invalid reverse proxy settings: {}", x),
             Self::ListenProtocols(x) => write!(f, "Invalid listen protocols settings: {}", x),
+            Self::InvalidPath(x) => write!(f, "Invalid request path: {}", x),
             Self::RulesFile(x) => write!(f, "Invalid rules file: {}", x),
             Self::NoCredentialsOnPublicAddress => write!(
                 f,
@@ -178,6 +181,18 @@ pub struct Settings {
     /// Whether speedtest is available on the main hosts via `/speed` path.
     #[serde(default = "Settings::default_speedtest_enable")]
     pub(crate) speedtest_enable: bool,
+    /// Whether ping is available on the main hosts.
+    #[serde(default = "Settings::default_ping_enable")]
+    pub(crate) ping_enable: bool,
+    /// Optional path prefix for ping requests on main hosts.
+    #[serde(default)]
+    pub(crate) ping_path: Option<String>,
+    /// Optional path prefix for speedtest requests on main hosts.
+    #[serde(default)]
+    pub(crate) speedtest_path: Option<String>,
+    /// Allow tunnel requests without a token (legacy compatibility).
+    #[serde(default = "Settings::default_allow_without_token")]
+    pub(crate) allow_without_token: bool,
 
     /// Default maximum number of simultaneous HTTP/1 and HTTP/2 connections per client credentials.
     /// TrustTunnel clients open 8 HTTP/2 connections by default, so set this to
@@ -500,6 +515,10 @@ impl Settings {
             .map(ReverseProxySettings::validate)
             .transpose()?;
 
+        Self::validate_request_path("ping_path", &self.ping_path)?;
+        Self::validate_request_path("speedtest_path", &self.speedtest_path)?;
+        Self::validate_request_path_overlaps(&self.ping_path, &self.speedtest_path)?;
+
         if self.listen_protocols.http1.is_none()
             && self.listen_protocols.http2.is_none()
             && self.listen_protocols.quic.is_none()
@@ -550,6 +569,39 @@ impl Settings {
     pub fn default_speedtest_enable() -> bool {
         false
     }
+
+    pub fn default_ping_enable() -> bool {
+        false
+    }
+
+    pub fn default_allow_without_token() -> bool {
+        true
+    }
+
+    fn validate_request_path(name: &str, path: &Option<String>) -> Result<(), ValidationError> {
+        if let Some(path) = path {
+            if path.is_empty() || !path.starts_with('/') {
+                return Err(ValidationError::InvalidPath(format!("{name}: {path}")));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_request_path_overlaps(
+        left: &Option<String>,
+        right: &Option<String>,
+    ) -> Result<(), ValidationError> {
+        let (Some(left), Some(right)) = (left.as_ref(), right.as_ref()) else {
+            return Ok(());
+        };
+        if left == right || left.starts_with(right) || right.starts_with(left) {
+            return Err(ValidationError::InvalidPath(format!(
+                "path overlap: {left} vs {right}"
+            )));
+        }
+        Ok(())
+    }
+
 }
 
 #[cfg(test)]
@@ -576,6 +628,10 @@ impl Default for Settings {
             metrics: Default::default(),
             rules_engine: Some(rules::RulesEngine::default_allow()),
             speedtest_enable: false,
+            ping_enable: Settings::default_ping_enable(),
+            ping_path: None,
+            speedtest_path: None,
+            allow_without_token: Settings::default_allow_without_token(),
             default_max_http2_conns_per_client: None,
             default_max_http3_conns_per_client: None,
             built: false,
@@ -832,6 +888,10 @@ impl SettingsBuilder {
                 metrics: Default::default(),
                 rules_engine: Some(rules::RulesEngine::default_allow()),
                 speedtest_enable: Settings::default_speedtest_enable(),
+                ping_enable: Settings::default_ping_enable(),
+                ping_path: None,
+                speedtest_path: None,
+                allow_without_token: Settings::default_allow_without_token(),
                 default_max_http2_conns_per_client: None,
                 default_max_http3_conns_per_client: None,
                 built: true,
@@ -964,6 +1024,30 @@ impl SettingsBuilder {
     /// Set the default maximum HTTP/3 connections per client credentials
     pub fn default_max_http3_conns_per_client(mut self, x: Option<u32>) -> Self {
         self.settings.default_max_http3_conns_per_client = x;
+        self
+    }
+
+    /// Set whether ping is available
+    pub fn ping_enable(mut self, x: bool) -> Self {
+        self.settings.ping_enable = x;
+        self
+    }
+
+    /// Set path prefix for ping requests on main hosts
+    pub fn ping_path<S: Into<String>>(mut self, path: S) -> Self {
+        self.settings.ping_path = Some(path.into());
+        self
+    }
+
+    /// Set path prefix for speedtest requests on main hosts
+    pub fn speedtest_path<S: Into<String>>(mut self, path: S) -> Self {
+        self.settings.speedtest_path = Some(path.into());
+        self
+    }
+
+    /// Allow tunnel requests without a token
+    pub fn allow_without_token(mut self, x: bool) -> Self {
+        self.settings.allow_without_token = x;
         self
     }
 }

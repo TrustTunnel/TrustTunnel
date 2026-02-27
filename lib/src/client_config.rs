@@ -1,15 +1,16 @@
 use crate::{
-    authentication::registry_based, cert_verification::CertificateVerifier,
+    authentication, authentication::registry_based, cert_verification::CertificateVerifier,
     settings::TlsHostsSettings, utils::ToTomlComment,
 };
 #[cfg(feature = "rt_doc")]
 use macros::{Getter, RuntimeDoc};
 use once_cell::sync::Lazy;
+use std::net::SocketAddr;
 use toml_edit::{value, Document};
 
 pub fn build(
     client: &String,
-    addresses: Vec<String>,
+    addresses: Vec<SocketAddr>,
     username: &[registry_based::Client],
     hostsettings: &TlsHostsSettings,
     custom_sni: Option<String>,
@@ -42,6 +43,7 @@ pub fn build(
         username: user.username.clone(),
         password: user.password.clone(),
         client_random_prefix: client_random_prefix.unwrap_or_default(),
+        tunnel_token: authentication::tunnel_token_from_credentials(&user.username, &user.password),
         skip_verification: false,
         certificate,
         cert_is_system_verifiable,
@@ -55,7 +57,7 @@ pub struct ClientConfig {
     /// Endpoint host name, used for TLS session establishment
     hostname: String,
     /// Endpoint addresses in `IP:port` or `hostname:port` format
-    addresses: Vec<String>,
+    addresses: Vec<SocketAddr>,
     /// Custom SNI value for TLS handshake.
     /// If set, this value is used as the TLS SNI instead of the hostname.
     custom_sni: String,
@@ -68,6 +70,8 @@ pub struct ClientConfig {
     /// TLS client random hex prefix for connection filtering.
     /// Must have a corresponding rule in rules.toml.
     client_random_prefix: String,
+    /// Tunnel token for `X-Tunnel-Token` header (SHA-256 of `username:password`, hex)
+    tunnel_token: String,
     /// Skip the endpoint certificate verification?
     /// That is, any certificate is accepted with this one set to true.
     skip_verification: bool,
@@ -86,13 +90,14 @@ impl ClientConfig {
     pub fn compose_toml(&self) -> String {
         let mut doc: Document = TEMPLATE.parse().unwrap();
         doc["hostname"] = value(&self.hostname);
-        let vec = toml_edit::Array::from_iter(self.addresses.iter().map(|x| x.as_str()));
+        let vec = toml_edit::Array::from_iter(self.addresses.iter().map(|x| x.to_string()));
         doc["addresses"] = value(vec);
         doc["custom_sni"] = value(&self.custom_sni);
         doc["has_ipv6"] = value(self.has_ipv6);
         doc["username"] = value(&self.username);
         doc["password"] = value(&self.password);
         doc["client_random_prefix"] = value(&self.client_random_prefix);
+        doc["tunnel_token"] = value(&self.tunnel_token);
         doc["skip_verification"] = value(self.skip_verification);
         if self.cert_is_system_verifiable {
             doc["certificate"] = value("");
@@ -127,7 +132,11 @@ impl ClientConfig {
         // Build deep-link config
         let config = DeepLinkConfig {
             hostname: self.hostname.clone(),
-            addresses: self.addresses.clone(),
+            addresses: self
+                .addresses
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             username: self.username.clone(),
             password: self.password.clone(),
             client_random_prefix: if self.client_random_prefix.is_empty() {
@@ -179,6 +188,9 @@ password = ""
 client_random_prefix = ""
 
 {}
+tunnel_token = ""
+
+{}
 skip_verification = false
 
 {}
@@ -197,6 +209,7 @@ anti_dpi = false
         ClientConfig::doc_username().to_toml_comment(),
         ClientConfig::doc_password().to_toml_comment(),
         ClientConfig::doc_client_random_prefix().to_toml_comment(),
+        ClientConfig::doc_tunnel_token().to_toml_comment(),
         ClientConfig::doc_skip_verification().to_toml_comment(),
         ClientConfig::doc_certificate().to_toml_comment(),
         ClientConfig::doc_upstream_protocol().to_toml_comment(),
@@ -217,6 +230,7 @@ mod tests {
                 username: "alice".into(),
                 password: "secret".into(),
                 client_random_prefix: String::new(),
+                tunnel_token: String::new(),
                 skip_verification: false,
                 certificate,
                 cert_is_system_verifiable,
