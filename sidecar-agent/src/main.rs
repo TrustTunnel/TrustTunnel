@@ -61,13 +61,22 @@ struct Credential {
 }
 
 #[derive(Serialize)]
-struct SyncReport<'a> {
-    version: &'a str,
-    status: &'a str,
+struct SyncReport {
+    version: String,
+    status: String,
     applied_count: usize,
-    checksum: &'a str,
+    checksum: String,
     error: Option<String>,
     collected_at: String,
+}
+
+#[derive(Clone)]
+struct SyncOutcome {
+    version: String,
+    status: String,
+    applied_count: usize,
+    checksum: String,
+    error: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -131,42 +140,79 @@ async fn main() -> Result<()> {
 }
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
-    let snapshot = fetch_snapshot_with_retry(cfg, client).await?;
-    let is_new = state.last_version.as_deref() != Some(&snapshot.version)
-        || state.last_checksum.as_deref() != Some(&snapshot.checksum);
+    sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await
+}
 
-    if is_new {
-        validate_checksum(&snapshot)?;
-        write_credentials_atomically(&cfg.credentials_path, &snapshot.credentials)?;
-        send_reload_signal(&cfg.trusttunnel_reload_signal)?;
-        info!("applied credentials snapshot version={}", snapshot.version);
-    }
+async fn sync_once_with_retry(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: &mut AgentState,
+    max_retries: usize,
+    initial_backoff: Duration,
+) -> Result<()> {
+    let (outcome, sync_result) =
+        match fetch_snapshot_with_retry(cfg, client, max_retries, initial_backoff).await {
+            Ok(snapshot) => {
+                let mut outcome = SyncOutcome {
+                    version: snapshot.version.clone(),
+                    status: "success".to_string(),
+                    applied_count: snapshot.credentials.len(),
+                    checksum: snapshot.checksum.clone(),
+                    error: None,
+                };
 
-    post_sync_report(
-        cfg,
-        client,
-        SyncReport {
-            version: &snapshot.version,
-            status: "success",
-            applied_count: snapshot.credentials.len(),
-            checksum: &snapshot.checksum,
-            error: None,
-            collected_at: Utc::now().to_rfc3339(),
-        },
-    )
-    .await?;
+                let is_new = state.last_version.as_deref() != Some(&snapshot.version)
+                    || state.last_checksum.as_deref() != Some(&snapshot.checksum);
 
-    state.last_version = Some(snapshot.version);
-    state.last_checksum = Some(snapshot.checksum);
-    Ok(())
+                let sync_result = (|| -> Result<()> {
+                    if is_new {
+                        validate_checksum(&snapshot).context("validate_checksum")?;
+                        write_credentials_atomically(&cfg.credentials_path, &snapshot.credentials)
+                            .context("write_credentials_atomically")?;
+                        send_reload_signal(&cfg.trusttunnel_reload_signal)
+                            .context("send_reload_signal")?;
+                        info!("applied credentials snapshot version={}", snapshot.version);
+                    }
+                    Ok(())
+                })();
+
+                if sync_result.is_err() {
+                    outcome.status = "failed".to_string();
+                    outcome.error = sync_result
+                        .as_ref()
+                        .err()
+                        .map(|e| format!("sync failed: {e}"));
+                } else {
+                    state.last_version = Some(snapshot.version);
+                    state.last_checksum = Some(snapshot.checksum);
+                }
+
+                (outcome, sync_result)
+            }
+            Err(err) => {
+                let outcome = SyncOutcome {
+                    version: "unknown".to_string(),
+                    status: "failed".to_string(),
+                    applied_count: 0,
+                    checksum: "unknown".to_string(),
+                    error: Some(format!("fetch_snapshot failed: {err}")),
+                };
+                (outcome, Err(err))
+            }
+        };
+
+    post_sync_report(cfg, client, outcome).await?;
+    sync_result
 }
 
 async fn fetch_snapshot_with_retry(
     cfg: &Config,
     client: &reqwest::Client,
+    max_retries: usize,
+    initial_backoff: Duration,
 ) -> Result<SnapshotResponse> {
-    let mut backoff = Duration::from_secs(1);
-    for _ in 0..5 {
+    let mut backoff = initial_backoff;
+    for _ in 0..max_retries {
         match fetch_snapshot(cfg, client).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
@@ -266,12 +312,21 @@ fn send_reload_signal(signal_name: &str) -> Result<()> {
 async fn post_sync_report(
     cfg: &Config,
     client: &reqwest::Client,
-    report: SyncReport<'_>,
+    outcome: SyncOutcome,
 ) -> Result<()> {
     let url = format!(
         "{}/internal/trusttunnel/nodes/{}/sync-report",
         cfg.lk_internal_base_url, cfg.node_id
     );
+
+    let report = SyncReport {
+        version: outcome.version,
+        status: outcome.status,
+        applied_count: outcome.applied_count,
+        checksum: outcome.checksum,
+        error: outcome.error,
+        collected_at: Utc::now().to_rfc3339(),
+    };
 
     let resp = client
         .post(url)
@@ -388,4 +443,152 @@ fn read_network_totals() -> Result<u64> {
     }
 
     Ok(total)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+    use serde_json::json;
+
+    fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
+        Config {
+            lk_internal_base_url: base_url,
+            internal_agent_token: "token".to_string(),
+            node_id: "node-1".to_string(),
+            sync_interval_seconds: 60,
+            credentials_path,
+            trusttunnel_reload_signal: "SIGHUP".to_string(),
+            trusttunnel_health_addr: "localhost:443".to_string(),
+            metrics_push_interval: 30,
+        }
+    }
+
+    fn checksum_for(credentials: Vec<Credential>) -> String {
+        let raw = toml::to_string(&CredentialsFile {
+            client: credentials,
+        })
+        .expect("toml serialization");
+        format!("{:x}", Sha256::digest(raw.as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn sends_failed_report_when_snapshot_fetch_fails() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-fetch-fail.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::new();
+        let mut state = AgentState::default();
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                then.status(500);
+            })
+            .await;
+
+        let failed_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
+                    .json_body_partial(json!({ "status": "failed" }));
+                then.status(200);
+            })
+            .await;
+
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+
+        assert!(result.is_err());
+        failed_report.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn sends_failed_report_when_checksum_mismatch() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-checksum-fail.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::new();
+        let mut state = AgentState::default();
+
+        let credentials = vec![Credential {
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+        }];
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                then.status(200).json_body(json!({
+                    "version": "v1",
+                    "credentials": credentials,
+                    "checksum": "deadbeef"
+                }));
+            })
+            .await;
+
+        let failed_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
+                    .json_body_partial(json!({ "status": "failed", "version": "v1" }));
+                then.status(200);
+            })
+            .await;
+
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+
+        assert!(result.is_err());
+        failed_report.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn sends_success_report_on_successful_sync() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-success.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::new();
+
+        let credentials = vec![Credential {
+            username: "bob".to_string(),
+            password: "pw".to_string(),
+        }];
+        let checksum = checksum_for(credentials.clone());
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                then.status(200).json_body(json!({
+                    "version": "v2",
+                    "credentials": credentials,
+                    "checksum": checksum
+                }));
+            })
+            .await;
+
+        let success_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
+                    .json_body_partial(json!({ "status": "success", "version": "v2" }));
+                then.status(200);
+            })
+            .await;
+
+        let mut state = AgentState {
+            last_version: Some("v2".to_string()),
+            last_checksum: Some(checksum),
+            ..Default::default()
+        };
+
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+
+        assert!(result.is_ok());
+        success_report.assert_async().await;
+    }
 }
