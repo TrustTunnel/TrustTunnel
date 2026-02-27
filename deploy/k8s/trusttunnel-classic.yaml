@@ -13,8 +13,8 @@ data:
     listen_address = "0.0.0.0:8443"
 
     [auth]
-    # Sidecar writes credentials atomically into shared volume.
-    credentials_file = "/shared/credentials.toml"
+    # Sidecar writes credentials atomically into runtime volume.
+    credentials_file = "/runtime/accounts.toml"
 
   hosts.toml: |
     # Example hosts configuration. Replace with real routing rules.
@@ -64,8 +64,8 @@ spec:
               mountPath: /etc/trusttunnel/hosts.toml
               subPath: hosts.toml
               readOnly: true
-            - name: shared
-              mountPath: /shared
+            - name: runtime
+              mountPath: /runtime
         - name: trusttunnel_sidecar_agent
           image: ghcr.io/example/trusttunnel-sidecar-agent:latest
           imagePullPolicy: IfNotPresent
@@ -86,23 +86,25 @@ spec:
                 fieldRef:
                   fieldPath: metadata.name
             - name: SYNC_INTERVAL_SECONDS
-              value: "60"
-            - name: CREDENTIALS_PATH
-              value: "/shared/credentials.toml"
-            - name: TRUSTTUNNEL_RELOAD_SIGNAL
-              value: "SIGHUP"
-            - name: TRUSTTUNNEL_HEALTH_ADDR
-              value: "localhost:443"
-            - name: METRICS_PUSH_INTERVAL
               value: "30"
+            - name: HEARTBEAT_INTERVAL_SECONDS
+              value: "10"
+            - name: CREDENTIALS_PATH
+              value: "/runtime/accounts.toml"
+            - name: TRUSTTUNNEL_RELOAD_MODE
+              value: "signal"
+            - name: TRUSTTUNNEL_PID
+              value: "1"
+            - name: AGENT_PORT
+              value: "9105"
           volumeMounts:
-            - name: shared
-              mountPath: /shared
+            - name: runtime
+              mountPath: /runtime
       volumes:
         - name: endpoint-config
           configMap:
             name: trusttunnel_endpoint-config
-        - name: shared
+        - name: runtime
           emptyDir: {}
 ---
 apiVersion: v1

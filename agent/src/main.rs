@@ -17,11 +17,11 @@ struct Config {
     internal_agent_token: String,
     node_id: String,
     sync_interval_seconds: u64,
+    heartbeat_interval_seconds: u64,
     credentials_path: PathBuf,
-    trusttunnel_reload_signal: String,
-    trusttunnel_health_addr: String,
-    health_check_interval_seconds: u64,
-    metrics_push_interval: u64,
+    trusttunnel_reload_mode: String,
+    trusttunnel_pid: i32,
+    agent_port: u16,
 }
 
 impl Config {
@@ -31,21 +31,22 @@ impl Config {
             internal_agent_token: std::env::var("INTERNAL_AGENT_TOKEN")?,
             node_id: std::env::var("NODE_ID")?,
             sync_interval_seconds: std::env::var("SYNC_INTERVAL_SECONDS")
-                .unwrap_or_else(|_| "60".to_string())
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()?,
+            heartbeat_interval_seconds: std::env::var("HEARTBEAT_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "10".to_string())
                 .parse()?,
             credentials_path: PathBuf::from(
                 std::env::var("CREDENTIALS_PATH")
-                    .unwrap_or_else(|_| "/shared/credentials.toml".to_string()),
+                    .unwrap_or_else(|_| "/runtime/accounts.toml".to_string()),
             ),
-            trusttunnel_reload_signal: std::env::var("TRUSTTUNNEL_RELOAD_SIGNAL")
-                .unwrap_or_else(|_| "SIGHUP".to_string()),
-            trusttunnel_health_addr: std::env::var("TRUSTTUNNEL_HEALTH_ADDR")
-                .unwrap_or_else(|_| "localhost:443".to_string()),
-            health_check_interval_seconds: std::env::var("HEALTH_CHECK_INTERVAL_SECONDS")
-                .unwrap_or_else(|_| "15".to_string())
+            trusttunnel_reload_mode: std::env::var("TRUSTTUNNEL_RELOAD_MODE")
+                .unwrap_or_else(|_| "signal".to_string()),
+            trusttunnel_pid: std::env::var("TRUSTTUNNEL_PID")
+                .unwrap_or_else(|_| "1".to_string())
                 .parse()?,
-            metrics_push_interval: std::env::var("METRICS_PUSH_INTERVAL")
-                .unwrap_or_else(|_| "30".to_string())
+            agent_port: std::env::var("AGENT_PORT")
+                .unwrap_or_else(|_| "9105".to_string())
                 .parse()?,
         })
     }
@@ -129,11 +130,8 @@ async fn main() -> Result<()> {
 
     let mut state = AgentState::default();
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
-    let mut metrics_interval =
-        tokio::time::interval(Duration::from_secs(cfg.metrics_push_interval.max(10)));
-    let mut health_check_interval = tokio::time::interval(Duration::from_secs(
-        cfg.health_check_interval_seconds.max(1),
-    ));
+    let mut heartbeat_interval =
+        tokio::time::interval(Duration::from_secs(cfg.heartbeat_interval_seconds.max(1)));
 
     loop {
         tokio::select! {
@@ -145,13 +143,11 @@ async fn main() -> Result<()> {
                     state.last_sync_failed = false;
                 }
             }
-            _ = metrics_interval.tick() => {
+            _ = heartbeat_interval.tick() => {
+                state.last_health_ok = check_health(cfg.agent_port).await;
                 if let Err(e) = push_metrics(&cfg, &client, &mut state).await {
                     warn!("metrics push failed: {e:#}");
                 }
-            }
-            _ = health_check_interval.tick() => {
-                state.last_health_ok = check_health(&cfg.trusttunnel_health_addr).await;
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("sidecar agent interrupted");
@@ -161,7 +157,8 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn check_health(health_addr: &str) -> bool {
+async fn check_health(agent_port: u16) -> bool {
+    let health_addr = format!("127.0.0.1:{agent_port}");
     TcpStream::connect(health_addr).await.is_ok()
 }
 
@@ -198,8 +195,11 @@ async fn sync_once_with_retry(
                         validate_checksum(&snapshot).context("validate_checksum")?;
                         write_credentials_atomically(&cfg.credentials_path, &snapshot.accounts)
                             .context("write_credentials_atomically")?;
-                        send_reload_signal(&cfg.trusttunnel_reload_signal)
-                            .context("send_reload_signal")?;
+                        trigger_trusttunnel_reload(
+                            &cfg.trusttunnel_reload_mode,
+                            cfg.trusttunnel_pid,
+                        )
+                        .context("trigger_trusttunnel_reload")?;
                         info!("applied credentials snapshot version={}", snapshot.version);
                     }
                     Ok(())
@@ -412,21 +412,18 @@ impl AtomicWriteOps for FileSystemAtomicWriteOps {
     }
 }
 
-fn send_reload_signal(signal_name: &str) -> Result<()> {
+fn trigger_trusttunnel_reload(reload_mode: &str, pid: i32) -> Result<()> {
+    match reload_mode.to_lowercase().as_str() {
+        "signal" => send_reload_signal(pid),
+        "none" => Ok(()),
+        _ => anyhow::bail!("unsupported TRUSTTUNNEL_RELOAD_MODE: {reload_mode}"),
+    }
+}
+
+fn send_reload_signal(pid: i32) -> Result<()> {
     #[cfg(unix)]
     {
-        let signal = match signal_name.to_uppercase().as_str() {
-            "SIGHUP" => libc::SIGHUP,
-            "SIGUSR1" => libc::SIGUSR1,
-            "SIGUSR2" => libc::SIGUSR2,
-            _ => anyhow::bail!("unsupported reload signal: {signal_name}"),
-        };
-
-        let pid: i32 = std::env::var("TRUSTTUNNEL_PID")
-            .ok()
-            .and_then(|x| x.parse().ok())
-            .unwrap_or(1);
-        let rc = unsafe { libc::kill(pid, signal) };
+        let rc = unsafe { libc::kill(pid, libc::SIGHUP) };
         if rc != 0 {
             return Err(std::io::Error::last_os_error().into());
         }
@@ -434,7 +431,7 @@ fn send_reload_signal(signal_name: &str) -> Result<()> {
     }
     #[cfg(not(unix))]
     {
-        let _ = signal_name;
+        let _ = pid;
         Ok(())
     }
 }
@@ -485,8 +482,8 @@ async fn push_metrics(
         let rx_bytes_delta = current_rx.saturating_sub(prev) as f64;
         let tx_bytes_delta = current_tx.saturating_sub(prev) as f64;
         (
-            (rx_bytes_delta * 8.0) / (cfg.metrics_push_interval as f64 * 1_000_000.0),
-            (tx_bytes_delta * 8.0) / (cfg.metrics_push_interval as f64 * 1_000_000.0),
+            (rx_bytes_delta * 8.0) / (cfg.heartbeat_interval_seconds as f64 * 1_000_000.0),
+            (tx_bytes_delta * 8.0) / (cfg.heartbeat_interval_seconds as f64 * 1_000_000.0),
         )
     } else {
         (0.0, 0.0)
@@ -598,11 +595,11 @@ mod tests {
             internal_agent_token: "token".to_string(),
             node_id: "node-1".to_string(),
             sync_interval_seconds: 60,
+            heartbeat_interval_seconds: 10,
             credentials_path,
-            trusttunnel_reload_signal: "SIGHUP".to_string(),
-            trusttunnel_health_addr: "localhost:443".to_string(),
-            health_check_interval_seconds: 15,
-            metrics_push_interval: 30,
+            trusttunnel_reload_mode: "signal".to_string(),
+            trusttunnel_pid: 1,
+            agent_port: 9105,
         }
     }
 
