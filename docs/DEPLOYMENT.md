@@ -75,7 +75,13 @@ Required sidecar env:
 - `CREDENTIALS_PATH` (default: `/shared/credentials.toml`)
 - `TRUSTTUNNEL_RELOAD_SIGNAL` (default: `SIGHUP`)
 - `TRUSTTUNNEL_HEALTH_ADDR` (default: `localhost:443`)
+- `HEALTH_CHECK_INTERVAL_SECONDS` (default: `15`)
 - `METRICS_PUSH_INTERVAL` (default: `30`)
+
+Metrics semantics in sidecar:
+- health probing (`TRUSTTUNNEL_HEALTH_ADDR`) runs on `HEALTH_CHECK_INTERVAL_SECONDS` cadence and stores the last known state;
+- metrics push uses the latest known health state instead of doing an on-demand health TCP dial;
+- if endpoint is down, sidecar reports `active_connections=0` and marks degraded state via `error_rate=1.0`.
 
 Kubernetes notes:
 - use `envFrom.secretRef` for `INTERNAL_AGENT_TOKEN`;
