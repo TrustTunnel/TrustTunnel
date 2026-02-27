@@ -47,8 +47,10 @@ Client's connection is treated as a reverse proxy stream in the following cases:
 
 1) A TLS session or QUIC connection has the SNI set to the host name equal to one
    from `TlsHostsSettings.reverse_proxy`.
-2) An HTTP/1.1 request has `Upgrade` header and its path starts with `ReverseProxySettings.path_mask`.
-3) An HTTP/3 request has a path starting with `ReverseProxySettings.path_mask`.
+2) If a request path starts with `ReverseProxySettings.path_mask`, it is routed to reverse proxy.
+3) Otherwise, routing is defined by `ping_path`, `speedtest_path`, and `X-Tunnel-Token` presence.
+   If reverse proxy is not configured and a request does not match ping/speedtest/tunnel rules,
+   it is denied with a generic `404 Not Found`.
 
 The stream is used for mutual client and endpoint notifications and some control messages.
 The endpoint does TLS termination on such connections and translates HTTP/x traffic into
@@ -58,7 +60,15 @@ Like this:
 ```(client) TLS(HTTP/x) <--(endpoint)--> (server) HTTP/1.1```
 
 The translated HTTP/1.1 requests have the custom header `X-Original-Protocol` appended.
-For now, its value can be either `HTTP1`, or `HTTP3`.
+For now, its value can be `HTTP1`, `HTTP2`, or `HTTP3`.
+
+Tunnel requests can be protected with `X-Tunnel-Token`, computed as
+`SHA-256(username:password)` in hex.
+Set `allow_without_token` to `true` to accept legacy tunnel requests without token.
+If the token header is present but invalid, the request does not fall back to legacy tunnel.
+
+Note: HTTP/3 reverse proxy handling keeps the write side open when the client finishes sending
+the request body, to avoid truncating large responses.
 
 ### Authentication
 
