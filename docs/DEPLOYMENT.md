@@ -4,7 +4,16 @@
 - **Applies to:** Classic (active), Modified (planned contract only)
 - **Last updated:** 2026-02-26
 
-## 1. Docker (minimum)
+## 1. Build container images
+
+Build endpoint and agent as separate images (do not combine into one runtime image):
+
+```bash
+docker build -f Dockerfile -t securelink-trusttunnel:<tag> .
+docker build -f agent/Dockerfile -t securelink-trusttunnel-agent:<tag> .
+```
+
+## 2. Docker (minimum)
 
 Image runs endpoint binary with fixed startup command expecting:
 - `/etc/trusttunnel/vpn.toml`
@@ -25,7 +34,7 @@ docker run -d --name trusttunnel \
 
 > Note: container `EXPOSE` is `8443`; align service mapping with your `listen_address` in `vpn.toml`.
 
-## 2. Kubernetes (minimum)
+## 3. Kubernetes (minimum)
 
 ### Deployment/service baseline
 - Mount `vpn.toml`, `hosts.toml`, credentials and certs from Secret/ConfigMap.
@@ -40,7 +49,7 @@ Minimal resources to provide:
 ### Ingress passthrough requirement
 If TLS terminates before endpoint, ensure SNI and cert strategy remains compatible. Recommended for current architecture: L4 passthrough to endpoint TLS.
 
-## 3. systemd
+## 4. systemd
 
 Use `scripts/trusttunnel.service.template` as baseline.
 
@@ -49,14 +58,14 @@ Key points:
 - `ExecStart` example: `/opt/trusttunnel/trusttunnel_endpoint vpn.toml hosts.toml`;
 - enable restart on failure.
 
-## 4. Runtime environment variables
+## 5. Runtime environment variables
 
 Documented real usage in current fork:
 - `hmac_secret_env` in `[auth.jwt]` points to ENV variable containing HS256 secret.
 
 No other mandatory runtime env vars are required by endpoint startup path.
 
-## 5. Classic mode with Sidecar Agent
+## 6. Classic mode with Sidecar Agent
 
 For Classic production mode run two containers in one Pod:
 - `trusttunnel_endpoint`
