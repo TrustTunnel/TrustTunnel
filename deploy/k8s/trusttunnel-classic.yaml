@@ -1,0 +1,163 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trusttunnel_endpoint-config
+  labels:
+    app.kubernetes.io/name: trusttunnel
+    app.kubernetes.io/component: endpoint
+
+data:
+  vpn.toml: |
+    [main]
+    # endpoint listens on 8443 inside container; Service maps to 443
+    listen_address = "0.0.0.0:8443"
+
+    [auth]
+    # Sidecar writes credentials atomically into shared volume.
+    credentials_file = "/shared/credentials.toml"
+
+  hosts.toml: |
+    # Example hosts configuration. Replace with real routing rules.
+    [[hosts]]
+    host = "example.internal"
+    upstream = "127.0.0.1:8080"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trusttunnel-classic
+  labels:
+    app.kubernetes.io/name: trusttunnel
+    app.kubernetes.io/part-of: trusttunnel-classic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trusttunnel
+        app.kubernetes.io/part-of: trusttunnel-classic
+    spec:
+      # Required so sidecar can send SIGHUP to endpoint process by PID.
+      shareProcessNamespace: true
+      containers:
+        - name: trusttunnel_endpoint
+          image: ghcr.io/example/trusttunnel-endpoint:latest
+          imagePullPolicy: IfNotPresent
+          args: ["/etc/trusttunnel/vpn.toml", "/etc/trusttunnel/hosts.toml"]
+          ports:
+            - name: https-tcp
+              containerPort: 8443
+              protocol: TCP
+            - name: https-udp
+              containerPort: 8443
+              protocol: UDP
+          volumeMounts:
+            - name: endpoint-config
+              mountPath: /etc/trusttunnel/vpn.toml
+              subPath: vpn.toml
+              readOnly: true
+            - name: endpoint-config
+              mountPath: /etc/trusttunnel/hosts.toml
+              subPath: hosts.toml
+              readOnly: true
+            - name: shared
+              mountPath: /shared
+        - name: trusttunnel_sidecar_agent
+          image: ghcr.io/example/trusttunnel-sidecar-agent:latest
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            # Keep INTERNAL_AGENT_TOKEN and other sensitive envs in this Secret.
+            - secretRef:
+                name: trusttunnel-sidecar-secret
+          env:
+            - name: LK_INTERNAL_BASE_URL
+              value: "https://lk-internal.svc.cluster.local"
+            - name: INTERNAL_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: trusttunnel-sidecar-secret
+                  key: INTERNAL_AGENT_TOKEN
+            - name: NODE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: SYNC_INTERVAL_SECONDS
+              value: "60"
+            - name: CREDENTIALS_PATH
+              value: "/shared/credentials.toml"
+            - name: TRUSTTUNNEL_RELOAD_SIGNAL
+              value: "SIGHUP"
+            - name: TRUSTTUNNEL_HEALTH_ADDR
+              value: "localhost:443"
+            - name: METRICS_PUSH_INTERVAL
+              value: "30"
+          volumeMounts:
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: endpoint-config
+          configMap:
+            name: trusttunnel_endpoint-config
+        - name: shared
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: trusttunnel
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  selector:
+    app.kubernetes.io/name: trusttunnel
+    app.kubernetes.io/part-of: trusttunnel-classic
+  ports:
+    - name: https-tcp
+      port: 443
+      protocol: TCP
+      targetPort: 8443
+    - name: https-udp
+      port: 443
+      protocol: UDP
+      targetPort: 8443
+  type: LoadBalancer
+---
+# Optional baseline NetworkPolicy for LK internal API access.
+# Replace namespace/pod selectors and CIDRs with your environment values.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trusttunnel-sidecar-egress
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  policyTypes:
+    - Egress
+  egress:
+    # Allow DNS lookups.
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow sidecar to reach LK internal API only.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: lk-internal
+          podSelector:
+            matchLabels:
+              app: lk-api
+      ports:
+        - protocol: TCP
+          port: 443
