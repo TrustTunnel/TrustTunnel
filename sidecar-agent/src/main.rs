@@ -272,8 +272,18 @@ fn validate_checksum(snapshot: &SnapshotResponse) -> Result<()> {
 }
 
 fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Result<()> {
+    let mut fs_ops = FileSystemAtomicWriteOps;
+    write_credentials_atomically_with_ops(path, credentials, &mut fs_ops)
+}
+
+fn write_credentials_atomically_with_ops(
+    path: &Path,
+    credentials: &[Credential],
+    ops: &mut impl AtomicWriteOps,
+) -> Result<()> {
     let parent = path.parent().context("credentials path without parent")?;
-    std::fs::create_dir_all(parent)?;
+    ops.create_parent_dir(parent)
+        .with_context(|| format!("create parent dir: {}", parent.display()))?;
 
     let tmp_path = parent.join(format!(
         ".{}.tmp",
@@ -284,17 +294,60 @@ fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Resu
         client: credentials.to_vec(),
     })?;
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&tmp_path)?;
-    file.write_all(toml.as_bytes())?;
-    file.sync_all()?;
-    drop(file);
-
-    std::fs::rename(&tmp_path, path)?;
+    ops.write_tmp_and_sync(&tmp_path, toml.as_bytes())
+        .with_context(|| format!("write and sync temp file: {}", tmp_path.display()))?;
+    ops.rename_temp_to_target(&tmp_path, path)
+        .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
+    ops.sync_parent_dir(parent)
+        .with_context(|| format!("sync parent dir: {}", parent.display()))?;
     Ok(())
+}
+
+trait AtomicWriteOps {
+    fn create_parent_dir(&mut self, parent: &Path) -> std::io::Result<()>;
+    fn write_tmp_and_sync(&mut self, tmp_path: &Path, data: &[u8]) -> std::io::Result<()>;
+    fn rename_temp_to_target(&mut self, tmp_path: &Path, path: &Path) -> std::io::Result<()>;
+    fn sync_parent_dir(&mut self, parent: &Path) -> Result<()>;
+}
+
+struct FileSystemAtomicWriteOps;
+
+impl AtomicWriteOps for FileSystemAtomicWriteOps {
+    fn create_parent_dir(&mut self, parent: &Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(parent)
+    }
+
+    fn write_tmp_and_sync(&mut self, tmp_path: &Path, data: &[u8]) -> std::io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(tmp_path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        Ok(())
+    }
+
+    fn rename_temp_to_target(&mut self, tmp_path: &Path, path: &Path) -> std::io::Result<()> {
+        std::fs::rename(tmp_path, path)
+    }
+
+    fn sync_parent_dir(&mut self, parent: &Path) -> Result<()> {
+        #[cfg(unix)]
+        {
+            let dir = std::fs::File::open(parent)
+                .with_context(|| format!("open dir for sync: {}", parent.display()))?;
+            dir.sync_all()
+                .with_context(|| format!("sync dir metadata: {}", parent.display()))?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            let _ = parent;
+        }
+
+        Ok(())
+    }
 }
 
 fn send_reload_signal(signal_name: &str) -> Result<()> {
@@ -466,6 +519,7 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use serde_json::json;
+    use std::io;
 
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
         Config {
@@ -607,5 +661,55 @@ mod tests {
 
         assert!(result.is_ok());
         success_report.assert_async().await;
+    }
+
+    #[derive(Default)]
+    struct RecordingAtomicWriteOps {
+        steps: Vec<&'static str>,
+    }
+
+    impl AtomicWriteOps for RecordingAtomicWriteOps {
+        fn create_parent_dir(&mut self, _parent: &Path) -> io::Result<()> {
+            self.steps.push("create_parent_dir");
+            Ok(())
+        }
+
+        fn write_tmp_and_sync(&mut self, _tmp_path: &Path, _data: &[u8]) -> io::Result<()> {
+            self.steps.push("write_tmp_and_sync");
+            Ok(())
+        }
+
+        fn rename_temp_to_target(&mut self, _tmp_path: &Path, _path: &Path) -> io::Result<()> {
+            self.steps.push("rename_temp_to_target");
+            Ok(())
+        }
+
+        fn sync_parent_dir(&mut self, _parent: &Path) -> Result<()> {
+            self.steps.push("sync_parent_dir");
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn write_credentials_follows_expected_operation_order() {
+        let mut ops = RecordingAtomicWriteOps::default();
+        let path = Path::new("/tmp/trusttunnel/credentials.toml");
+        let credentials = vec![Credential {
+            username: "user".to_string(),
+            password: "pass".to_string(),
+        }];
+
+        write_credentials_atomically_with_ops(path, &credentials, &mut ops)
+            .expect("atomic write should succeed");
+
+        assert_eq!(
+            ops.steps,
+            vec![
+                "create_parent_dir",
+                "write_tmp_and_sync",
+                "rename_temp_to_target",
+                "sync_parent_dir"
+            ]
+        );
     }
 }
