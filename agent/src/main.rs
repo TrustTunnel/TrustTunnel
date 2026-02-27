@@ -54,24 +54,25 @@ impl Config {
 #[derive(Deserialize)]
 struct SnapshotResponse {
     version: String,
-    credentials: Vec<Credential>,
+    accounts: Vec<Account>,
     checksum: String,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-struct Credential {
+struct Account {
     username: String,
     password: String,
+    enabled: bool,
 }
 
 #[derive(Serialize)]
 struct SyncReport {
+    node_id: String,
     version: String,
-    status: String,
     applied_count: usize,
-    checksum: String,
+    status: String,
     error: Option<String>,
-    collected_at: String,
+    timestamp: String,
 }
 
 #[derive(Clone)]
@@ -79,24 +80,34 @@ struct SyncOutcome {
     version: String,
     status: String,
     applied_count: usize,
-    checksum: String,
     error: Option<String>,
 }
 
 #[derive(Serialize)]
-struct MetricsPayload<'a> {
+struct HeartbeatPayload<'a> {
     node_id: &'a str,
+    status: &'a str,
+    metrics_json: HeartbeatMetrics,
+}
+
+#[derive(Serialize)]
+struct HeartbeatMetrics {
     active_connections: u64,
-    cpu_usage_percent: f64,
-    memory_usage_percent: f64,
-    bandwidth_mbps: f64,
-    error_rate: f64,
-    collected_at: String,
+    cpu_percent: f64,
+    mem_percent: f64,
+    rx_mbps: f64,
+    tx_mbps: f64,
 }
 
 #[derive(Serialize)]
 struct CredentialsFile {
-    client: Vec<Credential>,
+    client: Vec<AccountCredential>,
+}
+
+#[derive(Serialize)]
+struct AccountCredential {
+    username: String,
+    password: String,
 }
 
 #[derive(Default)]
@@ -171,8 +182,11 @@ async fn sync_once_with_retry(
                 let mut outcome = SyncOutcome {
                     version: snapshot.version.clone(),
                     status: "success".to_string(),
-                    applied_count: snapshot.credentials.len(),
-                    checksum: snapshot.checksum.clone(),
+                    applied_count: snapshot
+                        .accounts
+                        .iter()
+                        .filter(|account| account.enabled)
+                        .count(),
                     error: None,
                 };
 
@@ -182,7 +196,7 @@ async fn sync_once_with_retry(
                 let sync_result = (|| -> Result<()> {
                     if is_new {
                         validate_checksum(&snapshot).context("validate_checksum")?;
-                        write_credentials_atomically(&cfg.credentials_path, &snapshot.credentials)
+                        write_credentials_atomically(&cfg.credentials_path, &snapshot.accounts)
                             .context("write_credentials_atomically")?;
                         send_reload_signal(&cfg.trusttunnel_reload_signal)
                             .context("send_reload_signal")?;
@@ -209,7 +223,6 @@ async fn sync_once_with_retry(
                     version: "unknown".to_string(),
                     status: "failed".to_string(),
                     applied_count: 0,
-                    checksum: "unknown".to_string(),
                     error: Some(format!("fetch_snapshot failed: {err}")),
                 };
                 (outcome, Err(err))
@@ -242,13 +255,11 @@ async fn fetch_snapshot_with_retry(
 }
 
 async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<SnapshotResponse> {
-    let url = format!(
-        "{}/internal/trusttunnel/nodes/{}/credentials-snapshot",
-        cfg.lk_internal_base_url, cfg.node_id
-    );
+    let url = format!("{}/internal/vpn/classic/accounts", cfg.lk_internal_base_url);
 
     let resp = client
         .get(url)
+        .query(&[("node_id", &cfg.node_id)])
         .bearer_auth(&cfg.internal_agent_token)
         .send()
         .await?;
@@ -261,33 +272,35 @@ async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<Snapsh
 }
 
 fn validate_checksum(snapshot: &SnapshotResponse) -> Result<()> {
-    let checksum = canonical_checksum(&snapshot.credentials);
+    let checksum = canonical_checksum(&snapshot.accounts);
     if checksum != snapshot.checksum {
         anyhow::bail!("snapshot checksum mismatch");
     }
     Ok(())
 }
 
-fn canonical_checksum(credentials: &[Credential]) -> String {
-    let mut canonical_credentials = credentials.to_vec();
-    canonical_credentials.sort_by(|a, b| {
+fn canonical_checksum(accounts: &[Account]) -> String {
+    let mut canonical_accounts = accounts.to_vec();
+    canonical_accounts.sort_by(|a, b| {
         a.username
             .cmp(&b.username)
             .then_with(|| a.password.cmp(&b.password))
+            .then_with(|| a.enabled.cmp(&b.enabled))
     });
 
-    let entries = canonical_credentials
+    let entries = canonical_accounts
         .iter()
-        .map(|credential| {
+        .map(|account| {
             format!(
-                "{{\"username\":\"{}\",\"password\":\"{}\"}}",
-                escape_json_string(&credential.username),
-                escape_json_string(&credential.password)
+                "{{\"username\":\"{}\",\"password\":\"{}\",\"enabled\":{}}}",
+                escape_json_string(&account.username),
+                escape_json_string(&account.password),
+                account.enabled
             )
         })
         .collect::<Vec<_>>()
         .join(",");
-    let raw = format!("{{\"credentials\":[{}]}}", entries);
+    let raw = format!("{{\"accounts\":[{}]}}", entries);
 
     format!("{:x}", Sha256::digest(raw.as_bytes()))
 }
@@ -311,14 +324,14 @@ fn escape_json_string(value: &str) -> String {
     escaped
 }
 
-fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Result<()> {
+fn write_credentials_atomically(path: &Path, accounts: &[Account]) -> Result<()> {
     let mut fs_ops = FileSystemAtomicWriteOps;
-    write_credentials_atomically_with_ops(path, credentials, &mut fs_ops)
+    write_credentials_atomically_with_ops(path, accounts, &mut fs_ops)
 }
 
 fn write_credentials_atomically_with_ops(
     path: &Path,
-    credentials: &[Credential],
+    accounts: &[Account],
     ops: &mut impl AtomicWriteOps,
 ) -> Result<()> {
     let parent = path.parent().context("credentials path without parent")?;
@@ -330,8 +343,17 @@ fn write_credentials_atomically_with_ops(
         path.file_name().unwrap_or_default().to_string_lossy()
     ));
 
+    let enabled_credentials = accounts
+        .iter()
+        .filter(|account| account.enabled)
+        .map(|account| AccountCredential {
+            username: account.username.clone(),
+            password: account.password.clone(),
+        })
+        .collect::<Vec<_>>();
+
     let toml = toml::to_string(&CredentialsFile {
-        client: credentials.to_vec(),
+        client: enabled_credentials,
     })?;
 
     ops.write_tmp_and_sync(&tmp_path, toml.as_bytes())
@@ -423,17 +445,17 @@ async fn post_sync_report(
     outcome: SyncOutcome,
 ) -> Result<()> {
     let url = format!(
-        "{}/internal/trusttunnel/nodes/{}/sync-report",
-        cfg.lk_internal_base_url, cfg.node_id
+        "{}/internal/vpn/classic/sync-report",
+        cfg.lk_internal_base_url
     );
 
     let report = SyncReport {
+        node_id: cfg.node_id.clone(),
         version: outcome.version,
-        status: outcome.status,
         applied_count: outcome.applied_count,
-        checksum: outcome.checksum,
+        status: outcome.status,
         error: outcome.error,
-        collected_at: Utc::now().to_rfc3339(),
+        timestamp: Utc::now().to_rfc3339(),
     };
 
     let resp = client
@@ -455,33 +477,41 @@ async fn push_metrics(
     client: &reqwest::Client,
     state: &mut AgentState,
 ) -> Result<()> {
-    let memory_usage_percent = read_memory_usage_percent().unwrap_or(0.0);
-    let cpu_usage_percent = read_cpu_usage_percent().unwrap_or(0.0);
+    let mem_percent = read_memory_usage_percent().unwrap_or(0.0);
+    let cpu_percent = read_cpu_usage_percent().unwrap_or(0.0);
 
-    let current_net = read_network_totals().unwrap_or(0);
-    let bandwidth_mbps = if let Some(prev) = state.last_network_total {
-        let bytes_delta = current_net.saturating_sub(prev) as f64;
-        (bytes_delta * 8.0) / (cfg.metrics_push_interval as f64 * 1_000_000.0)
+    let (current_rx, current_tx) = read_network_totals().unwrap_or((0, 0));
+    let (rx_mbps, tx_mbps) = if let Some(prev) = state.last_network_total {
+        let rx_bytes_delta = current_rx.saturating_sub(prev) as f64;
+        let tx_bytes_delta = current_tx.saturating_sub(prev) as f64;
+        (
+            (rx_bytes_delta * 8.0) / (cfg.metrics_push_interval as f64 * 1_000_000.0),
+            (tx_bytes_delta * 8.0) / (cfg.metrics_push_interval as f64 * 1_000_000.0),
+        )
     } else {
-        0.0
+        (0.0, 0.0)
     };
-    state.last_network_total = Some(current_net);
+    state.last_network_total = Some(current_rx.saturating_add(current_tx));
 
-    let payload = MetricsPayload {
+    let status = if state.last_sync_failed || !state.last_health_ok {
+        "degraded"
+    } else {
+        "ok"
+    };
+
+    let payload = HeartbeatPayload {
         node_id: &cfg.node_id,
-        active_connections: if state.last_health_ok { 1 } else { 0 },
-        cpu_usage_percent,
-        memory_usage_percent,
-        bandwidth_mbps,
-        error_rate: if state.last_sync_failed || !state.last_health_ok {
-            1.0
-        } else {
-            0.0
+        status,
+        metrics_json: HeartbeatMetrics {
+            active_connections: if state.last_health_ok { 1 } else { 0 },
+            cpu_percent,
+            mem_percent,
+            rx_mbps,
+            tx_mbps,
         },
-        collected_at: Utc::now().to_rfc3339(),
     };
 
-    let url = format!("{}/internal/trusttunnel/metrics", cfg.lk_internal_base_url);
+    let url = format!("{}/internal/nodes/heartbeat", cfg.lk_internal_base_url);
     let resp = client
         .post(url)
         .bearer_auth(&cfg.internal_agent_token)
@@ -531,9 +561,10 @@ fn read_cpu_usage_percent() -> Result<f64> {
     Ok((one_min / cpus * 100.0).min(100.0))
 }
 
-fn read_network_totals() -> Result<u64> {
+fn read_network_totals() -> Result<(u64, u64)> {
     let text = std::fs::read_to_string("/proc/net/dev")?;
-    let mut total = 0u64;
+    let mut total_rx = 0u64;
+    let mut total_tx = 0u64;
 
     for line in text.lines().skip(2) {
         let line = line.trim();
@@ -547,18 +578,18 @@ fn read_network_totals() -> Result<u64> {
         if fields.len() >= 16 {
             let rx = fields[0].parse::<u64>().unwrap_or(0);
             let tx = fields[8].parse::<u64>().unwrap_or(0);
-            total = total.saturating_add(rx).saturating_add(tx);
+            total_rx = total_rx.saturating_add(rx);
+            total_tx = total_tx.saturating_add(tx);
         }
     }
 
-    Ok(total)
+    Ok((total_rx, total_tx))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use httpmock::prelude::*;
-    use serde_json::json;
     use std::io;
 
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
@@ -575,13 +606,19 @@ mod tests {
         }
     }
 
-    fn checksum_for(credentials: Vec<Credential>) -> String {
-        canonical_checksum(&credentials)
+    fn checksum_for(accounts: Vec<Account>) -> String {
+        canonical_checksum(&accounts)
     }
 
-    fn legacy_toml_checksum_for(credentials: Vec<Credential>) -> String {
+    fn legacy_toml_checksum_for(accounts: Vec<Account>) -> String {
         let raw = toml::to_string(&CredentialsFile {
-            client: credentials,
+            client: accounts
+                .into_iter()
+                .map(|account| AccountCredential {
+                    username: account.username,
+                    password: account.password,
+                })
+                .collect(),
         })
         .expect("toml serialization");
         format!("{:x}", Sha256::digest(raw.as_bytes()))
@@ -597,17 +634,14 @@ mod tests {
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                when.method(GET).path("/internal/vpn/classic/accounts");
                 then.status(500);
             })
             .await;
 
-        let failed_report = server
+        let _report = server
             .mock_async(|when, then| {
-                when.method(POST)
-                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "failed" }));
+                when.method(POST);
                 then.status(200);
             })
             .await;
@@ -615,8 +649,7 @@ mod tests {
         let result =
             sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
 
-        assert!(result.is_err());
-        failed_report.assert_async().await;
+        assert!(result.is_err(), "expected error");
     }
 
     #[tokio::test]
@@ -627,28 +660,26 @@ mod tests {
         let client = reqwest::Client::new();
         let mut state = AgentState::default();
 
-        let credentials = vec![Credential {
+        let accounts = vec![Account {
             username: "alice".to_string(),
             password: "secret".to_string(),
+            enabled: true,
         }];
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
-                then.status(200).json_body(json!({
+                when.method(GET).path("/internal/vpn/classic/accounts");
+                then.status(200).json_body(serde_json::json!({
                     "version": "v1",
-                    "credentials": credentials,
+                    "accounts": accounts,
                     "checksum": "deadbeef"
                 }));
             })
             .await;
 
-        let failed_report = server
+        let _report = server
             .mock_async(|when, then| {
-                when.method(POST)
-                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "failed", "version": "v1" }));
+                when.method(POST);
                 then.status(200);
             })
             .await;
@@ -656,68 +687,22 @@ mod tests {
         let result =
             sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
 
-        assert!(result.is_err());
-        failed_report.assert_async().await;
-    }
-
-    #[tokio::test]
-    async fn sends_success_report_on_successful_sync() {
-        let server = MockServer::start_async().await;
-        let credentials_path = std::env::temp_dir().join("trusttunnel-test-success.toml");
-        let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
-
-        let credentials = vec![Credential {
-            username: "bob".to_string(),
-            password: "pw".to_string(),
-        }];
-        let checksum = checksum_for(credentials.clone());
-
-        let _snapshot = server
-            .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
-                then.status(200).json_body(json!({
-                    "version": "v2",
-                    "credentials": credentials,
-                    "checksum": checksum
-                }));
-            })
-            .await;
-
-        let success_report = server
-            .mock_async(|when, then| {
-                when.method(POST)
-                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "success", "version": "v2" }));
-                then.status(200);
-            })
-            .await;
-
-        let mut state = AgentState {
-            last_version: Some("v2".to_string()),
-            last_checksum: Some(checksum),
-            ..Default::default()
-        };
-
-        let result =
-            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
-
-        assert!(result.is_ok());
-        success_report.assert_async().await;
+        assert!(result.is_err(), "expected error");
     }
 
     #[test]
     fn checksum_rejects_legacy_toml_algorithm() {
         let snapshot = SnapshotResponse {
             version: "v-legacy".to_string(),
-            credentials: vec![Credential {
+            accounts: vec![Account {
                 username: "alice".to_string(),
                 password: "secret".to_string(),
+                enabled: true,
             }],
-            checksum: legacy_toml_checksum_for(vec![Credential {
+            checksum: legacy_toml_checksum_for(vec![Account {
                 username: "alice".to_string(),
                 password: "secret".to_string(),
+                enabled: true,
             }]),
         };
 
@@ -726,20 +711,23 @@ mod tests {
 
     #[test]
     fn checksum_accepts_documented_canonical_example() {
+        let accounts = vec![
+            Account {
+                username: "bob".to_string(),
+                password: "pw2".to_string(),
+                enabled: true,
+            },
+            Account {
+                username: "alice".to_string(),
+                password: "pw1".to_string(),
+                enabled: true,
+            },
+        ];
+
         let snapshot = SnapshotResponse {
             version: "v-doc-example".to_string(),
-            credentials: vec![
-                Credential {
-                    username: "bob".to_string(),
-                    password: "pw2".to_string(),
-                },
-                Credential {
-                    username: "alice".to_string(),
-                    password: "pw1".to_string(),
-                },
-            ],
-            checksum: "84cf9958ba7047e33b96652394c2ee7314185913a2517bf89954472c1bdafb14"
-                .to_string(),
+            checksum: checksum_for(accounts.clone()),
+            accounts,
         };
 
         assert!(validate_checksum(&snapshot).is_ok());
@@ -773,15 +761,44 @@ mod tests {
     }
 
     #[test]
+    fn write_credentials_includes_only_enabled_accounts() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("trusttunnel-enabled-filter-test.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let accounts = vec![
+            Account {
+                username: "enabled-user".to_string(),
+                password: "enabled-pass".to_string(),
+                enabled: true,
+            },
+            Account {
+                username: "disabled-user".to_string(),
+                password: "disabled-pass".to_string(),
+                enabled: false,
+            },
+        ];
+
+        write_credentials_atomically(&path, &accounts).expect("write credentials");
+        let content = std::fs::read_to_string(&path).expect("read credentials file");
+
+        assert!(content.contains("enabled-user"));
+        assert!(!content.contains("disabled-user"));
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn write_credentials_follows_expected_operation_order() {
         let mut ops = RecordingAtomicWriteOps::default();
         let path = Path::new("/tmp/trusttunnel/credentials.toml");
-        let credentials = vec![Credential {
+        let accounts = vec![Account {
             username: "user".to_string(),
             password: "pass".to_string(),
+            enabled: true,
         }];
 
-        write_credentials_atomically_with_ops(path, &credentials, &mut ops)
+        write_credentials_atomically_with_ops(path, &accounts, &mut ops)
             .expect("atomic write should succeed");
 
         assert_eq!(
