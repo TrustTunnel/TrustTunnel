@@ -87,3 +87,14 @@ Content-Type: application/json
   }
 }
 ```
+
+## Operational constraints (timeouts / SLA)
+
+- All LK HTTP calls (`accounts`, `sync-report`, `heartbeat`) use shared client limits:
+  - `connect_timeout`: **2s**
+  - total request timeout (connect + send + response body): **5s**
+- Timeout errors are handled explicitly and logged as timeout failures for the corresponding LK operation.
+- Snapshot sync keeps exponential backoff (`1s`, `2s`, `4s`) with 3 retries (4 attempts total), preserving update SLA under normal LK availability:
+  - max wait on backoff = `7s`
+  - max wait on HTTP timeouts = `4 * 5s = 20s`
+  - worst-case sync cycle budget = `27s` (within `<=30s` target).
