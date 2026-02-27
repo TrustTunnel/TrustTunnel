@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -31,6 +32,9 @@ struct Config {
     agent_port: u16,
     trusttunnel_tcp_addr: String,
 }
+
+const HEARTBEAT_MAX_RETRIES: usize = 3;
+const HEARTBEAT_INITIAL_BACKOFF_SECONDS: u64 = 1;
 
 impl Config {
     fn from_env() -> Result<Self> {
@@ -160,6 +164,7 @@ async fn main() -> Result<()> {
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
     let mut heartbeat_interval =
         tokio::time::interval(Duration::from_secs(cfg.heartbeat_interval_seconds.max(1)));
+    let heartbeat_in_flight = Arc::new(AtomicBool::new(false));
 
     loop {
         tokio::select! {
@@ -169,9 +174,35 @@ async fn main() -> Result<()> {
                 }
             }
             _ = heartbeat_interval.tick() => {
-                if let Err(e) = push_metrics(&cfg, &client, state.clone()).await {
-                    warn!("metrics push failed: {e:#}");
+                if heartbeat_in_flight
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_err()
+                {
+                    warn!("heartbeat push skipped: previous attempt still in progress");
+                    continue;
                 }
+
+                let cfg = cfg.clone();
+                let client = client.clone();
+                let state = state.clone();
+                let heartbeat_in_flight = heartbeat_in_flight.clone();
+
+                tokio::spawn(async move {
+                    let result = push_metrics_with_retry(
+                        &cfg,
+                        &client,
+                        state,
+                        HEARTBEAT_MAX_RETRIES,
+                        Duration::from_secs(HEARTBEAT_INITIAL_BACKOFF_SECONDS),
+                    )
+                    .await;
+
+                    if let Err(e) = result {
+                        warn!("metrics push failed: {}", sanitize_error_message(&format!("{e:#}")));
+                    }
+
+                    heartbeat_in_flight.store(false, Ordering::SeqCst);
+                });
             }
             _ = tokio::signal::ctrl_c() => {
                 info!("sidecar agent interrupted");
@@ -552,6 +583,53 @@ async fn push_metrics(
     client: &reqwest::Client,
     state: SharedAgentState,
 ) -> Result<()> {
+    push_metrics_with_retry(
+        cfg,
+        client,
+        state,
+        HEARTBEAT_MAX_RETRIES,
+        Duration::from_secs(HEARTBEAT_INITIAL_BACKOFF_SECONDS),
+    )
+    .await
+}
+
+async fn push_metrics_with_retry(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: SharedAgentState,
+    max_retries: usize,
+    initial_backoff: Duration,
+) -> Result<()> {
+    let mut backoff = initial_backoff;
+    for attempt in 0..=max_retries {
+        match push_metrics_once(cfg, client, state.clone()).await {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                if attempt == max_retries {
+                    return Err(err);
+                }
+
+                warn!(
+                    "heartbeat push failed (attempt {}/{}): {}; retrying in {:?}",
+                    attempt + 1,
+                    max_retries + 1,
+                    sanitize_error_message(&format!("{err:#}")),
+                    backoff,
+                );
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn push_metrics_once(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: SharedAgentState,
+) -> Result<()> {
     let trusttunnel_tcp_reachable = check_tcp_reachable(&cfg.trusttunnel_tcp_addr).await;
     let lk_reachable = check_lk_reachable(&cfg.lk_internal_base_url).await;
 
@@ -559,9 +637,9 @@ async fn push_metrics(
     let cpu_percent = read_cpu_usage_percent().unwrap_or(0.0);
 
     let (current_rx, current_tx) = read_network_totals().unwrap_or((0, 0));
-    let (prev_total, last_sync_successful) = {
+    let prev_total = {
         let state = state.lock().await;
-        (state.last_network_total, state.last_sync_successful)
+        state.last_network_total
     };
     let (rx_mbps, tx_mbps) = if let Some(prev) = prev_total {
         let rx_bytes_delta = current_rx.saturating_sub(prev) as f64;
@@ -575,15 +653,9 @@ async fn push_metrics(
     };
     let new_network_total = current_rx.saturating_add(current_tx);
 
-    let status = if !last_sync_successful || !lk_reachable || !trusttunnel_tcp_reachable {
-        "degraded"
-    } else {
-        "ok"
-    };
-
     let payload = HeartbeatPayload {
         node_id: &cfg.node_id,
-        status,
+        status: "alive",
         metrics_json: HeartbeatMetrics {
             active_connections: if trusttunnel_tcp_reachable { 1 } else { 0 },
             cpu_percent,
@@ -607,7 +679,7 @@ async fn push_metrics(
         state.lk_reachable = false;
         state.trusttunnel_tcp_reachable = trusttunnel_tcp_reachable;
         state.last_network_total = Some(new_network_total);
-        anyhow::bail!("metrics push rejected: {}", resp.status());
+        anyhow::bail!("heartbeat rejected: {}", resp.status());
     }
 
     let mut state = state.lock().await;
@@ -617,6 +689,38 @@ async fn push_metrics(
     state.last_network_total = Some(new_network_total);
 
     Ok(())
+}
+
+fn sanitize_error_message(message: &str) -> String {
+    let mut masked = message.replace("INTERNAL_AGENT_TOKEN", "***");
+
+    if let Some(idx) = masked.find("Bearer ") {
+        let suffix = &masked[idx + 7..];
+        let token_len = suffix
+            .find(|c: char| c.is_whitespace() || c == ',' || c == '"')
+            .unwrap_or(suffix.len());
+        masked.replace_range(idx + 7..idx + 7 + token_len, "***");
+    }
+
+    while let Some(start) = masked.find("\"password\":\"") {
+        let value_start = start + "\"password\":\"".len();
+        if let Some(end_rel) = masked[value_start..].find('"') {
+            masked.replace_range(value_start..value_start + end_rel, "***");
+        } else {
+            break;
+        }
+    }
+
+    while let Some(start) = masked.find("password=") {
+        let value_start = start + "password=".len();
+        let value_end = masked[value_start..]
+            .find(|c: char| c.is_whitespace() || c == '&' || c == ',')
+            .map(|x| value_start + x)
+            .unwrap_or(masked.len());
+        masked.replace_range(value_start..value_end, "***");
+    }
+
+    masked
 }
 
 async fn check_lk_reachable(lk_internal_base_url: &str) -> bool {
