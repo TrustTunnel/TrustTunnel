@@ -6,6 +6,7 @@ members = [
     "lib",
     "macros",
     "tools",
+    "sidecar-agent",
 ]
 
 [profile.release]

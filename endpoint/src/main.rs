@@ -67,6 +67,67 @@ fn increase_fd_limit() {
 #[cfg(not(unix))]
 fn increase_fd_limit() {}
 
+fn build_authenticator(settings: &Settings) -> Option<Arc<dyn Authenticator>> {
+    match *settings.get_auth().get_mode() {
+        AuthMode::Credentials => {
+            if settings.get_clients().is_empty() {
+                None
+            } else {
+                Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
+                    CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
+                ))))
+            }
+        }
+        AuthMode::Jwt => {
+            let jwt_settings = settings
+                .get_auth()
+                .get_jwt()
+                .as_ref()
+                .expect("[auth.jwt] must be configured for mode=jwt");
+            let mut jwt_auth_config = jwt_settings.to_auth_config();
+            jwt_auth_config.metrics_jwt_error_enabled = settings
+                .get_metrics()
+                .as_ref()
+                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
+            Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
+                JwtAuth::from_config(&jwt_auth_config)
+                    .expect("Couldn't initialize JWT auth")
+                    .with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
+            ))))
+        }
+        AuthMode::Mixed => {
+            let jwt_settings = settings
+                .get_auth()
+                .get_jwt()
+                .as_ref()
+                .expect("[auth.jwt] must be configured for mode=mixed");
+            let mut jwt_auth_config = jwt_settings.to_auth_config();
+            jwt_auth_config.metrics_jwt_error_enabled = settings
+                .get_metrics()
+                .as_ref()
+                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
+            Some(Arc::new(MixedAuth::new(
+                JwtAuth::from_config(&jwt_auth_config)
+                    .expect("Couldn't initialize JWT auth")
+                    .with_cache_tuning(
+                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                    ),
+                CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
+                    Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
+                    Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
+                ),
+            )))
+        }
+    }
+}
+
 fn main() {
     let args = clap::Command::new("VPN endpoint")
         .args(&[
@@ -332,64 +393,7 @@ fn main() {
     };
 
     let shutdown = Shutdown::new();
-    let authenticator: Option<Arc<dyn Authenticator>> = match *settings.get_auth().get_mode() {
-        AuthMode::Credentials => {
-            if settings.get_clients().is_empty() {
-                None
-            } else {
-                Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
-                    CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
-                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
-                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
-                    ),
-                ))))
-            }
-        }
-        AuthMode::Jwt => {
-            let jwt_settings = settings
-                .get_auth()
-                .get_jwt()
-                .as_ref()
-                .expect("[auth.jwt] must be configured for mode=jwt");
-            let mut jwt_auth_config = jwt_settings.to_auth_config();
-            jwt_auth_config.metrics_jwt_error_enabled = settings
-                .get_metrics()
-                .as_ref()
-                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
-            Some(Arc::new(ProxyBasicAuthenticator::new(Box::new(
-                JwtAuth::from_config(&jwt_auth_config)
-                    .expect("Couldn't initialize JWT auth")
-                    .with_cache_tuning(
-                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
-                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
-                    ),
-            ))))
-        }
-        AuthMode::Mixed => {
-            let jwt_settings = settings
-                .get_auth()
-                .get_jwt()
-                .as_ref()
-                .expect("[auth.jwt] must be configured for mode=mixed");
-            let mut jwt_auth_config = jwt_settings.to_auth_config();
-            jwt_auth_config.metrics_jwt_error_enabled = settings
-                .get_metrics()
-                .as_ref()
-                .is_none_or(|x| x.get_jwt_error_enabled().to_owned());
-            Some(Arc::new(MixedAuth::new(
-                JwtAuth::from_config(&jwt_auth_config)
-                    .expect("Couldn't initialize JWT auth")
-                    .with_cache_tuning(
-                        Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
-                        Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
-                    ),
-                CredentialsAuth::new(settings.get_clients()).with_cache_tuning(
-                    Duration::from_secs(*settings.get_auth().get_cache_ttl_seconds()),
-                    Duration::from_secs(*settings.get_auth().get_revocation_sync_seconds()),
-                ),
-            )))
-        }
-    };
+    let authenticator = build_authenticator(&settings);
     let core = Arc::new(
         Core::new(
             settings,
@@ -407,6 +411,7 @@ fn main() {
 
     let reload_tls_hosts_task = {
         let tls_hosts_settings_path = tls_hosts_settings_path.clone();
+        let settings_path = settings_path.clone();
         async move {
             let mut sighup_listener = signal::unix::signal(signal::unix::SignalKind::hangup())
                 .expect("Couldn't start SIGHUP listener");
@@ -423,7 +428,14 @@ fn main() {
 
                 core.reload_tls_hosts_settings(tls_hosts_settings)
                     .expect("Couldn't apply new settings");
-                info!("TLS hosts settings are successfully reloaded");
+
+                let reloaded_settings: Settings = toml::from_str(
+                    &std::fs::read_to_string(&settings_path)
+                        .expect("Couldn't read the settings file"),
+                )
+                .expect("Couldn't parse the settings file");
+                core.reload_authenticator(build_authenticator(&reloaded_settings));
+                info!("TLS hosts and authentication settings are successfully reloaded");
             }
         }
     };
