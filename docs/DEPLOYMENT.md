@@ -55,3 +55,30 @@ Documented real usage in current fork:
 - `hmac_secret_env` in `[auth.jwt]` points to ENV variable containing HS256 secret.
 
 No other mandatory runtime env vars are required by endpoint startup path.
+
+## 5. Classic mode with Sidecar Agent
+
+For Classic production mode run two containers in one Pod:
+- `trusttunnel_endpoint`
+- `trusttunnel_sidecar_agent`
+
+Both containers share writable volume `/shared`:
+- agent writes `/shared/credentials.toml` atomically;
+- endpoint reads same file through `credentials_file` in `vpn.toml`;
+- agent sends `SIGHUP` to endpoint process, endpoint reloads auth data without restart.
+
+Required sidecar env:
+- `LK_INTERNAL_BASE_URL`
+- `INTERNAL_AGENT_TOKEN`
+- `NODE_ID`
+- `SYNC_INTERVAL_SECONDS` (default: `60`)
+- `CREDENTIALS_PATH` (default: `/shared/credentials.toml`)
+- `TRUSTTUNNEL_RELOAD_SIGNAL` (default: `SIGHUP`)
+- `TRUSTTUNNEL_HEALTH_ADDR` (default: `localhost:443`)
+- `METRICS_PUSH_INTERVAL` (default: `30`)
+
+Kubernetes notes:
+- use `envFrom.secretRef` for `INTERNAL_AGENT_TOKEN`;
+- keep LK internal API reachable only inside private network;
+- enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
+- restart is not required for credentials update.
