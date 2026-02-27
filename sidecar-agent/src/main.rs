@@ -20,6 +20,7 @@ struct Config {
     credentials_path: PathBuf,
     trusttunnel_reload_signal: String,
     trusttunnel_health_addr: String,
+    health_check_interval_seconds: u64,
     metrics_push_interval: u64,
 }
 
@@ -40,6 +41,9 @@ impl Config {
                 .unwrap_or_else(|_| "SIGHUP".to_string()),
             trusttunnel_health_addr: std::env::var("TRUSTTUNNEL_HEALTH_ADDR")
                 .unwrap_or_else(|_| "localhost:443".to_string()),
+            health_check_interval_seconds: std::env::var("HEALTH_CHECK_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "15".to_string())
+                .parse()?,
             metrics_push_interval: std::env::var("METRICS_PUSH_INTERVAL")
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()?,
@@ -101,6 +105,7 @@ struct AgentState {
     last_checksum: Option<String>,
     last_network_total: Option<u64>,
     last_sync_failed: bool,
+    last_health_ok: bool,
 }
 
 #[tokio::main]
@@ -115,6 +120,9 @@ async fn main() -> Result<()> {
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
     let mut metrics_interval =
         tokio::time::interval(Duration::from_secs(cfg.metrics_push_interval.max(10)));
+    let mut health_check_interval = tokio::time::interval(Duration::from_secs(
+        cfg.health_check_interval_seconds.max(1),
+    ));
 
     loop {
         tokio::select! {
@@ -131,12 +139,19 @@ async fn main() -> Result<()> {
                     warn!("metrics push failed: {e:#}");
                 }
             }
+            _ = health_check_interval.tick() => {
+                state.last_health_ok = check_health(&cfg.trusttunnel_health_addr).await;
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("sidecar agent interrupted");
                 return Ok(());
             }
         }
     }
+}
+
+async fn check_health(health_addr: &str) -> bool {
+    TcpStream::connect(health_addr).await.is_ok()
 }
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
@@ -347,9 +362,6 @@ async fn push_metrics(
     client: &reqwest::Client,
     state: &mut AgentState,
 ) -> Result<()> {
-    let health_ok = TcpStream::connect(&cfg.trusttunnel_health_addr)
-        .await
-        .is_ok();
     let memory_usage_percent = read_memory_usage_percent().unwrap_or(0.0);
     let cpu_usage_percent = read_cpu_usage_percent().unwrap_or(0.0);
 
@@ -364,11 +376,15 @@ async fn push_metrics(
 
     let payload = MetricsPayload {
         node_id: &cfg.node_id,
-        active_connections: if health_ok { 1 } else { 0 },
+        active_connections: if state.last_health_ok { 1 } else { 0 },
         cpu_usage_percent,
         memory_usage_percent,
         bandwidth_mbps,
-        error_rate: if state.last_sync_failed { 1.0 } else { 0.0 },
+        error_rate: if state.last_sync_failed || !state.last_health_ok {
+            1.0
+        } else {
+            0.0
+        },
         collected_at: Utc::now().to_rfc3339(),
     };
 
@@ -460,6 +476,7 @@ mod tests {
             credentials_path,
             trusttunnel_reload_signal: "SIGHUP".to_string(),
             trusttunnel_health_addr: "localhost:443".to_string(),
+            health_check_interval_seconds: 15,
             metrics_push_interval: 30,
         }
     }
