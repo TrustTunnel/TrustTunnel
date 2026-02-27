@@ -35,6 +35,11 @@ struct Config {
 
 const HEARTBEAT_MAX_RETRIES: usize = 3;
 const HEARTBEAT_INITIAL_BACKOFF_SECONDS: u64 = 1;
+const LK_REQUEST_TIMEOUT_SECONDS: u64 = 5;
+const LK_CONNECT_TIMEOUT_SECONDS: u64 = 2;
+const SYNC_MAX_RETRIES: usize = 3;
+const SYNC_INITIAL_BACKOFF_SECONDS: u64 = 1;
+const TCP_REACHABILITY_TIMEOUT_SECONDS: u64 = 2;
 
 impl Config {
     fn from_env() -> Result<Self> {
@@ -158,7 +163,8 @@ async fn main() -> Result<()> {
     });
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(15))
+        .connect_timeout(Duration::from_secs(LK_CONNECT_TIMEOUT_SECONDS))
+        .timeout(Duration::from_secs(LK_REQUEST_TIMEOUT_SECONDS))
         .build()?;
 
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
@@ -253,7 +259,14 @@ async fn healthz_handler(AxumState(state): AxumState<SharedAgentState>) -> impl 
 }
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: SharedAgentState) -> Result<()> {
-    sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await
+    sync_once_with_retry(
+        cfg,
+        client,
+        state,
+        SYNC_MAX_RETRIES,
+        Duration::from_secs(SYNC_INITIAL_BACKOFF_SECONDS),
+    )
+    .await
 }
 
 async fn sync_once_with_retry(
@@ -371,13 +384,16 @@ async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<Snapsh
         .query(&[("node_id", &cfg.node_id)])
         .bearer_auth(&cfg.internal_agent_token)
         .send()
-        .await?;
+        .await
+        .map_err(|err| map_lk_request_error(err, "accounts snapshot"))?;
 
     if resp.status() != StatusCode::OK {
         anyhow::bail!("unexpected snapshot response status: {}", resp.status());
     }
 
-    Ok(resp.json().await?)
+    resp.json()
+        .await
+        .map_err(|err| map_lk_request_error(err, "accounts snapshot decode"))
 }
 
 fn validate_checksum(snapshot: &SnapshotResponse) -> Result<()> {
@@ -569,7 +585,8 @@ async fn post_sync_report(
         .bearer_auth(&cfg.internal_agent_token)
         .json(&report)
         .send()
-        .await?;
+        .await
+        .map_err(|err| map_lk_request_error(err, "sync report"))?;
 
     if !resp.status().is_success() {
         anyhow::bail!("sync report rejected: {}", resp.status());
@@ -671,7 +688,8 @@ async fn push_metrics_once(
         .bearer_auth(&cfg.internal_agent_token)
         .json(&payload)
         .send()
-        .await?;
+        .await
+        .map_err(|err| map_lk_request_error(err, "heartbeat"))?;
 
     if !resp.status().is_success() {
         let mut state = state.lock().await;
@@ -737,7 +755,26 @@ async fn check_lk_reachable(lk_internal_base_url: &str) -> bool {
 }
 
 async fn check_tcp_reachable(addr: &str) -> bool {
-    TcpStream::connect(addr).await.is_ok()
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(TCP_REACHABILITY_TIMEOUT_SECONDS),
+            TcpStream::connect(addr),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+fn map_lk_request_error(err: reqwest::Error, operation: &str) -> anyhow::Error {
+    if err.is_timeout() {
+        anyhow::anyhow!(
+            "{operation} timed out (connect<={}s, total<={}s)",
+            LK_CONNECT_TIMEOUT_SECONDS,
+            LK_REQUEST_TIMEOUT_SECONDS,
+        )
+    } else {
+        err.into()
+    }
 }
 
 fn read_memory_usage_percent() -> Result<f64> {

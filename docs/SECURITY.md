@@ -2,7 +2,7 @@
 
 - **Scope:** TLS/auth hardening and operational risk notes.
 - **Applies to:** Classic (active), Modified (planned contract)
-- **Last updated:** 2026-02-26
+- **Last updated:** 2026-02-27
 
 ## 1. TLS requirements
 
@@ -43,3 +43,13 @@ Recommended production posture:
 - Modified mode (IP pool quality selection) is not active in current release.
 - Misconfigured SNI/cert mapping causes hard TLS failures before auth-level diagnostics.
 - If credentials mode is used without credentials on public bind, deployment is insecure (explicitly blocked/warned by validation/runtime checks).
+
+## 6. Operational constraints for LK integration
+
+- Agent-side LK HTTP client is bounded to **2s connect timeout** and **5s total timeout** per request.
+- Constraint applies to all LK operations:
+  - `GET /internal/vpn/classic/accounts`
+  - `POST /internal/vpn/classic/sync-report`
+  - `POST /internal/nodes/heartbeat`
+- Sync retry policy remains exponential (`1s`, `2s`, `4s`) with 3 retries to avoid breaching the update objective (`<=30s`) during transient errors while still converging quickly when LK is healthy.
+
