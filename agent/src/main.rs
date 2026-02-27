@@ -1,4 +1,9 @@
 use anyhow::{Context, Result};
+use axum::extract::State as AxumState;
+use axum::http::StatusCode as HttpStatusCode;
+use axum::response::IntoResponse;
+use axum::routing::get;
+use axum::Router;
 use chrono::Utc;
 use log::{error, info, warn};
 use reqwest::StatusCode;
@@ -8,8 +13,10 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 
 #[derive(Clone)]
 struct Config {
@@ -22,6 +29,7 @@ struct Config {
     trusttunnel_reload_mode: String,
     trusttunnel_pid: i32,
     agent_port: u16,
+    trusttunnel_tcp_addr: String,
 }
 
 impl Config {
@@ -48,6 +56,8 @@ impl Config {
             agent_port: std::env::var("AGENT_PORT")
                 .unwrap_or_else(|_| "9105".to_string())
                 .parse()?,
+            trusttunnel_tcp_addr: std::env::var("TRUSTTUNNEL_TCP_ADDR")
+                .unwrap_or_else(|_| "127.0.0.1:8443".to_string()),
         })
     }
 }
@@ -116,19 +126,37 @@ struct AgentState {
     last_version: Option<String>,
     last_checksum: Option<String>,
     last_network_total: Option<u64>,
-    last_sync_failed: bool,
-    last_health_ok: bool,
+    last_sync_successful: bool,
+    last_sync_timestamp: Option<i64>,
+    sync_success_total: u64,
+    sync_failure_total: u64,
+    accounts_current: usize,
+    heartbeat_success_total: u64,
+    heartbeat_failure_total: u64,
+    lk_reachable: bool,
+    trusttunnel_tcp_reachable: bool,
 }
+
+type SharedAgentState = Arc<Mutex<AgentState>>;
 
 #[tokio::main]
 async fn main() -> Result<()> {
     env_logger::init();
     let cfg = Config::from_env()?;
+    let state: SharedAgentState = Arc::new(Mutex::new(AgentState::default()));
+
+    let http_state = state.clone();
+    let http_port = cfg.agent_port;
+    tokio::spawn(async move {
+        if let Err(err) = run_http_server(http_port, http_state).await {
+            error!("http server failed: {err:#}");
+        }
+    });
+
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()?;
 
-    let mut state = AgentState::default();
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
     let mut heartbeat_interval =
         tokio::time::interval(Duration::from_secs(cfg.heartbeat_interval_seconds.max(1)));
@@ -136,16 +164,12 @@ async fn main() -> Result<()> {
     loop {
         tokio::select! {
             _ = sync_interval.tick() => {
-                if let Err(e) = sync_once(&cfg, &client, &mut state).await {
-                    state.last_sync_failed = true;
+                if let Err(e) = sync_once(&cfg, &client, state.clone()).await {
                     error!("credentials sync failed: {e:#}");
-                } else {
-                    state.last_sync_failed = false;
                 }
             }
             _ = heartbeat_interval.tick() => {
-                state.last_health_ok = check_health(cfg.agent_port).await;
-                if let Err(e) = push_metrics(&cfg, &client, &mut state).await {
+                if let Err(e) = push_metrics(&cfg, &client, state.clone()).await {
                     warn!("metrics push failed: {e:#}");
                 }
             }
@@ -157,19 +181,54 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn check_health(agent_port: u16) -> bool {
-    let health_addr = format!("127.0.0.1:{agent_port}");
-    TcpStream::connect(health_addr).await.is_ok()
+async fn run_http_server(port: u16, state: SharedAgentState) -> Result<()> {
+    let app = Router::new()
+        .route("/metrics", get(metrics_handler))
+        .route("/healthz", get(healthz_handler))
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+    info!("agent HTTP server listening on 0.0.0.0:{port}");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
-async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
+async fn metrics_handler(AxumState(state): AxumState<SharedAgentState>) -> impl IntoResponse {
+    let state = state.lock().await;
+    let last_sync_timestamp = state.last_sync_timestamp.unwrap_or(0);
+
+    let body = format!(
+        "# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n",
+        last_sync_timestamp,
+        state.sync_success_total,
+        state.sync_failure_total,
+        state.accounts_current,
+        state.heartbeat_success_total,
+        state.heartbeat_failure_total,
+    );
+
+    ([("content-type", "text/plain; version=0.0.4")], body).into_response()
+}
+
+async fn healthz_handler(AxumState(state): AxumState<SharedAgentState>) -> impl IntoResponse {
+    let state = state.lock().await;
+    let healthy =
+        state.last_sync_successful && state.lk_reachable && state.trusttunnel_tcp_reachable;
+    if healthy {
+        (HttpStatusCode::OK, "ok").into_response()
+    } else {
+        (HttpStatusCode::SERVICE_UNAVAILABLE, "unhealthy").into_response()
+    }
+}
+
+async fn sync_once(cfg: &Config, client: &reqwest::Client, state: SharedAgentState) -> Result<()> {
     sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await
 }
 
 async fn sync_once_with_retry(
     cfg: &Config,
     client: &reqwest::Client,
-    state: &mut AgentState,
+    state: SharedAgentState,
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<()> {
@@ -187,8 +246,11 @@ async fn sync_once_with_retry(
                     error: None,
                 };
 
-                let is_new = state.last_version.as_deref() != Some(&snapshot.version)
-                    || state.last_checksum.as_deref() != Some(&snapshot.checksum);
+                let is_new = {
+                    let state_lock = state.lock().await;
+                    state_lock.last_version.as_deref() != Some(&snapshot.version)
+                        || state_lock.last_checksum.as_deref() != Some(&snapshot.checksum)
+                };
 
                 let sync_result = (|| -> Result<()> {
                     if is_new {
@@ -212,8 +274,10 @@ async fn sync_once_with_retry(
                         .err()
                         .map(|e| format!("sync failed: {e}"));
                 } else {
-                    state.last_version = Some(snapshot.version);
-                    state.last_checksum = Some(snapshot.checksum);
+                    let mut state_lock = state.lock().await;
+                    state_lock.last_version = Some(snapshot.version);
+                    state_lock.last_checksum = Some(snapshot.checksum);
+                    state_lock.accounts_current = outcome.applied_count;
                 }
 
                 (outcome, sync_result)
@@ -228,6 +292,20 @@ async fn sync_once_with_retry(
                 (outcome, Err(err))
             }
         };
+
+    {
+        let mut state_lock = state.lock().await;
+        if sync_result.is_ok() {
+            state_lock.last_sync_successful = true;
+            state_lock.sync_success_total = state_lock.sync_success_total.saturating_add(1);
+            state_lock.last_sync_timestamp = Some(Utc::now().timestamp());
+            state_lock.lk_reachable = true;
+        } else {
+            state_lock.last_sync_successful = false;
+            state_lock.sync_failure_total = state_lock.sync_failure_total.saturating_add(1);
+            state_lock.lk_reachable = false;
+        }
+    }
 
     post_sync_report(cfg, client, outcome).await?;
     sync_result
@@ -472,13 +550,20 @@ async fn post_sync_report(
 async fn push_metrics(
     cfg: &Config,
     client: &reqwest::Client,
-    state: &mut AgentState,
+    state: SharedAgentState,
 ) -> Result<()> {
+    let trusttunnel_tcp_reachable = check_tcp_reachable(&cfg.trusttunnel_tcp_addr).await;
+    let lk_reachable = check_lk_reachable(&cfg.lk_internal_base_url).await;
+
     let mem_percent = read_memory_usage_percent().unwrap_or(0.0);
     let cpu_percent = read_cpu_usage_percent().unwrap_or(0.0);
 
     let (current_rx, current_tx) = read_network_totals().unwrap_or((0, 0));
-    let (rx_mbps, tx_mbps) = if let Some(prev) = state.last_network_total {
+    let (prev_total, last_sync_successful) = {
+        let state = state.lock().await;
+        (state.last_network_total, state.last_sync_successful)
+    };
+    let (rx_mbps, tx_mbps) = if let Some(prev) = prev_total {
         let rx_bytes_delta = current_rx.saturating_sub(prev) as f64;
         let tx_bytes_delta = current_tx.saturating_sub(prev) as f64;
         (
@@ -488,9 +573,9 @@ async fn push_metrics(
     } else {
         (0.0, 0.0)
     };
-    state.last_network_total = Some(current_rx.saturating_add(current_tx));
+    let new_network_total = current_rx.saturating_add(current_tx);
 
-    let status = if state.last_sync_failed || !state.last_health_ok {
+    let status = if !last_sync_successful || !lk_reachable || !trusttunnel_tcp_reachable {
         "degraded"
     } else {
         "ok"
@@ -500,7 +585,7 @@ async fn push_metrics(
         node_id: &cfg.node_id,
         status,
         metrics_json: HeartbeatMetrics {
-            active_connections: if state.last_health_ok { 1 } else { 0 },
+            active_connections: if trusttunnel_tcp_reachable { 1 } else { 0 },
             cpu_percent,
             mem_percent,
             rx_mbps,
@@ -517,10 +602,38 @@ async fn push_metrics(
         .await?;
 
     if !resp.status().is_success() {
+        let mut state = state.lock().await;
+        state.heartbeat_failure_total = state.heartbeat_failure_total.saturating_add(1);
+        state.lk_reachable = false;
+        state.trusttunnel_tcp_reachable = trusttunnel_tcp_reachable;
+        state.last_network_total = Some(new_network_total);
         anyhow::bail!("metrics push rejected: {}", resp.status());
     }
 
+    let mut state = state.lock().await;
+    state.heartbeat_success_total = state.heartbeat_success_total.saturating_add(1);
+    state.lk_reachable = lk_reachable;
+    state.trusttunnel_tcp_reachable = trusttunnel_tcp_reachable;
+    state.last_network_total = Some(new_network_total);
+
     Ok(())
+}
+
+async fn check_lk_reachable(lk_internal_base_url: &str) -> bool {
+    let parsed = match reqwest::Url::parse(lk_internal_base_url) {
+        Ok(url) => url,
+        Err(_) => return false,
+    };
+    let host = match parsed.host_str() {
+        Some(host) => host,
+        None => return false,
+    };
+    let port = parsed.port_or_known_default().unwrap_or(443);
+    check_tcp_reachable(&format!("{host}:{port}")).await
+}
+
+async fn check_tcp_reachable(addr: &str) -> bool {
+    TcpStream::connect(addr).await.is_ok()
 }
 
 fn read_memory_usage_percent() -> Result<f64> {
@@ -600,6 +713,7 @@ mod tests {
             trusttunnel_reload_mode: "signal".to_string(),
             trusttunnel_pid: 1,
             agent_port: 9105,
+            trusttunnel_tcp_addr: "127.0.0.1:8443".to_string(),
         }
     }
 
@@ -627,7 +741,7 @@ mod tests {
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-fetch-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
         let client = reqwest::Client::new();
-        let mut state = AgentState::default();
+        let state = Arc::new(Mutex::new(AgentState::default()));
 
         let _snapshot = server
             .mock_async(|when, then| {
@@ -644,7 +758,7 @@ mod tests {
             .await;
 
         let result =
-            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+            sync_once_with_retry(&cfg, &client, state.clone(), 0, Duration::from_millis(1)).await;
 
         assert!(result.is_err(), "expected error");
     }
@@ -655,7 +769,7 @@ mod tests {
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-checksum-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
         let client = reqwest::Client::new();
-        let mut state = AgentState::default();
+        let state = Arc::new(Mutex::new(AgentState::default()));
 
         let accounts = vec![Account {
             username: "alice".to_string(),
@@ -682,7 +796,7 @@ mod tests {
             .await;
 
         let result =
-            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+            sync_once_with_retry(&cfg, &client, state.clone(), 0, Duration::from_millis(1)).await;
 
         assert!(result.is_err(), "expected error");
     }
