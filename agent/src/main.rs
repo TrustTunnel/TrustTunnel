@@ -16,7 +16,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 
@@ -40,6 +40,12 @@ const LK_REQUEST_TIMEOUT_SECONDS: u64 = 5;
 const LK_CONNECT_TIMEOUT_SECONDS: u64 = 2;
 const SYNC_MAX_RETRIES: usize = 3;
 const SYNC_INITIAL_BACKOFF_SECONDS: u64 = 1;
+const SYNC_CYCLE_BUDGET_SECONDS: u64 = 30;
+// Sync cycle SLA formula:
+// total <= ((SYNC_MAX_RETRIES + 1) * LK_REQUEST_TIMEOUT_SECONDS)
+//        + sum(retry_backoff_sequence(SYNC_MAX_RETRIES, SYNC_INITIAL_BACKOFF_SECONDS))
+//        + SYNC_REPORT_TIMEOUT_SECONDS
+// With defaults: (4 * 5s) + (1s + 2s + 4s) + 3s = 30s.
 const SYNC_REPORT_TIMEOUT_SECONDS: u64 = 3;
 const TCP_REACHABILITY_TIMEOUT_SECONDS: u64 = 2;
 
@@ -308,66 +314,95 @@ async fn sync_once_with_retry(
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<()> {
-    let (outcome, sync_result) =
-        match fetch_snapshot_with_retry(cfg, client, max_retries, initial_backoff).await {
-            Ok(snapshot) => {
-                let mut outcome = SyncOutcome {
-                    version: snapshot.version.clone(),
-                    status: "success".to_string(),
-                    applied_count: snapshot
-                        .accounts
-                        .iter()
-                        .filter(|account| account.enabled)
-                        .count(),
-                    error: None,
-                };
+    sync_once_with_retry_budgeted(
+        cfg,
+        client,
+        state,
+        max_retries,
+        initial_backoff,
+        Duration::from_secs(SYNC_CYCLE_BUDGET_SECONDS),
+        Duration::from_secs(LK_REQUEST_TIMEOUT_SECONDS),
+        Duration::from_secs(SYNC_REPORT_TIMEOUT_SECONDS),
+    )
+    .await
+}
 
-                let is_new = {
-                    let state_lock = state.lock().await;
-                    state_lock.last_version.as_deref() != Some(&snapshot.version)
-                        || state_lock.last_checksum.as_deref() != Some(&snapshot.checksum)
-                };
+async fn sync_once_with_retry_budgeted(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: SharedAgentState,
+    max_retries: usize,
+    initial_backoff: Duration,
+    cycle_budget: Duration,
+    fetch_timeout: Duration,
+    report_timeout: Duration,
+) -> Result<()> {
+    let sync_deadline = Instant::now() + cycle_budget;
+    let (outcome, sync_result) = match fetch_snapshot_with_retry(
+        cfg,
+        client,
+        max_retries,
+        initial_backoff,
+        sync_deadline,
+        fetch_timeout,
+    )
+    .await
+    {
+        Ok(snapshot) => {
+            let mut outcome = SyncOutcome {
+                version: snapshot.version.clone(),
+                status: "success".to_string(),
+                applied_count: snapshot
+                    .accounts
+                    .iter()
+                    .filter(|account| account.enabled)
+                    .count(),
+                error: None,
+            };
 
-                let sync_result = (|| -> Result<()> {
-                    if is_new {
-                        validate_checksum(&snapshot).context("validate_checksum")?;
-                        write_credentials_atomically(&cfg.credentials_path, &snapshot.accounts)
-                            .context("write_credentials_atomically")?;
-                        trigger_trusttunnel_reload(
-                            &cfg.trusttunnel_reload_mode,
-                            cfg.trusttunnel_pid,
-                        )
+            let is_new = {
+                let state_lock = state.lock().await;
+                state_lock.last_version.as_deref() != Some(&snapshot.version)
+                    || state_lock.last_checksum.as_deref() != Some(&snapshot.checksum)
+            };
+
+            let sync_result = (|| -> Result<()> {
+                if is_new {
+                    validate_checksum(&snapshot).context("validate_checksum")?;
+                    write_credentials_atomically(&cfg.credentials_path, &snapshot.accounts)
+                        .context("write_credentials_atomically")?;
+                    trigger_trusttunnel_reload(&cfg.trusttunnel_reload_mode, cfg.trusttunnel_pid)
                         .context("trigger_trusttunnel_reload")?;
-                        info!("applied credentials snapshot version={}", snapshot.version);
-                    }
-                    Ok(())
-                })();
-
-                if sync_result.is_err() {
-                    outcome.status = "failed".to_string();
-                    outcome.error = sync_result
-                        .as_ref()
-                        .err()
-                        .map(|e| format!("sync failed: {e}"));
-                } else {
-                    let mut state_lock = state.lock().await;
-                    state_lock.last_version = Some(snapshot.version);
-                    state_lock.last_checksum = Some(snapshot.checksum);
-                    state_lock.accounts_current = outcome.applied_count;
+                    info!("applied credentials snapshot version={}", snapshot.version);
                 }
+                Ok(())
+            })();
 
-                (outcome, sync_result)
+            if sync_result.is_err() {
+                outcome.status = "failed".to_string();
+                outcome.error = sync_result
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("sync failed: {e}"));
+            } else {
+                let mut state_lock = state.lock().await;
+                state_lock.last_version = Some(snapshot.version);
+                state_lock.last_checksum = Some(snapshot.checksum);
+                state_lock.accounts_current = outcome.applied_count;
             }
-            Err(err) => {
-                let outcome = SyncOutcome {
-                    version: "unknown".to_string(),
-                    status: "failed".to_string(),
-                    applied_count: 0,
-                    error: Some(format!("fetch_snapshot failed: {err}")),
-                };
-                (outcome, Err(err))
-            }
-        };
+
+            (outcome, sync_result)
+        }
+        Err(err) => {
+            let outcome = SyncOutcome {
+                version: "unknown".to_string(),
+                status: "failed".to_string(),
+                applied_count: 0,
+                error: Some(format!("fetch_snapshot failed: {err}")),
+            };
+            (outcome, Err(err))
+        }
+    };
 
     {
         let mut state_lock = state.lock().await;
@@ -383,7 +418,15 @@ async fn sync_once_with_retry(
         }
     }
 
-    post_sync_report(cfg, client, outcome).await?;
+    if let Some(report_budget_left) = remaining_budget(sync_deadline) {
+        let effective_report_timeout = report_timeout.min(report_budget_left);
+        if let Err(err) = post_sync_report(cfg, client, outcome, effective_report_timeout).await {
+            warn!("sync report failed (best effort): {err:#}");
+        }
+    } else {
+        warn!("sync report skipped: sync cycle budget exhausted");
+    }
+
     sync_result
 }
 
@@ -392,12 +435,16 @@ async fn fetch_snapshot_with_retry(
     client: &reqwest::Client,
     max_retries: usize,
     initial_backoff: Duration,
+    sync_deadline: Instant,
+    fetch_timeout: Duration,
 ) -> Result<SnapshotResponse> {
     fetch_snapshot_with_retry_and_sleep(
         cfg,
         client,
         max_retries,
         initial_backoff,
+        sync_deadline,
+        fetch_timeout,
         |duration| async move {
             tokio::time::sleep(duration).await;
         },
@@ -410,6 +457,8 @@ async fn fetch_snapshot_with_retry_and_sleep<S, Fut>(
     client: &reqwest::Client,
     max_retries: usize,
     initial_backoff: Duration,
+    sync_deadline: Instant,
+    fetch_timeout: Duration,
     mut sleep: S,
 ) -> Result<SnapshotResponse>
 where
@@ -418,25 +467,51 @@ where
 {
     let backoffs = retry_backoff_sequence(max_retries, initial_backoff, Duration::from_secs(30));
     for backoff in backoffs {
-        match fetch_snapshot(cfg, client).await {
+        let fetch_budget_left = ensure_budget_remaining(sync_deadline, "fetch accounts snapshot")?;
+        let effective_timeout = fetch_timeout.min(fetch_budget_left);
+
+        match fetch_snapshot(cfg, client, effective_timeout).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
                 warn!("snapshot fetch failed: {e:#}; retrying in {:?}", backoff);
-                sleep(backoff).await;
+
+                let sleep_budget_left =
+                    ensure_budget_remaining(sync_deadline, "retry backoff before next fetch")?;
+                sleep(backoff.min(sleep_budget_left)).await;
             }
         }
     }
 
-    fetch_snapshot(cfg, client).await
+    let fetch_budget_left = ensure_budget_remaining(sync_deadline, "fetch accounts snapshot")?;
+    let effective_timeout = fetch_timeout.min(fetch_budget_left);
+    fetch_snapshot(cfg, client, effective_timeout).await
 }
 
-async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<SnapshotResponse> {
+fn remaining_budget(sync_deadline: Instant) -> Option<Duration> {
+    sync_deadline.checked_duration_since(Instant::now())
+}
+
+fn ensure_budget_remaining(sync_deadline: Instant, operation: &str) -> Result<Duration> {
+    let remaining = remaining_budget(sync_deadline)
+        .with_context(|| format!("sync budget exhausted before {operation}"))?;
+    if remaining.is_zero() {
+        anyhow::bail!("sync budget exhausted before {operation}");
+    }
+    Ok(remaining)
+}
+
+async fn fetch_snapshot(
+    cfg: &Config,
+    client: &reqwest::Client,
+    timeout: Duration,
+) -> Result<SnapshotResponse> {
     let url = format!("{}/internal/vpn/classic/accounts", cfg.lk_internal_base_url);
 
     let resp = client
         .get(url)
         .query(&[("node_id", &cfg.node_id)])
         .bearer_auth(&cfg.internal_agent_token)
+        .timeout(timeout)
         .send()
         .await
         .map_err(|err| map_lk_request_error(err, "accounts snapshot"))?;
@@ -619,6 +694,7 @@ async fn post_sync_report(
     cfg: &Config,
     client: &reqwest::Client,
     outcome: SyncOutcome,
+    timeout: Duration,
 ) -> Result<()> {
     let url = format!(
         "{}/internal/vpn/classic/sync-report",
@@ -638,7 +714,7 @@ async fn post_sync_report(
         .post(url)
         .bearer_auth(&cfg.internal_agent_token)
         .json(&report)
-        .timeout(Duration::from_secs(SYNC_REPORT_TIMEOUT_SECONDS))
+        .timeout(timeout)
         .send()
         .await
         .map_err(|err| map_lk_request_error(err, "sync report"))?;
@@ -1053,7 +1129,7 @@ mod tests {
             })
             .await;
 
-        let err = fetch_snapshot(&cfg, &client)
+        let err = fetch_snapshot(&cfg, &client, Duration::from_millis(100))
             .await
             .err()
             .expect("timeout expected");
@@ -1073,7 +1149,7 @@ mod tests {
             .build()
             .expect("build client");
 
-        let err = fetch_snapshot(&cfg, &client)
+        let err = fetch_snapshot(&cfg, &client, Duration::from_millis(200))
             .await
             .err()
             .expect("network error expected");
@@ -1093,7 +1169,7 @@ mod tests {
             .build()
             .expect("build client");
 
-        let err = fetch_snapshot(&cfg, &client)
+        let err = fetch_snapshot(&cfg, &client, Duration::from_millis(200))
             .await
             .err()
             .expect("dns error expected");
@@ -1133,6 +1209,8 @@ mod tests {
             &client,
             3,
             Duration::from_secs(1),
+            Instant::now() + Duration::from_secs(30),
+            Duration::from_secs(LK_REQUEST_TIMEOUT_SECONDS),
             move |duration| {
                 let calls = calls_clone.clone();
                 let sleeps = sleeps_clone.clone();
@@ -1155,6 +1233,112 @@ mod tests {
             ]
         );
         assert_eq!(_snapshot.hits_async().await, 4);
+    }
+
+    #[tokio::test]
+    async fn sync_cycle_timeout_errors_respect_total_budget() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-sync-budget-timeout.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .no_proxy()
+            .build()
+            .expect("build client");
+        let state = Arc::new(Mutex::new(AgentState::default()));
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
+                then.status(200)
+                    .delay(Duration::from_secs(1))
+                    .json_body(serde_json::json!({
+                        "version": "v1",
+                        "accounts": [],
+                        "checksum": "x"
+                    }));
+            })
+            .await;
+
+        let _report = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/internal/vpn/classic/sync-report");
+                then.status(200).delay(Duration::from_secs(1));
+            })
+            .await;
+
+        let started = Instant::now();
+        let result = sync_once_with_retry_budgeted(
+            &cfg,
+            &client,
+            state,
+            10,
+            Duration::from_millis(50),
+            Duration::from_millis(300),
+            Duration::from_millis(80),
+            Duration::from_millis(60),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            elapsed <= Duration::from_millis(450),
+            "elapsed: {:?}",
+            elapsed
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_cycle_http_errors_respect_total_budget() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-sync-budget-errors.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .no_proxy()
+            .build()
+            .expect("build client");
+        let state = Arc::new(Mutex::new(AgentState::default()));
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
+                then.status(500);
+            })
+            .await;
+
+        let _report = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/internal/vpn/classic/sync-report");
+                then.status(500).delay(Duration::from_secs(1));
+            })
+            .await;
+
+        let started = Instant::now();
+        let result = sync_once_with_retry_budgeted(
+            &cfg,
+            &client,
+            state,
+            10,
+            Duration::from_millis(50),
+            Duration::from_millis(300),
+            Duration::from_millis(80),
+            Duration::from_millis(60),
+        )
+        .await;
+        let elapsed = started.elapsed();
+
+        assert!(result.is_err());
+        assert!(
+            elapsed <= Duration::from_millis(450),
+            "elapsed: {:?}",
+            elapsed
+        );
     }
 
     #[test]
