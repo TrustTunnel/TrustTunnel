@@ -57,6 +57,18 @@ spec:
             - name: https-udp
               containerPort: 8443
               protocol: UDP
+          readinessProbe:
+            tcpSocket:
+              port: https-tcp
+            initialDelaySeconds: 8
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: https-tcp
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            failureThreshold: 3
           volumeMounts:
             - name: endpoint-config
               mountPath: /etc/trusttunnel/vpn.toml
@@ -76,6 +88,20 @@ spec:
             - name: agent-http
               containerPort: 9105
               protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: agent-http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: agent-http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
           envFrom:
             # Keep INTERNAL_AGENT_TOKEN and other sensitive envs in this Secret.
             - secretRef:
