@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs::OpenOptions;
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -39,7 +40,38 @@ const LK_REQUEST_TIMEOUT_SECONDS: u64 = 5;
 const LK_CONNECT_TIMEOUT_SECONDS: u64 = 2;
 const SYNC_MAX_RETRIES: usize = 3;
 const SYNC_INITIAL_BACKOFF_SECONDS: u64 = 1;
+const SYNC_REPORT_TIMEOUT_SECONDS: u64 = 3;
 const TCP_REACHABILITY_TIMEOUT_SECONDS: u64 = 2;
+
+fn retry_backoff_sequence(
+    max_retries: usize,
+    initial_backoff: Duration,
+    max_backoff: Duration,
+) -> Vec<Duration> {
+    let mut backoff = initial_backoff;
+    (0..max_retries)
+        .map(|_| {
+            let current = backoff;
+            backoff = (backoff * 2).min(max_backoff);
+            current
+        })
+        .collect()
+}
+
+fn sync_cycle_worst_case_duration(
+    max_retries: usize,
+    initial_backoff: Duration,
+    fetch_timeout: Duration,
+    report_timeout: Duration,
+) -> Duration {
+    let fetch_attempts = max_retries.saturating_add(1) as u32;
+    let fetch_total = fetch_timeout.saturating_mul(fetch_attempts);
+    let backoff_total: Duration =
+        retry_backoff_sequence(max_retries, initial_backoff, Duration::from_secs(30))
+            .into_iter()
+            .sum();
+    fetch_total + backoff_total + report_timeout
+}
 
 impl Config {
     fn from_env() -> Result<Self> {
@@ -361,14 +393,36 @@ async fn fetch_snapshot_with_retry(
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<SnapshotResponse> {
-    let mut backoff = initial_backoff;
-    for _ in 0..max_retries {
+    fetch_snapshot_with_retry_and_sleep(
+        cfg,
+        client,
+        max_retries,
+        initial_backoff,
+        |duration| async move {
+            tokio::time::sleep(duration).await;
+        },
+    )
+    .await
+}
+
+async fn fetch_snapshot_with_retry_and_sleep<S, Fut>(
+    cfg: &Config,
+    client: &reqwest::Client,
+    max_retries: usize,
+    initial_backoff: Duration,
+    mut sleep: S,
+) -> Result<SnapshotResponse>
+where
+    S: FnMut(Duration) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let backoffs = retry_backoff_sequence(max_retries, initial_backoff, Duration::from_secs(30));
+    for backoff in backoffs {
         match fetch_snapshot(cfg, client).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
                 warn!("snapshot fetch failed: {e:#}; retrying in {:?}", backoff);
-                tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
+                sleep(backoff).await;
             }
         }
     }
@@ -584,6 +638,7 @@ async fn post_sync_report(
         .post(url)
         .bearer_auth(&cfg.internal_agent_token)
         .json(&report)
+        .timeout(Duration::from_secs(SYNC_REPORT_TIMEOUT_SECONDS))
         .send()
         .await
         .map_err(|err| map_lk_request_error(err, "sync report"))?;
@@ -617,15 +672,14 @@ async fn push_metrics_with_retry(
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<()> {
-    let mut backoff = initial_backoff;
-    for attempt in 0..=max_retries {
+    for (attempt, backoff) in
+        retry_backoff_sequence(max_retries, initial_backoff, Duration::from_secs(30))
+            .into_iter()
+            .enumerate()
+    {
         match push_metrics_once(cfg, client, state.clone()).await {
             Ok(()) => return Ok(()),
             Err(err) => {
-                if attempt == max_retries {
-                    return Err(err);
-                }
-
                 warn!(
                     "heartbeat push failed (attempt {}/{}): {}; retrying in {:?}",
                     attempt + 1,
@@ -634,12 +688,11 @@ async fn push_metrics_with_retry(
                     backoff,
                 );
                 tokio::time::sleep(backoff).await;
-                backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
     }
 
-    Ok(())
+    push_metrics_once(cfg, client, state).await
 }
 
 async fn push_metrics_once(
@@ -881,12 +934,17 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-fetch-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build client");
         let state = Arc::new(Mutex::new(AgentState::default()));
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET).path("/internal/vpn/classic/accounts");
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
                 then.status(500);
             })
             .await;
@@ -909,7 +967,10 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-checksum-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build client");
         let state = Arc::new(Mutex::new(AgentState::default()));
 
         let accounts = vec![Account {
@@ -920,7 +981,9 @@ mod tests {
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET).path("/internal/vpn/classic/accounts");
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
                 then.status(200).json_body(serde_json::json!({
                     "version": "v1",
                     "accounts": accounts,
@@ -940,6 +1003,175 @@ mod tests {
             sync_once_with_retry(&cfg, &client, state.clone(), 0, Duration::from_millis(1)).await;
 
         assert!(result.is_err(), "expected error");
+    }
+
+    #[test]
+    fn retry_backoff_sequence_covers_boundaries() {
+        assert!(
+            retry_backoff_sequence(0, Duration::from_secs(1), Duration::from_secs(30)).is_empty()
+        );
+        assert_eq!(
+            retry_backoff_sequence(1, Duration::from_secs(1), Duration::from_secs(30)),
+            vec![Duration::from_secs(1)]
+        );
+        assert_eq!(
+            retry_backoff_sequence(3, Duration::from_secs(1), Duration::from_secs(30)),
+            vec![
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4)
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn lk_timeout_error_is_mapped() {
+        let server = MockServer::start_async().await;
+        let cfg = test_config(
+            server.base_url(),
+            std::env::temp_dir().join("trusttunnel-timeout.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(50))
+            .timeout(Duration::from_millis(100))
+            .no_proxy()
+            .build()
+            .expect("build client");
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
+                then.status(200)
+                    .delay(Duration::from_millis(300))
+                    .json_body(serde_json::json!({
+                        "version": "v1",
+                        "accounts": [],
+                        "checksum": "x"
+                    }));
+            })
+            .await;
+
+        let err = fetch_snapshot(&cfg, &client)
+            .await
+            .err()
+            .expect("timeout expected");
+        assert!(err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn lk_network_error_connection_refused() {
+        let cfg = test_config(
+            "http://127.0.0.1:1".to_string(),
+            std::env::temp_dir().join("trusttunnel-neterr.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_millis(200))
+            .no_proxy()
+            .build()
+            .expect("build client");
+
+        let err = fetch_snapshot(&cfg, &client)
+            .await
+            .err()
+            .expect("network error expected");
+        assert!(!err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn lk_network_error_unresolvable_host() {
+        let cfg = test_config(
+            "http://no-such-host.invalid".to_string(),
+            std::env::temp_dir().join("trusttunnel-neterr-host.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(100))
+            .timeout(Duration::from_millis(200))
+            .no_proxy()
+            .build()
+            .expect("build client");
+
+        let err = fetch_snapshot(&cfg, &client)
+            .await
+            .err()
+            .expect("dns error expected");
+        assert!(!err.to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn fetch_retry_backoff_sequence_and_attempt_count() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let server = MockServer::start_async().await;
+        let cfg = test_config(
+            server.base_url(),
+            std::env::temp_dir().join("trusttunnel-backoff.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("build client");
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(GET)
+                    .path("/internal/vpn/classic/accounts")
+                    .query_param("node_id", "node-1");
+                then.status(500);
+            })
+            .await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let sleeps = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
+        let calls_clone = calls.clone();
+        let sleeps_clone = sleeps.clone();
+        let result = fetch_snapshot_with_retry_and_sleep(
+            &cfg,
+            &client,
+            3,
+            Duration::from_secs(1),
+            move |duration| {
+                let calls = calls_clone.clone();
+                let sleeps = sleeps_clone.clone();
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    sleeps.lock().await.push(duration);
+                }
+            },
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(
+            *sleeps.lock().await,
+            vec![
+                Duration::from_secs(1),
+                Duration::from_secs(2),
+                Duration::from_secs(4)
+            ]
+        );
+        assert_eq!(_snapshot.hits_async().await, 4);
+    }
+
+    #[test]
+    fn sync_cycle_worst_case_time_is_capped_at_30s() {
+        let worst_case = sync_cycle_worst_case_duration(
+            SYNC_MAX_RETRIES,
+            Duration::from_secs(SYNC_INITIAL_BACKOFF_SECONDS),
+            Duration::from_secs(LK_REQUEST_TIMEOUT_SECONDS),
+            Duration::from_secs(SYNC_REPORT_TIMEOUT_SECONDS),
+        );
+
+        assert!(
+            worst_case <= Duration::from_secs(30),
+            "worst-case: {:?}",
+            worst_case
+        );
+        assert_eq!(worst_case, Duration::from_secs(30));
     }
 
     #[test]
