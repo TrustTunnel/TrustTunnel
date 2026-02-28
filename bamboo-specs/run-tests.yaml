@@ -13,6 +13,11 @@ stages:
       jobs:
         - Test on Linux
         - Test on macOS
+  - Classic smoke:
+      manual: false
+      final: false
+      jobs:
+        - Classic smoke on Linux
 
 Test on Linux:
   key: TL
@@ -41,6 +46,31 @@ Test on Linux:
           - |-
             set -x -e
             cargo build --bins
+  requirements:
+    - adg-privileged-docker
+  artifact-subscriptions: [ ]
+
+
+Classic smoke on Linux:
+  key: CSL
+  docker:
+    image: adguard/core-libs:2.8
+    volumes:
+      ${bamboo.working.directory}: ${bamboo.working.directory}
+      ${bamboo.tmp.directory}: ${bamboo.tmp.directory}
+    docker-run-arguments: [ ]
+  tasks:
+    - !include docker-clean.yaml
+    - checkout:
+        description: Checkout Default Repository
+        force-clean-build: 'true'
+    - script:
+        interpreter: SHELL
+        description: Run classic LK sidecar e2e smoke
+        scripts:
+          - |-
+            set -x -e
+            ./scripts/ci/lk_sidecar_e2e_smoke.sh
   requirements:
     - adg-privileged-docker
   artifact-subscriptions: [ ]
