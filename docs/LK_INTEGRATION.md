@@ -13,7 +13,7 @@ LK must return (per connection profile):
 - `username` — auth identity;
 - `password` — Classic static password OR Modified short-lived JWT.
 
-## 2. Snapshot contract from LK to sidecar-agent
+## 2. Snapshot contract from LK to agent
 
 `GET /internal/vpn/classic/accounts?node_id=<NODE_ID>` returns:
 - `version` (string)
