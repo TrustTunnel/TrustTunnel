@@ -6,4 +6,6 @@
 
 Техническая документация: [docs/INDEX.md](docs/INDEX.md).
 
+Операционный runbook для Classic sidecar: [docs/RUNBOOK_CLASSIC_SIDECAR.md](docs/RUNBOOK_CLASSIC_SIDECAR.md).
+
 Режимы: **Classic** (текущий production-path) и **Modified** (planned, not enabled in this release).
