@@ -107,3 +107,25 @@ Kubernetes notes:
 - keep LK internal API reachable only inside private network;
 - enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
 - restart is not required for credentials update.
+
+## 7. Smoke-проверка classic deployment (kind/minikube)
+
+Для базовой проверки Kubernetes-манифеста используйте скрипт:
+
+```bash
+scripts/ci/k8s_classic_smoke.sh
+```
+
+Что делает smoke:
+- применяет `deploy/k8s/trusttunnel-classic.yaml` в отдельный namespace;
+- дожидается `Ready` у Pod/Deployment;
+- проверяет sidecar `GET /healthz` и `GET /metrics` через `kubectl port-forward`;
+- выполняет базовую TCP-проверку доступности endpoint (`8443`) и sidecar (`9105`) внутри Pod.
+
+Поддерживаемые переменные окружения:
+- `NAMESPACE` (default: `trusttunnel-smoke`);
+- `WAIT_TIMEOUT` (default: `180s`);
+- `MANIFEST_PATH` (default: `deploy/k8s/trusttunnel-classic.yaml`);
+- `ENDPOINT_IMAGE` и `SIDECAR_IMAGE` — переопределение image в манифесте для smoke.
+
+Для kind/minikube при заданных `ENDPOINT_IMAGE`/`SIDECAR_IMAGE` скрипт автоматически делает `kind load docker-image` или `minikube image load`.
