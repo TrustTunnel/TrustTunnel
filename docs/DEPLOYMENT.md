@@ -136,6 +136,21 @@ Kubernetes notes:
 - enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
 - restart is not required for credentials update.
 
+### Production hardening checklist
+
+- [ ] `PodDisruptionBudget` включен (`minAvailable: 1` для single-replica, пересмотреть при масштабировании).
+- [ ] На endpoint и sidecar заданы `resources.requests` и `resources.limits`.
+- [ ] На Pod включен `securityContext` (`runAsNonRoot`, `seccompProfile: RuntimeDefault`).
+- [ ] На контейнерах включены ограничения (`allowPrivilegeEscalation: false`, `capabilities.drop: ["ALL"]`, `readOnlyRootFilesystem: true` где возможно).
+- [ ] Включен `default-deny` `NetworkPolicy` с явным allow-list:
+  - ingress только на `8443/tcp`, `8443/udp` для endpoint;
+  - ingress на `9105/tcp` только из monitoring namespace для метрик/health;
+  - egress только DNS (`53/tcp`,`53/udp`) и LK internal API (`443/tcp`).
+- [ ] Проверена совместимость `shareProcessNamespace: true` и signal-reload:
+  - sidecar и endpoint запускаются под одним UID/GID, иначе `kill(SIGHUP)` может получить `EPERM`;
+  - при `capabilities.drop: ["ALL"]` не используется `CAP_KILL`, поэтому общий UID обязателен;
+  - `TRUSTTUNNEL_RELOAD_MODE=signal` и `TRUSTTUNNEL_PID=1` соответствуют реальному PID endpoint внутри Pod namespace.
+
 ### Operational constraints (timeouts/retries)
 
 Agent calls to LK (`accounts`, `sync-report`, `heartbeat`) share the same HTTP envelope:
