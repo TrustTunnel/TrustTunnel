@@ -31,7 +31,7 @@ groups:
           - refId: A
             datasourceUid: prometheus
             model:
-              expr: increase(agent_lk_timeout_total[10m]) > 2
+              expr: sum(increase(agent_lk_timeout_total[10m])) > 2
 
       - uid: agent-lk-error-growth
         title: Agent LK error count is growing
@@ -40,7 +40,7 @@ groups:
           - refId: A
             datasourceUid: prometheus
             model:
-              expr: increase(agent_lk_error_total[10m]) > 2
+              expr: sum(increase(agent_lk_error_total[10m])) > 2
 
       - uid: agent-sync-stale
         title: Agent sync is stale
@@ -49,4 +49,4 @@ groups:
           - refId: A
             datasourceUid: prometheus
             model:
-              expr: time() - max(agent_last_sync_timestamp_seconds) > 300
+              expr: (time() - max(agent_last_sync_timestamp_seconds) > 300) OR absent(agent_last_sync_timestamp_seconds)
