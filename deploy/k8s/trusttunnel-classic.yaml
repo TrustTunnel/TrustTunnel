@@ -43,6 +43,13 @@ spec:
     spec:
       # Required so sidecar can send SIGHUP to endpoint process by PID.
       shareProcessNamespace: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: trusttunnel_endpoint
           # Use immutable tags in production (sha-<short_sha> or vX.Y.Z).
@@ -69,6 +76,19 @@ spec:
             initialDelaySeconds: 20
             periodSeconds: 20
             failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           volumeMounts:
             - name: endpoint-config
               mountPath: /etc/trusttunnel/vpn.toml
@@ -102,6 +122,19 @@ spec:
             initialDelaySeconds: 15
             periodSeconds: 10
             failureThreshold: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           envFrom:
             # Keep INTERNAL_AGENT_TOKEN and other sensitive envs in this Secret.
             - secretRef:
@@ -163,12 +196,70 @@ spec:
       targetPort: 8443
   type: LoadBalancer
 ---
-# Optional baseline NetworkPolicy for LK internal API access.
-# Replace namespace/pod selectors and CIDRs with your environment values.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: trusttunnel
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+---
+# Default-deny policy for all traffic to/from trusttunnel Pod.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: trusttunnel-sidecar-egress
+  name: trusttunnel-default-deny
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Allow-list ingress required for endpoint traffic and metrics scraping.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trusttunnel-allow-ingress
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  policyTypes:
+    - Ingress
+  ingress:
+    # External client traffic for endpoint service.
+    - ports:
+        - protocol: TCP
+          port: 8443
+        - protocol: UDP
+          port: 8443
+    # Sidecar health/metrics scraping from Prometheus namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9105
+---
+# Allow-list egress required by sidecar for DNS + LK internal API.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trusttunnel-allow-egress
   labels:
     app.kubernetes.io/name: trusttunnel
 spec:
