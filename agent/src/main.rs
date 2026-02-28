@@ -169,15 +169,20 @@ struct AccountCredential {
 }
 
 #[derive(Default)]
+struct SyncDurationState {
+    last_seconds: f64,
+    sum_seconds: f64,
+    count: u64,
+}
+
+#[derive(Default)]
 struct AgentState {
     last_version: Option<String>,
     last_checksum: Option<String>,
     last_network_total: Option<u64>,
     last_sync_successful: bool,
     last_sync_timestamp: Option<i64>,
-    last_sync_duration_seconds: f64,
-    sync_duration_seconds_sum: f64,
-    sync_duration_seconds_count: u64,
+    sync_duration: SyncDurationState,
     sync_success_total: u64,
     sync_failure_total: u64,
     accounts_current: usize,
@@ -290,9 +295,9 @@ async fn metrics_handler(AxumState(state): AxumState<SharedAgentState>) -> impl 
         "# TYPE agent_last_sync_timestamp_seconds gauge\nagent_last_sync_timestamp_seconds {}\n# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_duration_seconds gauge\nagent_sync_duration_seconds {}\n# TYPE agent_sync_duration_seconds_sum counter\nagent_sync_duration_seconds_sum {}\n# TYPE agent_sync_duration_seconds_count counter\nagent_sync_duration_seconds_count {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n# TYPE agent_lk_timeout_total counter\nagent_lk_timeout_total {}\n# TYPE agent_lk_timeout_count counter\nagent_lk_timeout_count {}\n# TYPE agent_lk_error_total counter\nagent_lk_error_total {}\n# TYPE agent_lk_error_count counter\nagent_lk_error_count {}\n",
         last_sync_timestamp_seconds,
         last_sync_timestamp_seconds,
-        state.last_sync_duration_seconds,
-        state.sync_duration_seconds_sum,
-        state.sync_duration_seconds_count,
+        state.sync_duration.last_seconds,
+        state.sync_duration.sum_seconds,
+        state.sync_duration.count,
         state.sync_success_total,
         state.sync_failure_total,
         state.accounts_current,
@@ -457,10 +462,9 @@ async fn sync_once_with_retry_budgeted(
 
     let sync_duration_seconds = sync_cycle_started_at.elapsed().as_secs_f64();
     let mut state_lock = state.lock().await;
-    state_lock.last_sync_duration_seconds = sync_duration_seconds;
-    state_lock.sync_duration_seconds_sum += sync_duration_seconds;
-    state_lock.sync_duration_seconds_count =
-        state_lock.sync_duration_seconds_count.saturating_add(1);
+    state_lock.sync_duration.last_seconds = sync_duration_seconds;
+    state_lock.sync_duration.sum_seconds += sync_duration_seconds;
+    state_lock.sync_duration.count = state_lock.sync_duration.count.saturating_add(1);
 
     sync_result
 }
@@ -1499,8 +1503,8 @@ mod tests {
         let state = state.lock().await;
         assert_eq!(state.lk_timeout_count, 0);
         assert_eq!(state.lk_error_count, 1);
-        assert_eq!(state.sync_duration_seconds_count, 1);
-        assert!(state.last_sync_duration_seconds > 0.0);
+        assert_eq!(state.sync_duration.count, 1);
+        assert!(state.sync_duration.last_seconds > 0.0);
     }
 
     #[test]

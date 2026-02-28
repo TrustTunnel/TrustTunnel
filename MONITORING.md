@@ -25,7 +25,7 @@ Defined in `monitoring/grafana/alert-rules.yml` examples:
 
 ## Agent metrics contract
 
-Primary (canonical) agent metrics:
+Primary (canonical) agent metrics (alerts should use exactly these names):
 
 - `agent_last_sync_timestamp_seconds` (gauge)
 - `agent_sync_duration_seconds` (gauge, last sync cycle duration)
