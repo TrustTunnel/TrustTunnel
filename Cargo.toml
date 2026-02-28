@@ -6,7 +6,6 @@ members = [
     "lib",
     "macros",
     "tools",
-    "sidecar-agent",
     "agent",
 ]
 

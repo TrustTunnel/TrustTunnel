@@ -36,6 +36,10 @@ jobs:
       - name: Rust Cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Validate LK endpoint paths
+        run: |
+          ./scripts/ci/validate_lk_endpoints.sh
+
       - name: Run tests
         run: |
           cargo test --workspace
