@@ -108,6 +108,36 @@ Kubernetes notes:
 - enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
 - restart is not required for credentials update.
 
+### Operational constraints (timeouts/retries)
+
+Agent calls to LK (`accounts`, `sync-report`, `heartbeat`) share the same HTTP envelope:
+- `connect_timeout = 2s`;
+- `request_timeout = 5s` (total request budget).
+
+Sync retries use exponential backoff: `1s`, `2s`, `4s` (3 retries / 4 attempts total).
+
+Operational budget for one worst-case sync cycle:
+- backoff wait: `1 + 2 + 4 = 7s`;
+- 4 timed-out requests: `4 * 5s = 20s`;
+- total upper bound: `27s` (`<= 30s` target when `SYNC_INTERVAL_SECONDS=30`).
+
+### Kubernetes probes for sidecar and endpoint
+
+Recommended probe profile from the baseline manifest:
+
+- endpoint container (`trusttunnel_endpoint`):
+  - `readinessProbe`: `tcpSocket:8443`, `initialDelaySeconds: 8`, `periodSeconds: 10`, `failureThreshold: 3`;
+  - `livenessProbe`: `tcpSocket:8443`, `initialDelaySeconds: 20`, `periodSeconds: 20`, `failureThreshold: 3`.
+
+- sidecar container (`trusttunnel_sidecar_agent`):
+  - `readinessProbe`: `GET /healthz` on `AGENT_PORT`, `initialDelaySeconds: 5`, `periodSeconds: 10`, `failureThreshold: 3`;
+  - `livenessProbe`: `GET /healthz` on `AGENT_PORT`, `initialDelaySeconds: 15`, `periodSeconds: 10`, `failureThreshold: 3`.
+
+Probe tuning guidance:
+- keep sidecar `periodSeconds <= HEARTBEAT_INTERVAL_SECONDS` so degraded state appears before long heartbeat blind zones;
+- if LK is intermittently slow, prefer increasing `failureThreshold` before increasing HTTP timeouts;
+- avoid overly aggressive liveness restarts: retry logic is already built into agent LK requests.
+
 ## 7. Smoke-проверка classic deployment (kind/minikube)
 
 Для базовой проверки Kubernetes-манифеста используйте скрипт:
