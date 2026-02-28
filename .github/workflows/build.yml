@@ -23,7 +23,7 @@ jobs:
             file: ./Dockerfile
           - name: securelink-lk-migrator
             context: .
-            file: ./agent/Dockerfile
+            file: ./Dockerfile.migrator
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4

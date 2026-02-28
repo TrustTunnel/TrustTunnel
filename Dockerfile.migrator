@@ -1,0 +1,8 @@
+FROM postgres:16-alpine
+
+WORKDIR /app
+
+COPY data-service/migrations ./migrations
+COPY data-service/scripts/migrate.sh ./migrate.sh
+
+ENTRYPOINT ["/app/migrate.sh"]
