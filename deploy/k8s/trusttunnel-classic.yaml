@@ -45,9 +45,7 @@ spec:
       shareProcessNamespace: true
       containers:
         - name: trusttunnel_endpoint
-          # Use immutable tags in production (sha-<short_sha> or vX.Y.Z).
-          # `latest` is published only from the main branch.
-          image: ghcr.io/example/trusttunnel-endpoint:sha-<short_sha>
+          image: ghcr.io/example/trusttunnel-endpoint:latest
           imagePullPolicy: IfNotPresent
           args: ["/etc/trusttunnel/vpn.toml", "/etc/trusttunnel/hosts.toml"]
           ports:
@@ -69,8 +67,7 @@ spec:
             - name: runtime
               mountPath: /runtime
         - name: trusttunnel_sidecar_agent
-          # Keep endpoint + sidecar on the same release/sha tag.
-          image: ghcr.io/example/trusttunnel-sidecar-agent:sha-<short_sha>
+          image: ghcr.io/example/trusttunnel-sidecar-agent:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: agent-http

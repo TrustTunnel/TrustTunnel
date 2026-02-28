@@ -175,30 +175,16 @@ struct AgentState {
     last_network_total: Option<u64>,
     last_sync_successful: bool,
     last_sync_timestamp: Option<i64>,
-    last_sync_duration_seconds: f64,
-    sync_duration_seconds_sum: f64,
-    sync_duration_seconds_count: u64,
     sync_success_total: u64,
     sync_failure_total: u64,
     accounts_current: usize,
     heartbeat_success_total: u64,
     heartbeat_failure_total: u64,
     lk_reachable: bool,
-    lk_timeout_count: u64,
-    lk_error_count: u64,
     trusttunnel_tcp_reachable: bool,
 }
 
 type SharedAgentState = Arc<Mutex<AgentState>>;
-
-#[derive(Clone, Copy)]
-enum LkErrorKind {
-    Timeout,
-    Other,
-}
-
-const LK_TIMEOUT_ERROR_TAG: &str = "lk_timeout";
-const LK_OTHER_ERROR_TAG: &str = "lk_error";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -284,24 +270,16 @@ async fn run_http_server(port: u16, state: SharedAgentState) -> Result<()> {
 
 async fn metrics_handler(AxumState(state): AxumState<SharedAgentState>) -> impl IntoResponse {
     let state = state.lock().await;
-    let last_sync_timestamp_seconds = state.last_sync_timestamp.unwrap_or(0);
+    let last_sync_timestamp = state.last_sync_timestamp.unwrap_or(0);
 
     let body = format!(
-        "# TYPE agent_last_sync_timestamp_seconds gauge\nagent_last_sync_timestamp_seconds {}\n# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_duration_seconds gauge\nagent_sync_duration_seconds {}\n# TYPE agent_sync_duration_seconds_sum counter\nagent_sync_duration_seconds_sum {}\n# TYPE agent_sync_duration_seconds_count counter\nagent_sync_duration_seconds_count {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n# TYPE agent_lk_timeout_total counter\nagent_lk_timeout_total {}\n# TYPE agent_lk_timeout_count counter\nagent_lk_timeout_count {}\n# TYPE agent_lk_error_total counter\nagent_lk_error_total {}\n# TYPE agent_lk_error_count counter\nagent_lk_error_count {}\n",
-        last_sync_timestamp_seconds,
-        last_sync_timestamp_seconds,
-        state.last_sync_duration_seconds,
-        state.sync_duration_seconds_sum,
-        state.sync_duration_seconds_count,
+        "# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n",
+        last_sync_timestamp,
         state.sync_success_total,
         state.sync_failure_total,
         state.accounts_current,
         state.heartbeat_success_total,
         state.heartbeat_failure_total,
-        state.lk_timeout_count,
-        state.lk_timeout_count,
-        state.lk_error_count,
-        state.lk_error_count,
     );
 
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
@@ -359,8 +337,7 @@ async fn sync_once_with_retry_budgeted(
     fetch_timeout: Duration,
     report_timeout: Duration,
 ) -> Result<()> {
-    let sync_cycle_started_at = Instant::now();
-    let sync_deadline = sync_cycle_started_at + cycle_budget;
+    let sync_deadline = Instant::now() + cycle_budget;
     let (outcome, sync_result) = match fetch_snapshot_with_retry(
         cfg,
         client,
@@ -438,9 +415,6 @@ async fn sync_once_with_retry_budgeted(
             state_lock.last_sync_successful = false;
             state_lock.sync_failure_total = state_lock.sync_failure_total.saturating_add(1);
             state_lock.lk_reachable = false;
-            if let Err(err) = &sync_result {
-                increment_lk_error_counter(&mut state_lock, err);
-            }
         }
     }
 
@@ -448,19 +422,10 @@ async fn sync_once_with_retry_budgeted(
         let effective_report_timeout = report_timeout.min(report_budget_left);
         if let Err(err) = post_sync_report(cfg, client, outcome, effective_report_timeout).await {
             warn!("sync report failed (best effort): {err:#}");
-            let mut state_lock = state.lock().await;
-            increment_lk_error_counter(&mut state_lock, &err);
         }
     } else {
         warn!("sync report skipped: sync cycle budget exhausted");
     }
-
-    let sync_duration_seconds = sync_cycle_started_at.elapsed().as_secs_f64();
-    let mut state_lock = state.lock().await;
-    state_lock.last_sync_duration_seconds = sync_duration_seconds;
-    state_lock.sync_duration_seconds_sum += sync_duration_seconds;
-    state_lock.sync_duration_seconds_count =
-        state_lock.sync_duration_seconds_count.saturating_add(1);
 
     sync_result
 }
@@ -552,7 +517,7 @@ async fn fetch_snapshot(
         .map_err(|err| map_lk_request_error(err, "accounts snapshot"))?;
 
     if resp.status() != StatusCode::OK {
-        return Err(lk_http_status_error("accounts snapshot", resp.status()));
+        anyhow::bail!("unexpected snapshot response status: {}", resp.status());
     }
 
     resp.json()
@@ -755,7 +720,7 @@ async fn post_sync_report(
         .map_err(|err| map_lk_request_error(err, "sync report"))?;
 
     if !resp.status().is_success() {
-        return Err(lk_http_status_error("sync report", resp.status()));
+        anyhow::bail!("sync report rejected: {}", resp.status());
     }
 
     Ok(())
@@ -861,7 +826,7 @@ async fn push_metrics_once(
         state.lk_reachable = false;
         state.trusttunnel_tcp_reachable = trusttunnel_tcp_reachable;
         state.last_network_total = Some(new_network_total);
-        return Err(lk_http_status_error("heartbeat", resp.status()));
+        anyhow::bail!("heartbeat rejected: {}", resp.status());
     }
 
     let mut state = state.lock().await;
@@ -932,39 +897,12 @@ async fn check_tcp_reachable(addr: &str) -> bool {
 fn map_lk_request_error(err: reqwest::Error, operation: &str) -> anyhow::Error {
     if err.is_timeout() {
         anyhow::anyhow!(
-            "[{LK_TIMEOUT_ERROR_TAG}] {operation} timed out (connect<={}s, total<={}s)",
+            "{operation} timed out (connect<={}s, total<={}s)",
             LK_CONNECT_TIMEOUT_SECONDS,
             LK_REQUEST_TIMEOUT_SECONDS,
         )
     } else {
-        anyhow::anyhow!("[{LK_OTHER_ERROR_TAG}] {operation} request failed: {err}")
-    }
-}
-
-fn lk_http_status_error(operation: &str, status: StatusCode) -> anyhow::Error {
-    anyhow::anyhow!("[{LK_OTHER_ERROR_TAG}] {operation} unexpected response status: {status}")
-}
-
-fn classify_lk_error(err: &anyhow::Error) -> Option<LkErrorKind> {
-    let rendered = format!("{err:#}");
-    if rendered.contains(&format!("[{LK_TIMEOUT_ERROR_TAG}]")) {
-        Some(LkErrorKind::Timeout)
-    } else if rendered.contains(&format!("[{LK_OTHER_ERROR_TAG}]")) {
-        Some(LkErrorKind::Other)
-    } else {
-        None
-    }
-}
-
-fn increment_lk_error_counter(state: &mut AgentState, err: &anyhow::Error) {
-    match classify_lk_error(err) {
-        Some(LkErrorKind::Timeout) => {
-            state.lk_timeout_count = state.lk_timeout_count.saturating_add(1);
-        }
-        Some(LkErrorKind::Other) => {
-            state.lk_error_count = state.lk_error_count.saturating_add(1);
-        }
-        None => {}
+        err.into()
     }
 }
 
@@ -1401,106 +1339,6 @@ mod tests {
             "elapsed: {:?}",
             elapsed
         );
-    }
-
-    #[tokio::test]
-    async fn sync_timeout_increments_lk_timeout_count() {
-        let server = MockServer::start_async().await;
-        let credentials_path = std::env::temp_dir().join("trusttunnel-sync-timeout-count.toml");
-        let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .no_proxy()
-            .build()
-            .expect("build client");
-        let state = Arc::new(Mutex::new(AgentState::default()));
-
-        let _snapshot = server
-            .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/vpn/classic/accounts")
-                    .query_param("node_id", "node-1");
-                then.status(200)
-                    .delay(Duration::from_millis(200))
-                    .json_body(serde_json::json!({
-                        "version": "v1",
-                        "accounts": [],
-                        "checksum": "x"
-                    }));
-            })
-            .await;
-
-        let _report = server
-            .mock_async(|when, then| {
-                when.method(POST).path("/internal/vpn/classic/sync-report");
-                then.status(200);
-            })
-            .await;
-
-        let result = sync_once_with_retry_budgeted(
-            &cfg,
-            &client,
-            state.clone(),
-            0,
-            Duration::from_millis(1),
-            Duration::from_millis(350),
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-        )
-        .await;
-
-        assert!(result.is_err());
-        let state = state.lock().await;
-        assert_eq!(state.lk_timeout_count, 1);
-        assert_eq!(state.lk_error_count, 0);
-    }
-
-    #[tokio::test]
-    async fn sync_http_error_increments_lk_error_count() {
-        let server = MockServer::start_async().await;
-        let credentials_path = std::env::temp_dir().join("trusttunnel-sync-http-error-count.toml");
-        let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
-            .no_proxy()
-            .build()
-            .expect("build client");
-        let state = Arc::new(Mutex::new(AgentState::default()));
-
-        let _snapshot = server
-            .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/vpn/classic/accounts")
-                    .query_param("node_id", "node-1");
-                then.status(500);
-            })
-            .await;
-
-        let _report = server
-            .mock_async(|when, then| {
-                when.method(POST).path("/internal/vpn/classic/sync-report");
-                then.status(200);
-            })
-            .await;
-
-        let result = sync_once_with_retry_budgeted(
-            &cfg,
-            &client,
-            state.clone(),
-            0,
-            Duration::from_millis(1),
-            Duration::from_millis(350),
-            Duration::from_millis(50),
-            Duration::from_millis(50),
-        )
-        .await;
-
-        assert!(result.is_err());
-        let state = state.lock().await;
-        assert_eq!(state.lk_timeout_count, 0);
-        assert_eq!(state.lk_error_count, 1);
-        assert_eq!(state.sync_duration_seconds_count, 1);
-        assert!(state.last_sync_duration_seconds > 0.0);
     }
 
     #[test]

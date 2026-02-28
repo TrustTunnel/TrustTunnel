@@ -23,22 +23,6 @@ Defined in `monitoring/grafana/alert-rules.yml` examples:
 - p95 `http_request_duration_seconds > 1s`
 - Active connections approaching node capacity (add threshold per node)
 
-## Agent metrics contract
-
-Primary (canonical) agent metrics:
-
-- `agent_last_sync_timestamp_seconds` (gauge)
-- `agent_sync_duration_seconds` (gauge, last sync cycle duration)
-- `agent_sync_duration_seconds_sum` / `agent_sync_duration_seconds_count` (summary-like pair)
-- `agent_sync_success_total`, `agent_sync_failure_total` (counters)
-- `agent_lk_timeout_total`, `agent_lk_error_total` (counters)
-
-Backwards-compatible aliases:
-
-- `agent_last_sync_timestamp` -> alias for `agent_last_sync_timestamp_seconds`
-- `agent_lk_timeout_count` -> alias for `agent_lk_timeout_total`
-- `agent_lk_error_count` -> alias for `agent_lk_error_total`
-
 ## CI/CD integration notes
 
 - Enable metrics in env-specific settings via `[metrics].enabled=true`

@@ -607,7 +607,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "failed" }));
+                    .json_body_partial(json!({ "status": "failed" }).to_string());
                 then.status(200);
             })
             .await;
@@ -648,7 +648,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "failed", "version": "v1" }));
+                    .json_body_partial(json!({ "status": "failed", "version": "v1" }).to_string());
                 then.status(200);
             })
             .await;
@@ -689,7 +689,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "success", "version": "v2" }));
+                    .json_body_partial(json!({ "status": "success", "version": "v2" }).to_string());
                 then.status(200);
             })
             .await;
