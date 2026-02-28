@@ -52,3 +52,57 @@ Suggested panels:
 ## 5. Planned compatibility for Modified mode
 
 No separate metric namespace required; JWT and latency metrics already cover planned short-lived token flow. Modified mode remains **planned, not enabled in this release**.
+
+## 6. Agent SLA metrics (Classic sidecar)
+
+For sidecar SLA monitoring use the canonical `agent_*` names below (without mixing aliases in alerts):
+
+- Sync freshness and duration:
+  - `agent_last_sync_timestamp_seconds` (gauge, unix timestamp of last successful sync)
+  - `agent_sync_duration_seconds` (gauge, duration of the latest sync cycle)
+- LK reliability counters:
+  - `agent_lk_timeout_count` (counter, LK request timeouts)
+  - `agent_lk_error_count` (counter, non-timeout LK request errors)
+- Heartbeat delivery:
+  - `agent_heartbeat_success_total` (counter)
+  - `agent_heartbeat_failure_total` (counter)
+
+Compatibility aliases still exposed by the sidecar:
+- `agent_last_sync_timestamp` -> alias of `agent_last_sync_timestamp_seconds`
+- `agent_lk_timeout_total` -> alias of `agent_lk_timeout_count`
+- `agent_lk_error_total` -> alias of `agent_lk_error_count`
+
+### PromQL alert examples for SLA
+
+1. LK timeout growth:
+
+```promql
+sum(increase(agent_lk_timeout_count[10m])) > 2
+```
+
+2. LK error growth:
+
+```promql
+sum(increase(agent_lk_error_count[10m])) > 2
+```
+
+3. Stale sync (no successful sync update within 5 minutes):
+
+```promql
+(time() - max(agent_last_sync_timestamp_seconds) > 300)
+  OR absent(agent_last_sync_timestamp_seconds)
+```
+
+4. Heartbeat degradation (success ratio below 90% over 15 minutes):
+
+```promql
+(
+  sum(increase(agent_heartbeat_success_total[15m]))
+  /
+  clamp_min(
+    sum(increase(agent_heartbeat_success_total[15m]))
+    + sum(increase(agent_heartbeat_failure_total[15m])),
+    1
+  )
+) < 0.9
+```

@@ -31,13 +31,13 @@ Primary (canonical) agent metrics (alerts should use exactly these names):
 - `agent_sync_duration_seconds` (gauge, last sync cycle duration)
 - `agent_sync_duration_seconds_sum` / `agent_sync_duration_seconds_count` (summary-like pair)
 - `agent_sync_success_total`, `agent_sync_failure_total` (counters)
-- `agent_lk_timeout_total`, `agent_lk_error_total` (counters)
+- `agent_lk_timeout_count`, `agent_lk_error_count` (counters)
 
 Backwards-compatible aliases:
 
 - `agent_last_sync_timestamp` -> alias for `agent_last_sync_timestamp_seconds`
-- `agent_lk_timeout_count` -> alias for `agent_lk_timeout_total`
-- `agent_lk_error_count` -> alias for `agent_lk_error_total`
+- `agent_lk_timeout_total` -> alias for `agent_lk_timeout_count`
+- `agent_lk_error_total` -> alias for `agent_lk_error_count`
 
 ## CI/CD integration notes
 
