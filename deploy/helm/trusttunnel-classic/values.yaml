@@ -1,0 +1,81 @@
+nameOverride: ""
+fullnameOverride: ""
+
+replicaCount: 1
+
+sidecarEnabled: true
+
+imagePullSecrets: []
+
+endpoint:
+  image:
+    repository: ghcr.io/example/trusttunnel-endpoint
+    tag: sha-<short_sha>
+    pullPolicy: IfNotPresent
+  args:
+    - /etc/trusttunnel/vpn.toml
+    - /etc/trusttunnel/hosts.toml
+  service:
+    type: LoadBalancer
+    tcpPort: 443
+    udpPort: 443
+    targetPort: 8443
+  readiness:
+    initialDelaySeconds: 8
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    failureThreshold: 3
+
+sidecar:
+  image:
+    repository: ghcr.io/example/trusttunnel-sidecar-agent
+    tag: sha-<short_sha>
+    pullPolicy: IfNotPresent
+  port: 9105
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    failureThreshold: 3
+
+resources:
+  endpoint:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  sidecar:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+nodeAffinity: {}
+podAntiAffinity: {}
+
+lkBaseUrl: "https://lk-internal.svc.cluster.local"
+syncIntervalSeconds: 30
+heartbeatIntervalSeconds: 10
+
+runtime:
+  credentialsPath: /runtime/accounts.toml
+  trustTunnelReloadMode: signal
+  trustTunnelPid: "1"
+  trustTunnelTcpAddr: 127.0.0.1:8443
+
+existingSecretName: trusttunnel-sidecar-secret
+networkPolicy:
+  enabled: true
+  lkNamespace: lk-internal
+  lkPodSelector:
+    app: lk-api
