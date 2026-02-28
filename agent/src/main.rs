@@ -10,6 +10,7 @@ use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::error::Error as StdError;
 use std::fs::OpenOptions;
 use std::future::Future;
 use std::io::Write;
@@ -196,14 +197,41 @@ struct AgentState {
 
 type SharedAgentState = Arc<Mutex<AgentState>>;
 
-#[derive(Clone, Copy)]
-enum LkErrorKind {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LkRequestErrorKind {
     Timeout,
     Other,
 }
 
-const LK_TIMEOUT_ERROR_TAG: &str = "lk_timeout";
-const LK_OTHER_ERROR_TAG: &str = "lk_error";
+impl LkRequestErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            LkRequestErrorKind::Timeout => "timeout",
+            LkRequestErrorKind::Other => "other",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LkRequestError {
+    operation: &'static str,
+    kind: LkRequestErrorKind,
+    detail: String,
+}
+
+impl std::fmt::Display for LkRequestError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "LK operation '{}' failed (kind={}): {}",
+            self.operation,
+            self.kind.as_str(),
+            self.detail,
+        )
+    }
+}
+
+impl StdError for LkRequestError {}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -369,6 +397,7 @@ async fn sync_once_with_retry_budgeted(
     let (outcome, sync_result) = match fetch_snapshot_with_retry(
         cfg,
         client,
+        state.clone(),
         max_retries,
         initial_backoff,
         sync_deadline,
@@ -443,15 +472,13 @@ async fn sync_once_with_retry_budgeted(
             state_lock.last_sync_successful = false;
             state_lock.sync_failure_total = state_lock.sync_failure_total.saturating_add(1);
             state_lock.lk_reachable = false;
-            if let Err(err) = &sync_result {
-                increment_lk_error_counter(&mut state_lock, err);
-            }
         }
     }
 
     if let Some(report_budget_left) = remaining_budget(sync_deadline) {
         let effective_report_timeout = report_timeout.min(report_budget_left);
         if let Err(err) = post_sync_report(cfg, client, outcome, effective_report_timeout).await {
+            log_lk_error("sync report", &err);
             warn!("sync report failed (best effort): {err:#}");
             let mut state_lock = state.lock().await;
             increment_lk_error_counter(&mut state_lock, &err);
@@ -472,6 +499,7 @@ async fn sync_once_with_retry_budgeted(
 async fn fetch_snapshot_with_retry(
     cfg: &Config,
     client: &reqwest::Client,
+    state: SharedAgentState,
     max_retries: usize,
     initial_backoff: Duration,
     sync_deadline: Instant,
@@ -480,6 +508,7 @@ async fn fetch_snapshot_with_retry(
     fetch_snapshot_with_retry_and_sleep(
         cfg,
         client,
+        state,
         max_retries,
         initial_backoff,
         sync_deadline,
@@ -494,6 +523,7 @@ async fn fetch_snapshot_with_retry(
 async fn fetch_snapshot_with_retry_and_sleep<S, Fut>(
     cfg: &Config,
     client: &reqwest::Client,
+    state: SharedAgentState,
     max_retries: usize,
     initial_backoff: Duration,
     sync_deadline: Instant,
@@ -512,6 +542,11 @@ where
         match fetch_snapshot(cfg, client, effective_timeout).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
+                {
+                    let mut state_lock = state.lock().await;
+                    increment_lk_error_counter(&mut state_lock, &e);
+                }
+                log_lk_error("accounts snapshot", &e);
                 warn!("snapshot fetch failed: {e:#}; retrying in {:?}", backoff);
 
                 let sleep_budget_left =
@@ -523,7 +558,13 @@ where
 
     let fetch_budget_left = ensure_budget_remaining(sync_deadline, "fetch accounts snapshot")?;
     let effective_timeout = fetch_timeout.min(fetch_budget_left);
-    fetch_snapshot(cfg, client, effective_timeout).await
+    let result = fetch_snapshot(cfg, client, effective_timeout).await;
+    if let Err(err) = &result {
+        let mut state_lock = state.lock().await;
+        increment_lk_error_counter(&mut state_lock, err);
+        log_lk_error("accounts snapshot", err);
+    }
+    result
 }
 
 fn remaining_budget(sync_deadline: Instant) -> Option<Duration> {
@@ -851,21 +892,38 @@ async fn push_metrics_once(
     };
 
     let url = format!("{}/internal/nodes/heartbeat", cfg.lk_internal_base_url);
-    let resp = client
+    let resp = match client
         .post(url)
         .bearer_auth(&cfg.internal_agent_token)
         .json(&payload)
         .send()
         .await
-        .map_err(|err| map_lk_request_error(err, "heartbeat"))?;
+    {
+        Ok(resp) => resp,
+        Err(err) => {
+            let mapped = map_lk_request_error(err, "heartbeat");
+            log_lk_error("heartbeat", &mapped);
+            let mut state_lock = state.lock().await;
+            increment_lk_error_counter(&mut state_lock, &mapped);
+            state_lock.heartbeat_failure_total =
+                state_lock.heartbeat_failure_total.saturating_add(1);
+            state_lock.lk_reachable = false;
+            state_lock.trusttunnel_tcp_reachable = false;
+            state_lock.last_network_total = Some(new_network_total);
+            return Err(mapped);
+        }
+    };
 
     if !resp.status().is_success() {
+        let err = lk_http_status_error("heartbeat", resp.status());
+        log_lk_error("heartbeat", &err);
         let mut state = state.lock().await;
+        increment_lk_error_counter(&mut state, &err);
         state.heartbeat_failure_total = state.heartbeat_failure_total.saturating_add(1);
         state.lk_reachable = false;
         state.trusttunnel_tcp_reachable = trusttunnel_tcp_reachable;
         state.last_network_total = Some(new_network_total);
-        return Err(lk_http_status_error("heartbeat", resp.status()));
+        return Err(err);
     }
 
     let mut state = state.lock().await;
@@ -933,39 +991,66 @@ async fn check_tcp_reachable(addr: &str) -> bool {
     )
 }
 
-fn map_lk_request_error(err: reqwest::Error, operation: &str) -> anyhow::Error {
-    if err.is_timeout() {
-        anyhow::anyhow!(
-            "[{LK_TIMEOUT_ERROR_TAG}] {operation} timed out (connect<={}s, total<={}s)",
-            LK_CONNECT_TIMEOUT_SECONDS,
-            LK_REQUEST_TIMEOUT_SECONDS,
-        )
+fn map_lk_request_error(err: reqwest::Error, operation: &'static str) -> anyhow::Error {
+    let kind = if err.is_timeout() {
+        LkRequestErrorKind::Timeout
     } else {
-        anyhow::anyhow!("[{LK_OTHER_ERROR_TAG}] {operation} request failed: {err}")
-    }
+        LkRequestErrorKind::Other
+    };
+    let detail = match kind {
+        LkRequestErrorKind::Timeout => format!(
+            "request timed out (connect<={}s, total<={}s)",
+            LK_CONNECT_TIMEOUT_SECONDS, LK_REQUEST_TIMEOUT_SECONDS
+        ),
+        LkRequestErrorKind::Other => format!("request failed: {err}"),
+    };
+
+    anyhow::Error::new(LkRequestError {
+        operation,
+        kind,
+        detail,
+    })
 }
 
-fn lk_http_status_error(operation: &str, status: StatusCode) -> anyhow::Error {
-    anyhow::anyhow!("[{LK_OTHER_ERROR_TAG}] {operation} unexpected response status: {status}")
+fn lk_http_status_error(operation: &'static str, status: StatusCode) -> anyhow::Error {
+    anyhow::Error::new(LkRequestError {
+        operation,
+        kind: LkRequestErrorKind::Other,
+        detail: format!("unexpected response status: {status}"),
+    })
 }
 
-fn classify_lk_error(err: &anyhow::Error) -> Option<LkErrorKind> {
-    let rendered = format!("{err:#}");
-    if rendered.contains(&format!("[{LK_TIMEOUT_ERROR_TAG}]")) {
-        Some(LkErrorKind::Timeout)
-    } else if rendered.contains(&format!("[{LK_OTHER_ERROR_TAG}]")) {
-        Some(LkErrorKind::Other)
+fn classify_lk_error(err: &anyhow::Error) -> Option<LkRequestErrorKind> {
+    err.chain().find_map(|cause| {
+        cause
+            .downcast_ref::<LkRequestError>()
+            .map(|lk_err| lk_err.kind)
+    })
+}
+
+fn log_lk_error(operation: &'static str, err: &anyhow::Error) {
+    if let Some(kind) = classify_lk_error(err) {
+        warn!(
+            "LK operation '{}' failed (kind={}): {}",
+            operation,
+            kind.as_str(),
+            sanitize_error_message(&format!("{err:#}")),
+        );
     } else {
-        None
+        warn!(
+            "LK operation '{}' failed (kind=unknown): {}",
+            operation,
+            sanitize_error_message(&format!("{err:#}")),
+        );
     }
 }
 
 fn increment_lk_error_counter(state: &mut AgentState, err: &anyhow::Error) {
     match classify_lk_error(err) {
-        Some(LkErrorKind::Timeout) => {
+        Some(LkRequestErrorKind::Timeout) => {
             state.lk_timeout_count = state.lk_timeout_count.saturating_add(1);
         }
-        Some(LkErrorKind::Other) => {
+        Some(LkRequestErrorKind::Other) => {
             state.lk_error_count = state.lk_error_count.saturating_add(1);
         }
         None => {}
@@ -1037,6 +1122,43 @@ mod tests {
     use super::*;
     use httpmock::prelude::*;
     use std::io;
+    use std::sync::{Mutex as StdMutex, Once, OnceLock};
+
+    #[derive(Default)]
+    struct TestLogger {
+        records: StdMutex<Vec<String>>,
+    }
+
+    impl log::Log for TestLogger {
+        fn enabled(&self, _metadata: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            let mut records = self.records.lock().expect("logger lock");
+            records.push(format!("{}", record.args()));
+        }
+
+        fn flush(&self) {}
+    }
+
+    static LOGGER: OnceLock<&'static TestLogger> = OnceLock::new();
+    static LOGGER_INIT: Once = Once::new();
+
+    fn init_test_logger() -> &'static TestLogger {
+        let logger_ref = LOGGER.get_or_init(|| Box::leak(Box::new(TestLogger::default())));
+        LOGGER_INIT.call_once(|| {
+            log::set_logger(*logger_ref).expect("set logger");
+            log::set_max_level(log::LevelFilter::Warn);
+        });
+        logger_ref
+    }
+
+    fn take_logged_messages() -> Vec<String> {
+        let logger = init_test_logger();
+        let mut records = logger.records.lock().expect("logger lock");
+        std::mem::take(&mut *records)
+    }
 
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
         Config {
@@ -1167,7 +1289,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lk_timeout_error_is_mapped() {
+    async fn lk_timeout_error_is_structured_and_logged() {
+        take_logged_messages();
+
         let server = MockServer::start_async().await;
         let cfg = test_config(
             server.base_url(),
@@ -1199,7 +1323,12 @@ mod tests {
             .await
             .err()
             .expect("timeout expected");
-        assert!(err.to_string().contains("timed out"));
+
+        assert_eq!(classify_lk_error(&err), Some(LkRequestErrorKind::Timeout));
+        log_lk_error("accounts snapshot", &err);
+        let logs = take_logged_messages().join("\n");
+        assert!(logs.contains("LK operation 'accounts snapshot' failed"));
+        assert!(logs.contains("kind=timeout"));
     }
 
     #[tokio::test]
@@ -1273,6 +1402,7 @@ mod tests {
         let result = fetch_snapshot_with_retry_and_sleep(
             &cfg,
             &client,
+            Arc::new(Mutex::new(AgentState::default())),
             3,
             Duration::from_secs(1),
             Instant::now() + Duration::from_secs(30),
@@ -1457,6 +1587,46 @@ mod tests {
         let state = state.lock().await;
         assert_eq!(state.lk_timeout_count, 1);
         assert_eq!(state.lk_error_count, 0);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_timeout_increments_failure_and_timeout_metrics() {
+        take_logged_messages();
+
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-heartbeat-timeout.toml");
+        let mut cfg = test_config(server.base_url(), credentials_path);
+        cfg.trusttunnel_tcp_addr = "127.0.0.1:1".to_string();
+        let client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_millis(50))
+            .timeout(Duration::from_millis(100))
+            .no_proxy()
+            .build()
+            .expect("build client");
+        let state = Arc::new(Mutex::new(AgentState::default()));
+
+        let _heartbeat = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/internal/nodes/heartbeat");
+                then.status(200).delay(Duration::from_millis(300));
+            })
+            .await;
+
+        let result = push_metrics_once(&cfg, &client, state.clone()).await;
+        assert!(result.is_err());
+        let err = result.err().expect("error expected");
+        assert_eq!(classify_lk_error(&err), Some(LkRequestErrorKind::Timeout));
+
+        let state = state.lock().await;
+        assert_eq!(state.heartbeat_failure_total, 1);
+        assert_eq!(state.lk_timeout_count, 1);
+        assert_eq!(state.lk_error_count, 0);
+        assert!(!state.lk_reachable);
+        assert!(!state.trusttunnel_tcp_reachable);
+
+        let logs = take_logged_messages().join("\n");
+        assert!(logs.contains("LK operation 'heartbeat' failed"));
+        assert!(logs.contains("kind=timeout"));
     }
 
     #[tokio::test]
