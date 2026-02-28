@@ -14,3 +14,4 @@
 6. [Security](SECURITY.md)
 7. [Troubleshooting](TROUBLESHOOTING.md)
 8. [Compatibility / LK Integration Notes](LK_INTEGRATION.md)
+9. [Runbook: Classic Sidecar](RUNBOOK_CLASSIC_SIDECAR.md)
