@@ -59,6 +59,34 @@ Minimal resources to provide:
 ### Ingress passthrough requirement
 If TLS terminates before endpoint, ensure SNI and cert strategy remains compatible. Recommended for current architecture: L4 passthrough to endpoint TLS.
 
+### Helm chart for classic profile
+
+Classic deployment is available as Helm chart in `deploy/helm/trusttunnel-classic/`.
+
+Staging example command:
+
+```bash
+helm upgrade --install trusttunnel-classic deploy/helm/trusttunnel-classic \
+  --namespace trusttunnel-staging \
+  --create-namespace \
+  -f deploy/helm/trusttunnel-classic/values-staging.yaml
+```
+
+Key values:
+
+| Key | Purpose |
+| --- | --- |
+| `sidecarEnabled` | Enables/disables sidecar container and sidecar NetworkPolicy. |
+| `resources.endpoint` | Endpoint container requests/limits. |
+| `resources.sidecar` | Sidecar container requests/limits. |
+| `nodeAffinity` | Node placement rules for Pod scheduling. |
+| `podAntiAffinity` | Anti-affinity rules to spread Pods across nodes. |
+| `endpoint.readiness` / `endpoint.liveness` | Endpoint probe timings and thresholds. |
+| `sidecar.readiness` / `sidecar.liveness` | Sidecar probe timings and thresholds. |
+| `lkBaseUrl` | Base URL of LK internal API for sidecar sync/heartbeat. |
+| `syncIntervalSeconds` | Sidecar credential sync interval. |
+| `heartbeatIntervalSeconds` | Sidecar heartbeat push interval. |
+
 ## 4. systemd
 
 Use `scripts/trusttunnel.service.template` as baseline.

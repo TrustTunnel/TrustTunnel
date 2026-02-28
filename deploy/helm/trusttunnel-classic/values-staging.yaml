@@ -1,0 +1,77 @@
+sidecarEnabled: true
+
+replicaCount: 2
+
+endpoint:
+  image:
+    repository: ghcr.io/example/trusttunnel-endpoint
+    tag: sha-staging
+  service:
+    type: ClusterIP
+  readiness:
+    initialDelaySeconds: 6
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 15
+    periodSeconds: 20
+    failureThreshold: 3
+
+sidecar:
+  image:
+    repository: ghcr.io/example/trusttunnel-sidecar-agent
+    tag: sha-staging
+  readiness:
+    initialDelaySeconds: 4
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 12
+    periodSeconds: 10
+    failureThreshold: 3
+
+resources:
+  endpoint:
+    requests:
+      cpu: 200m
+      memory: 256Mi
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+  sidecar:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 384Mi
+
+nodeAffinity:
+  requiredDuringSchedulingIgnoredDuringExecution:
+    nodeSelectorTerms:
+      - matchExpressions:
+          - key: node-role.kubernetes.io/worker
+            operator: Exists
+
+podAntiAffinity:
+  preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+            - key: app.kubernetes.io/name
+              operator: In
+              values:
+                - trusttunnel
+        topologyKey: kubernetes.io/hostname
+
+lkBaseUrl: https://lk-internal.staging.svc.cluster.local
+syncIntervalSeconds: 30
+heartbeatIntervalSeconds: 10
+
+existingSecretName: trusttunnel-sidecar-secret-staging
+networkPolicy:
+  enabled: true
+  lkNamespace: lk-internal-staging
+  lkPodSelector:
+    app: lk-api

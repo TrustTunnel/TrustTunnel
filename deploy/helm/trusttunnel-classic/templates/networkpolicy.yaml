@@ -1,0 +1,32 @@
+{{- if and .Values.networkPolicy.enabled .Values.sidecarEnabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ default .Chart.Name .Values.fullnameOverride }}-sidecar-egress
+  labels:
+    app.kubernetes.io/name: trusttunnel
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.lkNamespace | quote }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.lkPodSelector | nindent 12 }}
+      ports:
+        - protocol: TCP
+          port: 443
+{{- end }}
