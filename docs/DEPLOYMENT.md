@@ -13,6 +13,16 @@ docker build -f Dockerfile -t securelink-trusttunnel:<tag> .
 docker build -f agent/Dockerfile -t securelink-trusttunnel-agent:<tag> .
 ```
 
+### CI tag format (GHCR)
+
+Build workflow publishes both images to GHCR with a fixed tag policy:
+
+- `sha-<short_sha>` — for every `push` (branches and tags).
+- `v*` release tag (`v1.2.3`, etc.) — only for tag events `refs/tags/v*`.
+- `latest` — only when source ref is `refs/heads/main`.
+
+This means release tags pushed from non-`main` refs do **not** overwrite `latest`.
+
 ## 2. Docker (minimum)
 
 Image runs endpoint binary with fixed startup command expecting:

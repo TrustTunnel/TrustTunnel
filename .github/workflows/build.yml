@@ -4,6 +4,8 @@ on:
   push:
     branches:
       - '**'
+    tags:
+      - 'v*'
   pull_request:
 
 jobs:
@@ -21,7 +23,7 @@ jobs:
             file: ./Dockerfile
           - name: securelink-lk-migrator
             context: .
-            file: ./agent/Dockerfile
+            file: ./Dockerfile.migrator
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -48,6 +50,7 @@ jobs:
           images: ghcr.io/${{ steps.owner.outputs.value }}/${{ matrix.image.name }}
           tags: |
             type=sha,format=short,prefix=sha-
+            type=ref,event=tag
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
       - name: Build and (optionally) push image
