@@ -20,3 +20,33 @@ groups:
             datasourceUid: prometheus
             model:
               expr: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le)) > 1
+
+  - name: trusttunnel-agent
+    interval: 1m
+    rules:
+      - uid: agent-lk-timeout-growth
+        title: Agent LK timeout count is growing
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: increase(agent_lk_timeout_total[10m]) > 2
+
+      - uid: agent-lk-error-growth
+        title: Agent LK error count is growing
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: increase(agent_lk_error_total[10m]) > 2
+
+      - uid: agent-sync-stale
+        title: Agent sync is stale
+        condition: A
+        data:
+          - refId: A
+            datasourceUid: prometheus
+            model:
+              expr: time() - max(agent_last_sync_timestamp_seconds) > 300
