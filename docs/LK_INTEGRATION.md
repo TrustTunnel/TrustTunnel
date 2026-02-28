@@ -159,3 +159,93 @@ Current constraint:
 - Use `endpoint.address` as concrete `IP:443` for deterministic routing.
 - `endpoint.hostname` must be provided separately for SNI/certificate match.
 - Domain-only endpoint without explicit IP is not recommended for this client contract unless client explicitly supports that mode.
+
+## 10. TG-shops acceptance profile
+
+### 10.1 Required fields (`node_id` / `status`)
+
+For staging and production acceptance, these fields are mandatory:
+
+- Snapshot pull: `GET /internal/vpn/classic/accounts?node_id=<NODE_ID>`
+  - `node_id` is required and must identify a unique sidecar/node in LK inventory.
+- Sync-report push: `POST /internal/vpn/classic/sync-report`
+  - `node_id` is required.
+  - `status` is required and must be one of:
+    - `success`
+    - `checksum_mismatch`
+    - `apply_failed`
+    - `retrying`
+    - `degraded`
+- Heartbeat push: `POST /internal/nodes/heartbeat`
+  - `node_id` is required.
+  - `status` is required (`ok` or `degraded` as baseline contract).
+
+Validation expectations:
+- Missing/empty `node_id` => reject with `4xx` and validation error payload.
+- Unknown `status` => reject with `4xx` and validation error payload.
+
+### 10.2 Staging simulation: seller confirmation flow
+
+Recommended step-by-step simulation in staging:
+
+1. Prepare seller fixture in LK with deterministic `node_id` (e.g. `stg-node-01`) and known account list.
+2. Start sidecar with valid `INTERNAL_AGENT_TOKEN` and matching `node_id`.
+3. Trigger initial snapshot sync and verify sidecar receives `version/accounts/checksum`.
+4. Confirm checksum path:
+   - run one valid checksum cycle (`status=success` expected),
+   - run one intentionally broken checksum cycle (`status=checksum_mismatch` expected).
+5. Confirm apply/reload path:
+   - publish `enabled=true` account delta,
+   - verify credentials file rewrite and runtime reload,
+   - verify `sync-report` carries `applied_count > 0` and `status=success`.
+6. Simulate transient LK failure (timeout/5xx) and ensure retry/backoff then reconnect behavior, followed by recovery to `success`/`ok` statuses.
+7. Execute synthetic seller confirmation in LK (seller marked as confirmed/active in staging UI or API).
+8. Verify confirmed seller state is visible downstream in TG-shop-facing data feed/API.
+
+### 10.3 Expected data path up to TG-shop
+
+Expected propagation chain:
+
+1. LK account and seller state store (source of truth).
+2. Sidecar polling with `node_id`.
+3. Sidecar checksum validation and runtime apply/reload.
+4. Sidecar `sync-report` + `heartbeat` posted back to LK.
+5. LK internal aggregation/normalization layer updates node + seller readiness.
+6. TG-shop integration endpoint/feed receives updated readiness/availability state.
+7. TG-shop UI/API reflects final seller availability.
+
+### 10.4 Acceptance criteria and observable signals
+
+Acceptance is met when all criteria below are green:
+
+- **Contract validity**
+  - All snapshot/sync-report/heartbeat requests include non-empty `node_id`.
+  - All sync-report and heartbeat payloads include valid `status` values.
+- **Functional sync**
+  - At least one full cycle completes with `status=success` and non-negative `applied_count`.
+  - Checksum mismatch path is detectable and reported with `status=checksum_mismatch`.
+  - Apply/reload failure path is detectable and reported with `status=apply_failed`.
+- **Resilience**
+  - Timeout/5xx/network errors produce retry attempts.
+  - After fault removal, sidecar returns to steady-state `success` (sync-report) and `ok` (heartbeat).
+- **TG-shop propagation**
+  - Seller confirmation in LK staging is observable in TG-shop downstream endpoint/feed within agreed SLA window.
+
+Observable signals to capture during acceptance:
+
+- **Logs (sidecar/runtime/LK)**
+  - Snapshot pull start/finish with `node_id`, `version`, latency.
+  - Checksum verification result.
+  - Credentials apply/reload success or error details.
+  - Sync-report submission result (HTTP code + payload status).
+  - Heartbeat submission result and retry/reconnect events.
+- **Metrics**
+  - `accounts_sync_success_total`, `accounts_sync_failure_total`.
+  - `accounts_checksum_mismatch_total`.
+  - `runtime_reload_success_total`, `runtime_reload_failure_total`.
+  - `heartbeat_success_total`, `heartbeat_failure_total`.
+  - Retry counters and backoff duration histograms.
+- **API responses**
+  - Snapshot `200` with `{version, accounts, checksum}`.
+  - Sync-report `2xx` on valid payload; `4xx` on missing `node_id`/invalid `status`.
+  - Heartbeat `2xx` on valid payload; `4xx` on missing `node_id`/invalid `status`.

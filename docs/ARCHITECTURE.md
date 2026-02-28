@@ -59,3 +59,65 @@ Recommended baseline:
 - `443/tcp` for HTTP/1.1 and HTTP/2 listeners;
 - `443/udp` if QUIC/HTTP/3 is enabled;
 - separate internal metrics port (default `127.0.0.1:1987`) with restricted access.
+
+## 5. Classic sidecar control-loop sequence
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant SC as Sidecar Agent
+    participant FS as Local FS (accounts.txt)
+    participant TT as TrustTunnel Runtime
+    participant LK as LK Internal API
+    participant TG as TG-shop Consumers
+
+    Note over SC: startup
+    SC->>LK: GET /internal/vpn/classic/accounts?node_id=<node_id>
+
+    alt snapshot request timeout/error
+        LK--xSC: timeout / 5xx / network error
+        SC->>SC: retry with backoff
+        alt retries exhausted
+            SC->>SC: reconnect transport/session
+            SC->>LK: re-issue snapshot request
+        end
+    else snapshot received
+        LK-->>SC: {version, accounts, checksum}
+        SC->>SC: canonicalize(accounts) + sha256
+
+        alt checksum mismatch
+            SC->>LK: POST /internal/vpn/classic/sync-report(status=checksum_mismatch,error=...)
+            SC->>SC: keep previous runtime state
+        else checksum valid
+            SC->>SC: filter enabled=true
+            SC->>FS: write rendered credentials
+            SC->>TT: reload credentials
+            alt apply/reload failed
+                TT--xSC: apply/reload error
+                SC->>LK: POST /internal/vpn/classic/sync-report(status=apply_failed,error=...)
+            else apply/reload success
+                TT-->>SC: reload ok
+                SC->>LK: POST /internal/vpn/classic/sync-report(status=success,applied_count=N)
+                LK-->>TG: updated seller/account availability data path
+            end
+        end
+    end
+
+    loop periodic control loop
+        par accounts sync cycle
+            SC->>LK: GET accounts snapshot (node_id)
+            LK-->>SC: version + accounts + checksum
+        and heartbeat cycle
+            SC->>LK: POST /internal/nodes/heartbeat(status,metrics_json)
+            alt heartbeat timeout/error
+                LK--xSC: timeout / 5xx / network error
+                SC->>SC: retry with backoff
+                alt retries exhausted
+                    SC->>SC: reconnect and continue next heartbeat tick
+                end
+            else heartbeat accepted
+                LK-->>SC: 2xx acknowledged
+            end
+        end
+    end
+```
