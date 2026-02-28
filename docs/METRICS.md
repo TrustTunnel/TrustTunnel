@@ -55,35 +55,33 @@ No separate metric namespace required; JWT and latency metrics already cover pla
 
 ## 6. Agent SLA metrics (Classic sidecar)
 
-For sidecar SLA monitoring use the canonical `agent_*` names below (without mixing aliases in alerts):
+Canonical sidecar names for new dashboards/alerts:
 
-- Sync freshness and duration:
-  - `agent_last_sync_timestamp_seconds` (gauge, unix timestamp of last successful sync)
-  - `agent_sync_duration_seconds` (gauge, duration of the latest sync cycle)
-- LK reliability counters:
-  - `agent_lk_timeout_count` (counter, LK request timeouts)
-  - `agent_lk_error_count` (counter, non-timeout LK request errors)
-- Heartbeat delivery:
-  - `agent_heartbeat_success_total` (counter)
-  - `agent_heartbeat_failure_total` (counter)
+- Sync:
+  - `sync_duration_seconds` (gauge, duration of latest sync cycle)
+  - `sync_duration_seconds_sum` / `sync_duration_seconds_count` (cumulative sync duration accounting)
+  - `node_sync_failures_total` (counter)
+- LK request quality:
+  - `lk_request_duration_seconds_sum{op}` / `lk_request_duration_seconds_count{op}` (summary-compatible request duration by operation)
+  - `lk_timeout_total` (counter, LK request timeouts)
+- Existing heartbeat and freshness metrics remain available:
+  - `agent_last_sync_timestamp_seconds` (gauge)
+  - `agent_heartbeat_success_total` / `agent_heartbeat_failure_total` (counters)
 
-Compatibility aliases still exposed by the sidecar:
-- `agent_last_sync_timestamp` -> alias of `agent_last_sync_timestamp_seconds`
-- `agent_lk_timeout_total` -> alias of `agent_lk_timeout_count`
-- `agent_lk_error_total` -> alias of `agent_lk_error_count`
+Backward compatibility is preserved via dual-publish of `agent_*` names.
 
 ### PromQL alert examples for SLA
 
 1. LK timeout growth:
 
 ```promql
-sum(increase(agent_lk_timeout_count[10m])) > 2
+sum(increase(lk_timeout_total[10m])) > 2
 ```
 
-2. LK error growth:
+2. Node sync failure growth:
 
 ```promql
-sum(increase(agent_lk_error_count[10m])) > 2
+sum(increase(node_sync_failures_total[10m])) > 2
 ```
 
 3. Stale sync (no successful sync update within 5 minutes):

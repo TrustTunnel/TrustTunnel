@@ -49,6 +49,7 @@ const SYNC_CYCLE_BUDGET_SECONDS: u64 = 30;
 // With defaults: (4 * 5s) + (1s + 2s + 4s) + 3s = 30s.
 const SYNC_REPORT_TIMEOUT_SECONDS: u64 = 3;
 const TCP_REACHABILITY_TIMEOUT_SECONDS: u64 = 2;
+const LK_DURATION_OPS: [&str; 3] = ["accounts_snapshot", "sync_report", "heartbeat"];
 
 fn retry_backoff_sequence(
     max_retries: usize,
@@ -177,6 +178,12 @@ struct SyncDurationState {
 }
 
 #[derive(Default)]
+struct RequestDurationState {
+    sum_seconds: f64,
+    count: u64,
+}
+
+#[derive(Default)]
 struct AgentState {
     last_version: Option<String>,
     last_checksum: Option<String>,
@@ -192,6 +199,7 @@ struct AgentState {
     lk_reachable: bool,
     lk_timeout_count: u64,
     lk_error_count: u64,
+    lk_request_duration_by_op: HashMap<&'static str, RequestDurationState>,
     trusttunnel_tcp_reachable: bool,
 }
 
@@ -319,8 +327,13 @@ async fn metrics_handler(AxumState(state): AxumState<SharedAgentState>) -> impl 
     let state = state.lock().await;
     let last_sync_timestamp_seconds = state.last_sync_timestamp.unwrap_or(0);
 
-    let body = format!(
-        "# TYPE agent_last_sync_timestamp_seconds gauge\nagent_last_sync_timestamp_seconds {}\n# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_duration_seconds gauge\nagent_sync_duration_seconds {}\n# TYPE agent_sync_duration_seconds_sum counter\nagent_sync_duration_seconds_sum {}\n# TYPE agent_sync_duration_seconds_count counter\nagent_sync_duration_seconds_count {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n# TYPE agent_lk_timeout_total counter\nagent_lk_timeout_total {}\n# TYPE agent_lk_timeout_count counter\nagent_lk_timeout_count {}\n# TYPE agent_lk_error_total counter\nagent_lk_error_total {}\n# TYPE agent_lk_error_count counter\nagent_lk_error_count {}\n",
+    let mut body = format!(
+        "# TYPE sync_duration_seconds gauge\nsync_duration_seconds {}\n# TYPE sync_duration_seconds_sum counter\nsync_duration_seconds_sum {}\n# TYPE sync_duration_seconds_count counter\nsync_duration_seconds_count {}\n# TYPE node_sync_failures_total counter\nnode_sync_failures_total {}\n# TYPE lk_timeout_total counter\nlk_timeout_total {}\n# TYPE lk_request_duration_seconds summary\n# TYPE agent_last_sync_timestamp_seconds gauge\nagent_last_sync_timestamp_seconds {}\n# TYPE agent_last_sync_timestamp gauge\nagent_last_sync_timestamp {}\n# TYPE agent_sync_duration_seconds gauge\nagent_sync_duration_seconds {}\n# TYPE agent_sync_duration_seconds_sum counter\nagent_sync_duration_seconds_sum {}\n# TYPE agent_sync_duration_seconds_count counter\nagent_sync_duration_seconds_count {}\n# TYPE agent_sync_success_total counter\nagent_sync_success_total {}\n# TYPE agent_sync_failure_total counter\nagent_sync_failure_total {}\n# TYPE agent_accounts_current gauge\nagent_accounts_current {}\n# TYPE agent_heartbeat_success_total counter\nagent_heartbeat_success_total {}\n# TYPE agent_heartbeat_failure_total counter\nagent_heartbeat_failure_total {}\n# TYPE agent_lk_timeout_total counter\nagent_lk_timeout_total {}\n# TYPE agent_lk_timeout_count counter\nagent_lk_timeout_count {}\n# TYPE agent_lk_error_total counter\nagent_lk_error_total {}\n# TYPE agent_lk_error_count counter\nagent_lk_error_count {}\n",
+        state.sync_duration.last_seconds,
+        state.sync_duration.sum_seconds,
+        state.sync_duration.count,
+        state.sync_failure_total,
+        state.lk_timeout_count,
         last_sync_timestamp_seconds,
         last_sync_timestamp_seconds,
         state.sync_duration.last_seconds,
@@ -336,8 +349,23 @@ async fn metrics_handler(AxumState(state): AxumState<SharedAgentState>) -> impl 
         state.lk_error_count,
         state.lk_error_count,
     );
+    for op in LK_DURATION_OPS {
+        let duration_state = state.lk_request_duration_by_op.get(op);
+        let sum = duration_state.map(|value| value.sum_seconds).unwrap_or(0.0);
+        let count = duration_state.map(|value| value.count).unwrap_or(0);
+        body.push_str(&format!(
+            "lk_request_duration_seconds_sum{{op=\"{}\"}} {}\nlk_request_duration_seconds_count{{op=\"{}\"}} {}\n",
+            op, sum, op, count,
+        ));
+    }
 
     ([("content-type", "text/plain; version=0.0.4")], body).into_response()
+}
+
+fn observe_lk_request_duration(state: &mut AgentState, op: &'static str, duration: Duration) {
+    let op_state = state.lk_request_duration_by_op.entry(op).or_default();
+    op_state.sum_seconds += duration.as_secs_f64();
+    op_state.count = op_state.count.saturating_add(1);
 }
 
 async fn healthz_handler(AxumState(state): AxumState<SharedAgentState>) -> impl IntoResponse {
@@ -477,7 +505,17 @@ async fn sync_once_with_retry_budgeted(
 
     if let Some(report_budget_left) = remaining_budget(sync_deadline) {
         let effective_report_timeout = report_timeout.min(report_budget_left);
-        if let Err(err) = post_sync_report(cfg, client, outcome, effective_report_timeout).await {
+        let report_started_at = Instant::now();
+        let report_result = post_sync_report(cfg, client, outcome, effective_report_timeout).await;
+        {
+            let mut state_lock = state.lock().await;
+            observe_lk_request_duration(
+                &mut state_lock,
+                "sync_report",
+                report_started_at.elapsed(),
+            );
+        }
+        if let Err(err) = report_result {
             log_lk_error("sync report", &err);
             warn!("sync report failed (best effort): {err:#}");
             let mut state_lock = state.lock().await;
@@ -539,7 +577,18 @@ where
         let fetch_budget_left = ensure_budget_remaining(sync_deadline, "fetch accounts snapshot")?;
         let effective_timeout = fetch_timeout.min(fetch_budget_left);
 
-        match fetch_snapshot(cfg, client, effective_timeout).await {
+        let fetch_started_at = Instant::now();
+        let fetch_result = fetch_snapshot(cfg, client, effective_timeout).await;
+        {
+            let mut state_lock = state.lock().await;
+            observe_lk_request_duration(
+                &mut state_lock,
+                "accounts_snapshot",
+                fetch_started_at.elapsed(),
+            );
+        }
+
+        match fetch_result {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
                 {
@@ -558,7 +607,16 @@ where
 
     let fetch_budget_left = ensure_budget_remaining(sync_deadline, "fetch accounts snapshot")?;
     let effective_timeout = fetch_timeout.min(fetch_budget_left);
+    let fetch_started_at = Instant::now();
     let result = fetch_snapshot(cfg, client, effective_timeout).await;
+    {
+        let mut state_lock = state.lock().await;
+        observe_lk_request_duration(
+            &mut state_lock,
+            "accounts_snapshot",
+            fetch_started_at.elapsed(),
+        );
+    }
     if let Err(err) = &result {
         let mut state_lock = state.lock().await;
         increment_lk_error_counter(&mut state_lock, err);
@@ -892,6 +950,7 @@ async fn push_metrics_once(
     };
 
     let url = format!("{}/internal/nodes/heartbeat", cfg.lk_internal_base_url);
+    let heartbeat_started_at = Instant::now();
     let resp = match client
         .post(url)
         .bearer_auth(&cfg.internal_agent_token)
@@ -901,9 +960,14 @@ async fn push_metrics_once(
     {
         Ok(resp) => resp,
         Err(err) => {
+            let mut state_lock = state.lock().await;
+            observe_lk_request_duration(
+                &mut state_lock,
+                "heartbeat",
+                heartbeat_started_at.elapsed(),
+            );
             let mapped = map_lk_request_error(err, "heartbeat");
             log_lk_error("heartbeat", &mapped);
-            let mut state_lock = state.lock().await;
             increment_lk_error_counter(&mut state_lock, &mapped);
             state_lock.heartbeat_failure_total =
                 state_lock.heartbeat_failure_total.saturating_add(1);
@@ -913,6 +977,11 @@ async fn push_metrics_once(
             return Err(mapped);
         }
     };
+
+    {
+        let mut state_lock = state.lock().await;
+        observe_lk_request_duration(&mut state_lock, "heartbeat", heartbeat_started_at.elapsed());
+    }
 
     if !resp.status().is_success() {
         let err = lk_http_status_error("heartbeat", resp.status());
@@ -1120,6 +1189,7 @@ fn read_network_totals() -> Result<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use httpmock::prelude::*;
     use std::io;
     use std::sync::{Mutex as StdMutex, Once, OnceLock};
@@ -1191,6 +1261,38 @@ mod tests {
         })
         .expect("toml serialization");
         format!("{:x}", Sha256::digest(raw.as_bytes()))
+    }
+
+    #[tokio::test]
+    async fn metrics_endpoint_exposes_required_metric_names() {
+        let state = Arc::new(Mutex::new(AgentState::default()));
+        {
+            let mut locked = state.lock().await;
+            observe_lk_request_duration(
+                &mut locked,
+                "accounts_snapshot",
+                Duration::from_millis(10),
+            );
+        }
+
+        let response = metrics_handler(AxumState(state)).await.into_response();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("metrics body bytes");
+        let body_text = String::from_utf8(body.to_vec()).expect("utf8 metrics body");
+
+        for metric_name in [
+            "lk_request_duration_seconds_sum{op=\"accounts_snapshot\"}",
+            "lk_request_duration_seconds_count{op=\"accounts_snapshot\"}",
+            "lk_timeout_total",
+            "sync_duration_seconds",
+            "node_sync_failures_total",
+        ] {
+            assert!(
+                body_text.contains(metric_name),
+                "expected metrics payload to include {metric_name}, got: {body_text}"
+            );
+        }
     }
 
     #[tokio::test]
