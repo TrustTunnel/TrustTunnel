@@ -63,24 +63,34 @@ jobs:
           push: true
           tags: ${{ steps.vars.outputs.image_repo }}:latest
 
-      - name: Smoke container health endpoint
+      - name: Smoke container HTTP endpoints
         run: |
+          set -euo pipefail
           docker rm -f trusttunnel-smoke >/dev/null 2>&1 || true
           docker run -d --name trusttunnel-smoke -p 19105:9105 \
             -e LK_INTERNAL_BASE_URL=http://127.0.0.1:9 \
             -e INTERNAL_AGENT_TOKEN=smoke-token \
             -e NODE_ID=smoke-node \
+            -e CREDENTIALS_PATH=/tmp/accounts.toml \
             -e TRUSTTUNNEL_TCP_ADDR=127.0.0.1:18443 \
             "${{ steps.vars.outputs.image_ref }}"
 
           for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:19105/healthz >/dev/null; then
-              echo "Container smoke passed"
+            if ! docker ps --filter name=trusttunnel-smoke --filter status=running --format '{{.Names}}' | grep -q '^trusttunnel-smoke$'; then
+              echo "Container exited before serving HTTP"
+              docker logs trusttunnel-smoke || true
+              exit 1
+            fi
+
+            if curl -fsS http://127.0.0.1:19105/metrics >/dev/null; then
+              echo "Container HTTP smoke passed"
               break
             fi
             sleep 1
           done
-          curl -fsS http://127.0.0.1:19105/healthz >/dev/null
+
+          curl -fsS http://127.0.0.1:19105/metrics >/dev/null
+          curl -sS -o /dev/null -w 'healthz_http_code=%{http_code}\n' http://127.0.0.1:19105/healthz
           docker logs trusttunnel-smoke --tail 50
           docker rm -f trusttunnel-smoke
 
