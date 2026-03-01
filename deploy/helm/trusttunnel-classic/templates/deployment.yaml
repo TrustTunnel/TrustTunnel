@@ -63,8 +63,8 @@ spec:
               mountPath: /runtime
         {{- if .Values.sidecarEnabled }}
         - name: trusttunnel_sidecar_agent
-          image: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag }}"
-          imagePullPolicy: {{ .Values.sidecar.image.pullPolicy }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: agent-http
               containerPort: {{ .Values.sidecar.port }}

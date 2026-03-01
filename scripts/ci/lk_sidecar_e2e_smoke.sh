@@ -39,7 +39,7 @@ trap cleanup EXIT
 mkdir -p "${RUNTIME_DIR}"
 (
   cd "${ROOT_DIR}"
-  cargo build --quiet -p trusttunnel_sidecar_agent --bin trusttunnel_sidecar_agent
+  cargo build --quiet -p trusttunnel_agent --bin trusttunnel_sidecar_agent
 )
 SIDECAR_BIN="${ROOT_DIR}/target/debug/trusttunnel_sidecar_agent"
 
@@ -56,9 +56,14 @@ sync_reports = out_dir / "sync_reports.ndjson"; heartbeats = out_dir / "heartbea
 def read_scenario(): return json.loads(scenario_file.read_text(encoding="utf-8"))
 def now_iso(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
 def snapshot(version):
-    creds=[{"username":"user1","password":f"pass-{version}"}]
-    raw='{"credentials":['+json.dumps(creds[0], separators=(",", ":"))+']}'; checksum=hashlib.sha256(raw.encode()).hexdigest()
-    return {"version":version,"credentials":creds,"checksum":checksum}
+    accounts=[{"username":"user1","password":f"pass-{version}","enabled":True}]
+    raw=(
+        "{\"accounts\":[{\"username\":\"user1\",\"password\":\"pass-"
+        + version
+        + "\",\"enabled\":true}]}"
+    )
+    checksum=hashlib.sha256(raw.encode()).hexdigest()
+    return {"version":version,"accounts":accounts,"checksum":checksum}
 class S(socketserver.ThreadingMixIn, socketserver.TCPServer): allow_reuse_address=True
 class H(BaseHTTPRequestHandler):
     def _json(self, code, payload):
@@ -76,7 +81,8 @@ class H(BaseHTTPRequestHandler):
             self._append(heartbeats,{"received_at":now_iso(),"body":self._in()}); self._json(200,{"ok":True}); return
         self._json(404,{"error":"not found"})
     def do_GET(self):
-        if self.path.endswith("/credentials-snapshot") or self.path.endswith("/accounts"):
+        request_path=self.path.split("?", 1)[0]
+        if request_path.endswith("/credentials-snapshot") or request_path.endswith("/accounts"):
             sc=read_scenario(); mode=sc.get("mode","normal")
             if mode=="delayed": time.sleep(20)
             elif mode=="drop": self.connection.shutdown(socket.SHUT_RDWR); self.connection.close(); return

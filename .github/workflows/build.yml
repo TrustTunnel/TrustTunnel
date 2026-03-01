@@ -1,36 +1,38 @@
-name: Build container images
+name: Build and publish TrustTunnel agent image
 
 on:
   push:
-    branches:
-      - '**'
-    tags:
-      - 'v*'
+    branches: [main, master]
   pull_request:
 
+permissions:
+  contents: read
+  packages: write
+
 jobs:
-  build-images:
+  build-publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    strategy:
-      fail-fast: false
-      matrix:
-        image:
-          - name: securelink-lk
-            context: .
-            file: ./Dockerfile
-          - name: securelink-lk-migrator
-            context: .
-            file: ./Dockerfile.migrator
+    outputs:
+      sha_tag: ${{ steps.vars.outputs.sha_tag }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Normalize image owner
-        id: owner
-        run: echo "value=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "${GITHUB_OUTPUT}"
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85.1
+
+      - name: Compute image variables
+        id: vars
+        run: |
+          OWNER_LOWER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          SHORT_SHA="${GITHUB_SHA::7}"
+          SHA_TAG="sha-${SHORT_SHA}"
+          IMAGE_REPO="ghcr.io/${OWNER_LOWER}/trusttunnel"
+          echo "sha_tag=${SHA_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "image_repo=${IMAGE_REPO}" >> "${GITHUB_OUTPUT}"
+          echo "image_ref=${IMAGE_REPO}:${SHA_TAG}" >> "${GITHUB_OUTPUT}"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -43,21 +45,44 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Generate Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ steps.owner.outputs.value }}/${{ matrix.image.name }}
-          tags: |
-            type=sha,format=short,prefix=sha-
-            type=ref,event=tag
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-
-      - name: Build and (optionally) push image
+      - name: Build and optionally push sha image
         uses: docker/build-push-action@v6
         with:
-          context: ${{ matrix.image.context }}
-          file: ${{ matrix.image.file }}
+          context: .
+          file: ./agent/Dockerfile
           push: ${{ github.event_name == 'push' }}
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          load: true
+          tags: ${{ steps.vars.outputs.image_ref }}
+
+      - name: Publish latest tag (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./agent/Dockerfile
+          push: true
+          tags: ${{ steps.vars.outputs.image_repo }}:latest
+
+      - name: Smoke container health endpoint
+        run: |
+          docker rm -f trusttunnel-smoke >/dev/null 2>&1 || true
+          docker run -d --name trusttunnel-smoke -p 19105:9105 \
+            -e LK_INTERNAL_BASE_URL=http://127.0.0.1:9 \
+            -e INTERNAL_AGENT_TOKEN=smoke-token \
+            -e NODE_ID=smoke-node \
+            -e TRUSTTUNNEL_TCP_ADDR=127.0.0.1:18443 \
+            "${{ steps.vars.outputs.image_ref }}"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:19105/healthz >/dev/null; then
+              echo "Container smoke passed"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:19105/healthz >/dev/null
+          docker logs trusttunnel-smoke --tail 50
+          docker rm -f trusttunnel-smoke
+
+      - name: Run LK sidecar E2E smoke
+        run: ./scripts/ci/lk_sidecar_e2e_smoke.sh

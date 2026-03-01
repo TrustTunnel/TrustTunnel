@@ -223,3 +223,35 @@ histogram_quantile(
 - `/metrics` доступен и показывает обновление timestamp/heartbeat.
 - За последние 15 минут не растут `lk_timeout_total` и `node_sync_failures_total`.
 - После rollback/remediation проверено, что deployment в состоянии `rollout status: successfully rolled out`.
+
+
+---
+
+## 6. CI smoke и ручной запуск e2e
+
+Локальный/CI smoke сценарий sidecar:
+
+```bash
+./scripts/ci/lk_sidecar_e2e_smoke.sh
+```
+
+Что проверяется скриптом:
+
+- mock-LK сценарии `normal`, `delayed`, `drop`;
+- синхронизация `accounts.toml`;
+- отправка `sync-report` и heartbeat;
+- retry-backoff (`1s/2s/4s`) и восстановление после ошибок.
+
+Успешный проход содержит строку:
+
+```text
+E2E smoke passed
+```
+
+### Быстрый дебаг "sidecar failing to register"
+
+1. Проверить секреты и обязательные env (`INTERNAL_AGENT_TOKEN`, `LK_INTERNAL_BASE_URL`, `NODE_ID`).
+2. Проверить reachability LK из pod и DNS (`kubectl exec ... curl ...`).
+3. Проверить `/healthz` и логи sidecar на backoff/retry.
+4. Проверить, что runtime volume writable и `accounts.toml` обновляется.
+5. Если проблема после релиза — сделать `rollout undo` и зафиксировать failing payload/response от LK.

@@ -17,10 +17,11 @@ endpoint:
     periodSeconds: 20
     failureThreshold: 3
 
+image:
+  repository: ghcr.io/example/trusttunnel
+  tag: sha-staging
+
 sidecar:
-  image:
-    repository: ghcr.io/example/trusttunnel-sidecar-agent
-    tag: sha-staging
   readiness:
     initialDelaySeconds: 4
     periodSeconds: 10

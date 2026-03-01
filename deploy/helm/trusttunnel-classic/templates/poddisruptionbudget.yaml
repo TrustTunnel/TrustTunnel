@@ -1,0 +1,15 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ default .Chart.Name .Values.fullnameOverride }}
+  labels:
+    app.kubernetes.io/name: trusttunnel
+    app.kubernetes.io/part-of: trusttunnel-classic
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trusttunnel
+      app.kubernetes.io/part-of: trusttunnel-classic
+{{- end }}
