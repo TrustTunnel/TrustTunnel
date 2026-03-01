@@ -20,10 +20,14 @@ RUN set -eux; \
     cargo build --manifest-path agent/Cargo.toml --release --bin trusttunnel_sidecar_agent; \
     install -D target/release/trusttunnel_sidecar_agent /usr/local/bin/trusttunnel-sidecar-agent
 
-FROM alpine:3.21 AS runtime
+FROM debian:bookworm-slim AS runtime
 
-RUN addgroup -S trusttunnel && adduser -S -G trusttunnel -u 10001 trusttunnel \
-    && apk add --no-cache ca-certificates wget
+RUN set -eux; \
+    groupadd --system trusttunnel; \
+    useradd --system --uid 10001 --gid trusttunnel --create-home trusttunnel; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates wget; \
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/local/bin/trusttunnel-sidecar-agent /usr/local/bin/trusttunnel-sidecar-agent
 
