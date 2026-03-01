@@ -5,6 +5,11 @@ replicaCount: 1
 
 sidecarEnabled: true
 
+image:
+  repository: ghcr.io/example/trusttunnel
+  tag: sha-<short_sha>
+  pullPolicy: IfNotPresent
+
 imagePullSecrets: []
 
 endpoint:
@@ -30,10 +35,6 @@ endpoint:
     failureThreshold: 3
 
 sidecar:
-  image:
-    repository: ghcr.io/example/trusttunnel-sidecar-agent
-    tag: sha-<short_sha>
-    pullPolicy: IfNotPresent
   port: 9105
   readiness:
     initialDelaySeconds: 5
@@ -62,6 +63,10 @@ resources:
 
 nodeAffinity: {}
 podAntiAffinity: {}
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
 
 lkBaseUrl: "https://lk-internal.svc.cluster.local"
 syncIntervalSeconds: 30
