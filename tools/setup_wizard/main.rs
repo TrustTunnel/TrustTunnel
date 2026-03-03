@@ -59,6 +59,7 @@ pub fn get_predefined_params() -> MutexGuard<'static, PredefinedParameters> {
 }
 
 fn main() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
     let args = clap::Command::new("VPN endpoint setup wizard")
         .about("Generate configuration files for TrustTunnel endpoint")
         .after_help(

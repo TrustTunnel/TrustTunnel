@@ -170,6 +170,16 @@ impl MultiplexerSource {
 #[async_trait]
 impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
     async fn on_new_udp_connection(&self, meta: &downstream::UdpDatagramMeta) -> io::Result<()> {
+        let dest_ip = meta.destination.ip();
+        if !self.context.settings.allow_private_network_connections
+            && !net_utils::is_global_ip(&dest_ip)
+        {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "UDP destination is in a non-routable network",
+            ));
+        }
+
         match self
             .connections
             .lock()

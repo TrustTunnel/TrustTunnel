@@ -254,7 +254,7 @@ fn io_to_connection_error(error: io::Error) -> tunnel::ConnectionError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV6};
 
     fn make_test_context_disallow_private_network() -> Arc<core::Context> {
         let mut ctx = core::Context::default();
@@ -306,6 +306,65 @@ mod tests {
             Err(e) => e,
         };
 
+        assert!(matches!(err, tunnel::ConnectionError::DnsNonroutable));
+    }
+
+    #[tokio::test]
+    async fn test_connect_denies_ipv4_mapped_private_address() {
+        let context = make_test_context_disallow_private_network();
+        let connector: Box<dyn TcpConnector> = Box::new(TcpForwarder::new(context));
+
+        // ::ffff:192.168.0.1 — IPv4-mapped private address
+        let mapped_private = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0001);
+        let meta = forwarder::TcpConnectionMeta {
+            client_address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+            destination: TcpDestination::Address(SocketAddr::V6(SocketAddrV6::new(
+                mapped_private,
+                80,
+                0,
+                0,
+            ))),
+            auth: None,
+            tls_domain: String::new(),
+            user_agent: None,
+        };
+
+        let err = match connector.connect(log_utils::IdChain::empty(), meta).await {
+            Ok(_) => panic!("Expected connection to be denied"),
+            Err(e) => e,
+        };
+
+        assert!(matches!(err, tunnel::ConnectionError::DnsNonroutable));
+    }
+
+    #[tokio::test]
+    async fn test_connect_denies_ipv4_mapped_loopback() {
+        let context = make_test_context_disallow_private_network();
+        let connector: Box<dyn TcpConnector> = Box::new(TcpForwarder::new(context));
+
+        // ::ffff:127.0.0.1 — IPv4-mapped loopback
+        let mapped_loopback = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001);
+        let meta = forwarder::TcpConnectionMeta {
+            client_address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+            destination: TcpDestination::Address(SocketAddr::V6(SocketAddrV6::new(
+                mapped_loopback,
+                22,
+                0,
+                0,
+            ))),
+            auth: None,
+            tls_domain: String::new(),
+            user_agent: None,
+        };
+
+        let err = match connector.connect(log_utils::IdChain::empty(), meta).await {
+            Ok(_) => panic!("Expected connection to be denied"),
+            Err(e) => e,
+        };
+
+        // IPv4-mapped loopback is blocked as non-routable (the V6 wrapper means
+        // IpAddr::is_loopback() returns false, so it hits DnsNonroutable rather
+        // than DnsLoopback — but the connection is denied either way)
         assert!(matches!(err, tunnel::ConnectionError::DnsNonroutable));
     }
 }

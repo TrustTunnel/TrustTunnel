@@ -63,19 +63,19 @@ in one or two bytes.
 
 ### Field Tags
 
-| Tag | Field | Value encoding | Required |
-| --- | ----- | -------------- | -------- |
-| `0x01` | `hostname` | UTF-8 string | yes |
-| `0x02` | `addresses` | UTF-8, one `address:port` per entry; multiple entries are encoded as separate TLVs with the same tag | yes |
-| `0x03` | `custom_sni` | UTF-8 string | no |
-| `0x04` | `has_ipv6` | 1 byte: `0x01` = true, `0x00` = false | no (default `true`) |
-| `0x05` | `username` | UTF-8 string | yes |
-| `0x06` | `password` | UTF-8 string | yes |
-| `0x0B` | `client_random_prefix` | UTF-8 hex-encoded string | no |
-| `0x07` | `skip_verification` | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
-| `0x08` | `certificate` | Concatenated DER-encoded certificates (raw binary); omit if the chain is verified by system CAs | no |
-| `0x09` | `upstream_protocol` | 1 byte: `0x01` = `http2`, `0x02` = `http3` | no (default `http2`) |
-| `0x0A` | `anti_dpi` | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
+| Tag    | Field                  | Value encoding                                                                                       | Required             |
+|--------|------------------------|------------------------------------------------------------------------------------------------------|----------------------|
+| `0x01` | `hostname`             | UTF-8 string                                                                                         | yes                  |
+| `0x02` | `addresses`            | UTF-8, one `address:port` per entry; multiple entries are encoded as separate TLVs with the same tag | yes                  |
+| `0x03` | `custom_sni`           | UTF-8 string                                                                                         | no                   |
+| `0x04` | `has_ipv6`             | 1 byte: `0x01` = true, `0x00` = false                                                                | no (default `true`)  |
+| `0x05` | `username`             | UTF-8 string                                                                                         | yes                  |
+| `0x06` | `password`             | UTF-8 string                                                                                         | yes                  |
+| `0x0B` | `client_random_prefix` | UTF-8 hex-encoded string in the following format: `prefix[/mask]`                                    | no                   |
+| `0x07` | `skip_verification`    | 1 byte: `0x01` = true, `0x00` = false                                                                | no (default `false`) |
+| `0x08` | `certificate`          | Concatenated DER-encoded certificates (raw binary); omit if the chain is verified by system CAs      | no                   |
+| `0x09` | `upstream_protocol`    | 1 byte: `0x01` = `http2`, `0x02` = `http3`                                                           | no (default `http2`) |
+| `0x0A` | `anti_dpi`             | 1 byte: `0x01` = true, `0x00` = false                                                                | no (default `false`) |
 
 ### Encoding Rules
 

@@ -144,9 +144,16 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
             TlvTag::ClientRandomPrefix => {
                 let prefix = decode_string(&value)?;
                 // Validate hex format
-                hex::decode(&prefix).map_err(|e| {
+                let (prefix_part, mask_part) = prefix.split_once('/').unwrap_or((&prefix, ""));
+                hex::decode(prefix_part).map_err(|e| {
                     DeepLinkError::InvalidAddress(format!(
                         "client_random_prefix must be valid hex: {}",
+                        e
+                    ))
+                })?;
+                hex::decode(mask_part).map_err(|e| {
+                    DeepLinkError::InvalidAddress(format!(
+                        "client_random_prefix mask must be valid hex: {}",
                         e
                     ))
                 })?;
@@ -280,5 +287,17 @@ mod tests {
     fn test_decode_invalid_scheme() {
         let result = decode("http://example.com");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_decode_client_random_with_mask() {
+        let data = vec![
+            0x0B, 0x09, b'5', b'8', b'4', b'1', b'/', b'7', b'a', b'4', b'3',
+        ];
+        let mut parser = TlvParser::new(&data);
+
+        let (tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag, Some(TlvTag::ClientRandomPrefix));
+        assert_eq!(value, b"5841/7a43");
     }
 }

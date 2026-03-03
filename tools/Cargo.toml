@@ -24,6 +24,7 @@ toml = "0.7.4"
 toml_edit = "0.19.10"
 trusttunnel = { version = "0.1", path = "../lib", features = ["rt_doc"] }
 x509-parser = "0.15.0"
+rustls = "0.23.37"
 
 # ACME/Let's Encrypt support
 instant-acme = "0.7"

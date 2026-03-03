@@ -73,6 +73,16 @@ impl Socks5Forwarder {
 #[async_trait]
 impl forwarder::UdpDatagramPipeShared for DatagramTransceiverShared {
     async fn on_new_udp_connection(&self, meta: &downstream::UdpDatagramMeta) -> io::Result<()> {
+        let dest_ip = meta.destination.ip();
+        if !self.context.settings.allow_private_network_connections
+            && !net_utils::is_global_ip(&dest_ip)
+        {
+            return Err(io::Error::new(
+                ErrorKind::PermissionDenied,
+                "UDP destination is in a non-routable network",
+            ));
+        }
+
         if let Some(x) = self.associations.lock().unwrap().get_mut(&meta.source) {
             let is_new = x.peers.insert(meta.destination);
             debug_assert!(is_new, "{:?}", meta);
@@ -217,6 +227,19 @@ impl forwarder::TcpConnector for TcpConnector {
         id: log_utils::IdChain<u64>,
         meta: forwarder::TcpConnectionMeta,
     ) -> Result<(Box<dyn pipe::Source>, Box<dyn pipe::Sink>), tunnel::ConnectionError> {
+        // Enforce private network restrictions before forwarding to SOCKS5
+        if !self.context.settings.allow_private_network_connections {
+            if let net_utils::TcpDestination::Address(addr) = &meta.destination {
+                let ip = addr.ip();
+                if !net_utils::is_global_ip(&ip) {
+                    if ip.is_loopback() {
+                        return Err(tunnel::ConnectionError::DnsLoopback);
+                    }
+                    return Err(tunnel::ConnectionError::DnsNonroutable);
+                }
+            }
+        }
+
         let (destination, port) = match &meta.destination {
             net_utils::TcpDestination::Address(x) => {
                 (socks5_client::Address::IpAddress(x.ip()), x.port())

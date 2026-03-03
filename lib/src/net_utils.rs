@@ -595,7 +595,8 @@ pub(crate) const fn is_global_ipv6(ip: &Ipv6Addr) -> bool {
     }
 }
 
-/// Converts an IPv6-mapped IPv4 address (`::ffff:a.b.c.d`) to a plain `IpAddr::V4`.
+/// Converts an IPv4-mapped (`::ffff:a.b.c.d`) or IPv4-compatible (`::a.b.c.d`)
+/// IPv6 address to a plain `IpAddr::V4`.
 ///
 /// When the endpoint listens on `[::]` with `IPV6_V6ONLY=false`, the OS presents
 /// incoming IPv4 connections as IPv6-mapped addresses. This function unmaps them so
@@ -605,18 +606,53 @@ pub(crate) const fn is_global_ipv6(ip: &Ipv6Addr) -> bool {
 #[inline]
 pub(crate) fn unmap_ipv6(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(ip),
+        IpAddr::V6(v6) => extract_ipv4_from_ipv6(&v6).map(IpAddr::V4).unwrap_or(ip),
         v4 => v4,
     }
 }
 
+/// Extracts the IPv4 address from an IPv4-mapped (`::ffff:x.x.x.x`) or
+/// IPv4-compatible (`::x.x.x.x`) IPv6 address. Returns [`None`] for native IPv6.
+const fn extract_ipv4_from_ipv6(ip: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let seg = ip.segments();
+    // IPv4-mapped: ::ffff:x.x.x.x  →  [0,0,0,0,0,0xffff,hi,lo]
+    let is_mapped =
+        seg[0] == 0 && seg[1] == 0 && seg[2] == 0 && seg[3] == 0 && seg[4] == 0 && seg[5] == 0xffff;
+    // IPv4-compatible (deprecated): ::x.x.x.x  →  [0,0,0,0,0,0,hi,lo]
+    // Exclude :: (unspecified) and ::1 (loopback) which are native IPv6.
+    let is_compat = seg[0] == 0
+        && seg[1] == 0
+        && seg[2] == 0
+        && seg[3] == 0
+        && seg[4] == 0
+        && seg[5] == 0
+        && (seg[6] != 0 || seg[7] > 1);
+
+    if is_mapped || is_compat {
+        Some(Ipv4Addr::new(
+            (seg[6] >> 8) as u8,
+            seg[6] as u8,
+            (seg[7] >> 8) as u8,
+            seg[7] as u8,
+        ))
+    } else {
+        None
+    }
+}
+
 /// Returns [`true`] if the address appears to be globally routable.
+///
+/// Handles IPv4-mapped IPv6 addresses (`::ffff:x.x.x.x`) by unmapping them
+/// to IPv4 and checking against [`is_global_ipv4`].
 #[must_use]
 #[inline]
 pub(crate) const fn is_global_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(x) => is_global_ipv4(x),
-        IpAddr::V6(x) => is_global_ipv6(x),
+        IpAddr::V6(x) => match extract_ipv4_from_ipv6(x) {
+            Some(v4) => is_global_ipv4(&v4),
+            None => is_global_ipv6(x),
+        },
     }
 }
 
@@ -653,10 +689,11 @@ pub(crate) fn scrub_sni(mut sni: String) -> String {
 #[cfg(test)]
 mod tests {
     use crate::net_utils::{
-        libc_to_socket_addr, scrub_request, scrub_sni, socket_addr_to_libc, SCRUBBED_PLACEHOLDER,
+        is_global_ip, libc_to_socket_addr, scrub_request, scrub_sni, socket_addr_to_libc,
+        SCRUBBED_PLACEHOLDER,
     };
     use http::uri;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     #[test]
     fn sockaddr_conversion_v4() {
@@ -786,6 +823,64 @@ mod tests {
     }
 
     #[test]
+    fn is_global_ip_blocks_ipv4_mapped_private() {
+        // ::ffff:192.168.1.1 — IPv4-mapped private address must be rejected
+        let mapped_private: IpAddr =
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc0a8, 0x0101));
+        assert!(!is_global_ip(&mapped_private));
+
+        // ::ffff:10.0.0.1 — IPv4-mapped 10.x private
+        let mapped_10: IpAddr = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0a00, 0x0001));
+        assert!(!is_global_ip(&mapped_10));
+
+        // ::ffff:127.0.0.1 — IPv4-mapped loopback
+        let mapped_loopback: IpAddr =
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x7f00, 0x0001));
+        assert!(!is_global_ip(&mapped_loopback));
+
+        // ::ffff:172.17.0.1 — IPv4-mapped Docker bridge
+        let mapped_docker: IpAddr =
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xac11, 0x0001));
+        assert!(!is_global_ip(&mapped_docker));
+
+        // ::ffff:169.254.1.1 — IPv4-mapped link-local
+        let mapped_link_local: IpAddr =
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xa9fe, 0x0101));
+        assert!(!is_global_ip(&mapped_link_local));
+    }
+
+    #[test]
+    fn is_global_ip_blocks_ipv4_compatible_private() {
+        // ::192.168.1.1 — IPv4-compatible (deprecated) private address
+        let compat_private: IpAddr = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc0a8, 0x0101));
+        assert!(!is_global_ip(&compat_private));
+
+        // ::10.0.0.1 — IPv4-compatible 10.x
+        let compat_10: IpAddr = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0x0a00, 0x0001));
+        assert!(!is_global_ip(&compat_10));
+    }
+
+    #[test]
+    fn is_global_ip_allows_ipv4_mapped_public() {
+        // ::ffff:8.8.8.8 — IPv4-mapped public address must be allowed
+        let mapped_public: IpAddr =
+            IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0x0808, 0x0808));
+        assert!(is_global_ip(&mapped_public));
+    }
+
+    #[test]
+    fn is_global_ip_handles_native_ipv6() {
+        // Native IPv6 loopback ::1 must be rejected
+        assert!(!is_global_ip(&IpAddr::V6(Ipv6Addr::LOCALHOST)));
+        // Native IPv6 unspecified :: must be rejected
+        assert!(!is_global_ip(&IpAddr::V6(Ipv6Addr::UNSPECIFIED)));
+        // Plain IPv4 private must be rejected
+        assert!(!is_global_ip(&IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1))));
+        // Plain IPv4 public must be allowed
+        assert!(is_global_ip(&IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))));
+    }
+
+    #[test]
     fn scrubbing_of_headers_do_not_add() {
         let mut original = http::request::Request::new(()).into_parts().0;
         original.headers.insert(
@@ -844,5 +939,13 @@ mod tests {
         use std::net::IpAddr;
         let v4: IpAddr = "1.2.3.4".parse().unwrap();
         assert_eq!(super::unmap_ipv6(v4), v4);
+    }
+
+    #[test]
+    fn test_unmap_ipv6_ipv4_compatible() {
+        use std::net::{IpAddr, Ipv6Addr};
+        // IPv4-compatible address ::192.168.1.1
+        let compat: IpAddr = IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0xc0a8, 0x0101));
+        assert_eq!(super::unmap_ipv6(compat), IpAddr::from([192, 168, 1, 1]));
     }
 }

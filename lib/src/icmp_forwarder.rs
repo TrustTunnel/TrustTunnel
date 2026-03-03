@@ -324,6 +324,18 @@ impl datagram_pipe::Sink for IcmpSink {
         &mut self,
         datagram: downstream::IcmpDatagram,
     ) -> io::Result<datagram_pipe::SendStatus> {
+        let peer_ip = datagram.meta.peer;
+        if !self
+            .shared
+            .forwarder_shared
+            .core_settings
+            .allow_private_network_connections
+            && !net_utils::is_global_ip(&peer_ip)
+        {
+            debug!("Dropping ICMP to non-routable destination: {}", peer_ip);
+            return Ok(datagram_pipe::SendStatus::Dropped);
+        }
+
         let echo = match datagram.message.to_echo() {
             None => {
                 debug!("Only echo request messages can be sent to peer");
