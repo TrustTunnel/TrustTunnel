@@ -29,6 +29,9 @@ struct Config {
     node_name: String,
     pod_uid: String,
     pod_ip: String,
+    configs_root: PathBuf,
+    secrets_root: PathBuf,
+    sync_secret_keys: Vec<String>,
 }
 
 impl Config {
@@ -62,6 +65,21 @@ impl Config {
             node_name: std::env::var("NODE_NAME").unwrap_or_else(|_| "unknown".to_string()),
             pod_uid: std::env::var("POD_UID").unwrap_or_else(|_| "unknown".to_string()),
             pod_ip: std::env::var("POD_IP").unwrap_or_else(|_| "0.0.0.0".to_string()),
+            configs_root: PathBuf::from(
+                std::env::var("TRUSTTUNNEL_CONFIGS_ROOT")
+                    .unwrap_or_else(|_| "/etc/trusttunnel/configs".to_string()),
+            ),
+            secrets_root: PathBuf::from(
+                std::env::var("TRUSTTUNNEL_SECRETS_ROOT")
+                    .unwrap_or_else(|_| "/etc/trusttunnel/secrets".to_string()),
+            ),
+            sync_secret_keys: std::env::var("TRUSTTUNNEL_SYNC_SECRET_KEYS")
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|x| !x.is_empty())
+                .map(ToString::to_string)
+                .collect(),
         })
     }
 }
@@ -147,6 +165,36 @@ struct CredentialsFile {
     client: Vec<Credential>,
 }
 
+#[derive(Clone)]
+struct SyncedFile {
+    path: String,
+    content: String,
+    checksum: String,
+}
+
+#[derive(Serialize)]
+struct ConfigsPushPayload {
+    configs: Vec<ConfigEntry>,
+    secrets: Vec<SecretEntry>,
+    collected_at: String,
+}
+
+#[derive(Serialize)]
+struct ConfigEntry {
+    path: String,
+    content: String,
+    checksum: String,
+}
+
+#[derive(Serialize)]
+struct SecretEntry {
+    path: String,
+    keys_count: u64,
+    checksum: String,
+    masked: String,
+    value_encrypted: Option<String>,
+}
+
 #[derive(Default)]
 struct AgentState {
     last_version: Option<String>,
@@ -156,6 +204,7 @@ struct AgentState {
     last_health_ok: bool,
     registered_node_id: Option<String>,
     node_token: Option<String>,
+    last_files_checksum: Option<String>,
 }
 
 #[tokio::main]
@@ -209,7 +258,134 @@ async fn check_health(health_addr: &str) -> bool {
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
     ensure_registration(cfg, client, state).await?;
-    sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await
+    sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await?;
+    sync_mounted_resources(cfg, client, state).await
+}
+
+async fn sync_mounted_resources(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: &mut AgentState,
+) -> Result<()> {
+    let node_id = state
+        .registered_node_id
+        .as_deref()
+        .context("registered node id missing")?;
+    let node_token = state
+        .node_token
+        .as_deref()
+        .context("registered node token missing")?;
+
+    let configs = collect_synced_files(&cfg.configs_root)?;
+    let secrets = collect_synced_files(&cfg.secrets_root)?;
+    let digest = resources_checksum(&configs, &secrets);
+    if state.last_files_checksum.as_deref() == Some(&digest) {
+        return Ok(());
+    }
+
+    let payload = ConfigsPushPayload {
+        configs: configs
+            .iter()
+            .map(|f| ConfigEntry {
+                path: f.path.clone(),
+                content: f.content.clone(),
+                checksum: f.checksum.clone(),
+            })
+            .collect(),
+        secrets: secrets
+            .iter()
+            .map(|f| {
+                let file_name = Path::new(&f.path)
+                    .file_name()
+                    .and_then(|x| x.to_str())
+                    .unwrap_or_default();
+                SecretEntry {
+                    path: f.path.clone(),
+                    keys_count: 1,
+                    checksum: f.checksum.clone(),
+                    masked: "***".to_string(),
+                    value_encrypted: cfg
+                        .sync_secret_keys
+                        .iter()
+                        .any(|k| k == file_name)
+                        .then(|| f.content.clone()),
+                }
+            })
+            .collect(),
+        collected_at: Utc::now().to_rfc3339(),
+    };
+
+    let url = format!(
+        "{}/api/trusttunnel/nodes/{}/configs",
+        cfg.lk_api_base_url, node_id
+    );
+    let resp = client
+        .post(url)
+        .bearer_auth(node_token)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("configs push rejected: {}", resp.status());
+    }
+
+    state.last_files_checksum = Some(digest);
+    Ok(())
+}
+
+fn collect_synced_files(root: &Path) -> Result<Vec<SyncedFile>> {
+    if !root.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    collect_synced_files_inner(root, root, &mut files)?;
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+fn collect_synced_files_inner(root: &Path, path: &Path, out: &mut Vec<SyncedFile>) -> Result<()> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            collect_synced_files_inner(root, &entry_path, out)?;
+            continue;
+        }
+
+        if file_type.is_file() {
+            let rel = entry_path
+                .strip_prefix(root)
+                .unwrap_or(&entry_path)
+                .to_string_lossy()
+                .to_string();
+            let content = std::fs::read_to_string(&entry_path).unwrap_or_default();
+            let checksum = format!("{:x}", Sha256::digest(content.as_bytes()));
+            out.push(SyncedFile {
+                path: rel,
+                content,
+                checksum,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn resources_checksum(configs: &[SyncedFile], secrets: &[SyncedFile]) -> String {
+    let canonical = configs
+        .iter()
+        .map(|x| format!("config:{}:{}", x.path, x.checksum))
+        .chain(
+            secrets
+                .iter()
+                .map(|x| format!("secret:{}:{}", x.path, x.checksum)),
+        )
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
 async fn ensure_registration(
@@ -705,7 +881,7 @@ mod tests {
 
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
         Config {
-            lk_internal_base_url: base_url,
+            lk_internal_base_url: base_url.clone(),
             lk_api_base_url: base_url,
             internal_agent_token: "token".to_string(),
             node_id: "node-1".to_string(),
@@ -721,6 +897,9 @@ mod tests {
             node_name: "node-a".to_string(),
             pod_uid: "pod-uid".to_string(),
             pod_ip: "10.10.0.11".to_string(),
+            configs_root: std::env::temp_dir().join("trusttunnel-configs"),
+            secrets_root: std::env::temp_dir().join("trusttunnel-secrets"),
+            sync_secret_keys: Vec::new(),
         }
     }
 
@@ -741,7 +920,10 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-fetch-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
         let mut state = AgentState::default();
 
         let _snapshot = server
@@ -773,7 +955,10 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-checksum-fail.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
         let mut state = AgentState::default();
 
         let credentials = vec![Credential {
@@ -814,7 +999,10 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-success.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
 
         let credentials = vec![Credential {
             username: "bob".to_string(),
@@ -861,7 +1049,10 @@ mod tests {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-heartbeat.toml");
         let cfg = test_config(server.base_url(), credentials_path);
-        let client = reqwest::Client::new();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
         let mut state = AgentState {
             last_sync_failed: false,
             last_health_ok: true,
@@ -896,6 +1087,21 @@ mod tests {
 
         register_mock.assert_async().await;
         heartbeat_mock.assert_async().await;
+    }
+
+    #[test]
+    fn collects_files_from_nested_directories() {
+        let root = std::env::temp_dir().join(format!("trusttunnel-collect-{}", std::process::id()));
+        let nested = root.join("app");
+        std::fs::create_dir_all(&nested).expect("create dirs");
+        std::fs::write(nested.join("config.yaml"), "abc").expect("write");
+
+        let files = collect_synced_files(&root).expect("collect files");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].path, "app/config.yaml");
+        assert_eq!(files[0].content, "abc");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
