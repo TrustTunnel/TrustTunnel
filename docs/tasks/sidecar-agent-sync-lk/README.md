@@ -8,7 +8,7 @@
 - [x] Реализован дедуп по `version+checksum` (повторный apply не выполняется).
 - [x] Реализован heartbeat/health-сигнал в метриках sidecar.
 - [ ] Injection через mutating webhook пока не реализован (используется Helm sidecar в deployment).
-- [ ] Sync ConfigMap/Secret из mounted volumes (вариант A из этого ТЗ) пока не реализован.
+- [x] Sync ConfigMap/Secret из mounted volumes (вариант A из этого ТЗ) реализован на polling-цикле чтения файловых mount-путей.
 - [ ] Регистрация по API `/api/trusttunnel/nodes/register` и протокол из этого ТЗ пока не реализованы.
 
 ## Правила ведения работ и отчетности
@@ -58,7 +58,7 @@ Sidecar (`trusttunnel-agent`) должен:
 - [ ] Отслеживание изменений через `inotify/fsnotify` по файловой системе.
 
 Статус подзадач (2026-03-04):
-- `blocked`: требуется реализация injector/mount wiring и watcher-цикла в sidecar.
+- `in_progress`: sidecar читает mounted files из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets` и отправляет payload в LK; остаётся перейти с polling на fsnotify/inotify и завершить injector mount wiring.
 
 (Опционально позже) Вариант B:
 - [ ] Sidecar смотрит K8s API (watch). Требует RBAC. **Не делать на первом этапе без необходимости.**
@@ -106,7 +106,7 @@ Acceptance:
 - [x] `POST /api/trusttunnel/nodes/:id/heartbeat` каждые 30s (или вместе с configs)
 
 Статус подзадач (2026-03-04):
-- `in_progress`: добавлены register + heartbeat по целевому контракту; требуется реализация payload для configs/secrets endpoint-ов.
+- `in_progress`: добавлены register + heartbeat; реализована отправка payload на `/api/trusttunnel/nodes/:id/configs` с `configs` и masked `secrets`; шифрование `value_encrypted` для opt-in key пока не завершено.
 
 ---
 

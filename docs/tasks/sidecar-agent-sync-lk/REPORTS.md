@@ -16,6 +16,14 @@
 ## Журнал
 <!-- Добавляйте новые записи сверху -->
 
+- Дата/время: 2026-03-04 12:40 UTC
+  - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)` + `4) Протокол с LK`
+  - Статус: `in_progress`
+  - Что сделано: в `sidecar-agent` добавлен сбор mounted-файлов из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets`, дедуп отправки по checksum и отправка на `POST /api/trusttunnel/nodes/:id/configs`; для secrets отправляется masked meta и opt-in поле `value_encrypted` для ключей из `TRUSTTUNNEL_SYNC_SECRET_KEYS`.
+  - Что осталось: заменить polling на fsnotify/inotify, добавить реальное шифрование значения secret-key перед заполнением `value_encrypted`, завершить injector wiring для автоматического mount ресурсов.
+  - Блокеры/риски: контракт по шифрованию opt-in ключей требует LK public key flow (в текущем шаге нет крипто-реализации).
+  - Ссылки: commit (текущая ветка)
+
 - Дата/время: 2026-03-04 10:05 UTC
   - Задача: `4) Протокол с LK`
   - Статус: `in_progress`
