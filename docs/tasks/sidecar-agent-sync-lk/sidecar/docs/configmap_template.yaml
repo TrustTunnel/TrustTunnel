@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tt-node-<node>
+data:
+  clients.json: |
+    [
+      {"login":"u1","password":"p1"},
+      {"login":"u2","password":"p2"}
+    ]
+  config_version: "v1"
+  domain: "vpn.domain.com"

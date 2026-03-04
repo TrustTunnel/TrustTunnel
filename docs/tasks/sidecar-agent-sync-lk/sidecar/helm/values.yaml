@@ -1,0 +1,14 @@
+replicaCount: 1
+image:
+  repository: local/trusttunnel-sidecar
+  tag: latest
+lk:
+  wsEndpoint: "wss://lk.example.com/api/nodes/ws"
+  restEndpoint: "https://lk.example.com/api"
+  tokenSecretName: "lk-sidecar-token"
+resources: {}
+rbac:
+  create: true
+serviceAccount:
+  create: true
+maxClients: 250
