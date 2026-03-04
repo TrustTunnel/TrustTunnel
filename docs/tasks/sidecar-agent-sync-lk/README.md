@@ -26,6 +26,9 @@
 - [ ] Sidecar НЕ слушает 443 и НЕ использует hostPort/hostNetwork.
 - [ ] Sidecar работает внутри pod и решает задачи синхронизации и репортинга в LK.
 
+Статус подзадач (2026-03-04):
+- `in_progress`: ограничения зафиксированы, требуется закрепление через injector/deployment конфигурацию.
+
 ---
 
 ## [ ] 1) Назначение sidecar
@@ -37,6 +40,9 @@ Sidecar (`trusttunnel-agent`) должен:
   - [ ] метаданные секретов (`masked`) и опционально зашифрованные значения разрешенных key’ев.
 - [ ] Держать heartbeat/status (`last_seen`, `health`).
 - [ ] Работать устойчиво при недоступности LK (`retry + cache`).
+
+Статус подзадач (2026-03-04):
+- `in_progress`: в текущей версии есть retry/backoff, sync-report и dedup по checksum/version, но отсутствует file-watch sync ConfigMap/Secret и pod context payload.
 
 ---
 
@@ -50,6 +56,9 @@ Sidecar (`trusttunnel-agent`) должен:
   - [ ] `/etc/trusttunnel/configs/<name>/...`
   - [ ] `/etc/trusttunnel/secrets/<name>/...`
 - [ ] Отслеживание изменений через `inotify/fsnotify` по файловой системе.
+
+Статус подзадач (2026-03-04):
+- `blocked`: требуется реализация injector/mount wiring и watcher-цикла в sidecar.
 
 (Опционально позже) Вариант B:
 - [ ] Sidecar смотрит K8s API (watch). Требует RBAC. **Не делать на первом этапе без необходимости.**
@@ -78,6 +87,9 @@ Sidecar (`trusttunnel-agent`) должен:
 Acceptance:
 - [ ] Любой pod с `trusttunnel.inject=true` получает sidecar автоматически.
 
+Статус подзадач (2026-03-04):
+- `blocked`: отсутствует готовый webhook/controller слой для sidecar injection.
+
 ---
 
 ## [ ] 4) Протокол с LK
@@ -91,7 +103,10 @@ Acceptance:
   - [ ] По умолчанию: только masked meta (`keys_count`, `checksum`)
   - [ ] Opt-in: только указанные `secret-keys` шифруются LK public key и отправляются как `value_encrypted`
 - [ ] Heartbeat:
-  - [ ] `POST /api/trusttunnel/nodes/:id/heartbeat` каждые 30s (или вместе с configs)
+- [ ] `POST /api/trusttunnel/nodes/:id/heartbeat` каждые 30s (или вместе с configs)
+
+Статус подзадач (2026-03-04):
+- `in_progress`: есть внутренние sync-report/metrics endpoint-ы; требуются register/configs/secrets/heartbeat по целевому контракту.
 
 ---
 
@@ -104,6 +119,9 @@ Acceptance:
 - [ ] NetworkPolicy (желательно): sidecar может ходить только в LK endpoint.
 - [ ] Никаких cluster-wide прав (Variant A не требует RBAC на secrets).
 
+Статус подзадач (2026-03-04):
+- `in_progress`: HTTPS+auth есть, но нет реализованного encrypted opt-in секрета и NetworkPolicy ограничения egress.
+
 ---
 
 ## [ ] 6) Надежность
@@ -111,11 +129,17 @@ Acceptance:
 - [ ] Кеширование последних версий (на диск в `emptyDir` или memory), чтобы не терять изменения при временном падении LK.
 - [ ] Дедуп: если checksum не поменялся — не слать повторно.
 
+Статус подзадач (2026-03-04):
+- `in_progress`: retry/backoff и dedup уже есть, но кэш для новой модели config/secret sync еще не внедрен.
+
 ---
 
 ## [ ] 7) Observability
 - [ ] Логи: `registration ok`, `sync ok`, `sync errors`, `retry counters`.
 - [ ] Метрики (опционально): `last_sync_ts`, `sync_errors_total`, `lk_latency_ms`.
+
+Статус подзадач (2026-03-04):
+- `in_progress`: базовые логи/метрики отправляются, требуется расширение набора целевыми показателями из ТЗ.
 
 ---
 
@@ -125,3 +149,6 @@ Acceptance:
 - [ ] ConfigMap изменения отражаются в LK ≤ 30s.
 - [ ] Secrets по умолчанию masked, opt-in encrypted keys работают.
 - [ ] Никакого вмешательства в ingress/443/hostPort.
+
+Статус подзадач (2026-03-04):
+- `in_progress`: нужен полный цикл реализации задач 2-5 для закрытия DoD.
