@@ -16,6 +16,14 @@
 ## Журнал
 <!-- Добавляйте новые записи сверху -->
 
+- Дата/время: 2026-03-04 10:05 UTC
+  - Задача: `4) Протокол с LK`
+  - Статус: `in_progress`
+  - Что сделано: в `sidecar-agent` добавлена регистрация через `POST /api/trusttunnel/nodes/register` с сохранением `node_id/node_token` в runtime-состоянии и heartbeat отправка на `POST /api/trusttunnel/nodes/:id/heartbeat`.
+  - Что осталось: реализовать отправку `configs`/`secrets` на `POST /api/trusttunnel/nodes/:id/configs` по контракту ТЗ.
+  - Блокеры/риски: sidecar crate сейчас не подключен к workspace root, поэтому unit/integration test запускаются ограниченно без обновления workspace-конфига.
+  - Ссылки: commit (текущая ветка)
+
 - Дата/время: 2026-03-04 08:16 UTC
   - Задача: `0) Ключевое ограничение (ОБЯЗАТЕЛЬНО)`
   - Статус: `in_progress`
