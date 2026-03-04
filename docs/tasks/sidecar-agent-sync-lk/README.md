@@ -58,7 +58,7 @@ Sidecar (`trusttunnel-agent`) должен:
 - [x] Отслеживание изменений через `inotify/fsnotify` по файловой системе.
 
 Статус подзадач (2026-03-04):
-- `in_progress`: sidecar читает mounted files из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets`, отправляет payload в LK и триггерит sync по inotify-событиям; остаётся завершить injector mount wiring.
+- `in_progress`: sidecar читает mounted files из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets`, отправляет payload в LK и триггерит sync по inotify-событиям; Helm wiring для mount ресурсов добавлен, остаётся автоматизация через webhook.
 
 (Опционально позже) Вариант B:
 - [ ] Sidecar смотрит K8s API (watch). Требует RBAC. **Не делать на первом этапе без необходимости.**
@@ -70,7 +70,7 @@ Sidecar (`trusttunnel-agent`) должен:
 
 Подходы:
 - [ ] Mutating Admission Webhook (предпочтительно).
-- [ ] Helm-templating вручную (временный быстрый путь).
+- [x] Helm-templating вручную (временный быстрый путь).
 
 Аннотации (пример):
 - [ ] `trusttunnel.inject: "true"`
@@ -82,13 +82,13 @@ Sidecar (`trusttunnel-agent`) должен:
 - [ ] Если `inject=true`:
   - [ ] добавить контейнер `trusttunnel-sidecar`;
   - [ ] добавить `volumes+mounts` для перечисленных ресурсов;
-  - [ ] добавить env: `LK_URL`, `CLUSTER_ID`, `POD_NAME`, `POD_NAMESPACE`, `NODE_NAME`, `LK_PUBLIC_KEY_PATH`.
+  - [x] добавить env: `LK_URL`, `CLUSTER_ID`, `POD_NAME`, `POD_NAMESPACE`, `NODE_NAME`, `LK_PUBLIC_KEY_PATH`.
 
 Acceptance:
 - [ ] Любой pod с `trusttunnel.inject=true` получает sidecar автоматически.
 
 Статус подзадач (2026-03-04):
-- `blocked`: отсутствует готовый webhook/controller слой для sidecar injection.
+- `in_progress`: Helm-injection path расширен (env + volumes/mounts для ConfigMap/Secret), mutating webhook/controller слой все еще отсутствует.
 
 ---
 

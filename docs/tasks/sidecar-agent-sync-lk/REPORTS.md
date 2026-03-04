@@ -16,6 +16,14 @@
 ## Журнал
 <!-- Добавляйте новые записи сверху -->
 
+- Дата/время: 2026-03-04 15:20 UTC
+  - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)` + `3) Injection`
+  - Статус: `in_progress`
+  - Что сделано: Helm deployment для classic расширен wiring’ом sidecar sync-ресурсов: добавлены значения `sidecar.sync.configMaps/secrets/secretKeys`, автоматические `volumes+volumeMounts` в `/etc/trusttunnel/configs/<name>` и `/etc/trusttunnel/secrets/<name>`, а также pod-context env (`CLUSTER_ID`, `POD_*`, `NODE_NAME`) и `TRUSTTUNNEL_*` env для file-sync протокола с LK.
+  - Что осталось: реализовать mutating webhook injector, чтобы sidecar/mount wiring назначались автоматически по аннотациям pod без ручного Helm-конфига.
+  - Блокеры/риски: текущий Helm-путь не валидирует имена ConfigMap/Secret на RFC1123 — некорректные имена приведут к ошибке рендера/применения манифеста.
+  - Ссылки: commit (текущая ветка)
+
 - Дата/время: 2026-03-04 13:25 UTC
   - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)`
   - Статус: `in_progress`

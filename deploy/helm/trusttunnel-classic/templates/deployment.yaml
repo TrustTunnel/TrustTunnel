@@ -89,16 +89,48 @@ spec:
           env:
             - name: LK_INTERNAL_BASE_URL
               value: {{ .Values.lkBaseUrl | quote }}
+            - name: LK_API_BASE_URL
+              value: {{ .Values.lkBaseUrl | quote }}
+            - name: CLUSTER_ID
+              value: {{ .Values.sidecar.clusterId | quote }}
             - name: NODE_ID
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
             - name: SYNC_INTERVAL_SECONDS
               value: {{ .Values.syncIntervalSeconds | quote }}
             - name: HEARTBEAT_INTERVAL_SECONDS
               value: {{ .Values.heartbeatIntervalSeconds | quote }}
+            - name: METRICS_PUSH_INTERVAL
+              value: {{ .Values.heartbeatIntervalSeconds | quote }}
             - name: CREDENTIALS_PATH
               value: {{ .Values.runtime.credentialsPath | quote }}
+            - name: TRUSTTUNNEL_CONFIGS_ROOT
+              value: "/etc/trusttunnel/configs"
+            - name: TRUSTTUNNEL_SECRETS_ROOT
+              value: "/etc/trusttunnel/secrets"
+            - name: TRUSTTUNNEL_SYNC_SECRET_KEYS
+              value: {{ join "," .Values.sidecar.sync.secretKeys | quote }}
             - name: TRUSTTUNNEL_RELOAD_MODE
               value: {{ .Values.runtime.trustTunnelReloadMode | quote }}
             - name: TRUSTTUNNEL_PID
@@ -112,7 +144,27 @@ spec:
           volumeMounts:
             - name: runtime
               mountPath: /runtime
+            {{- range .Values.sidecar.sync.configMaps }}
+            - name: configmap-{{ . }}
+              mountPath: /etc/trusttunnel/configs/{{ . }}
+              readOnly: true
+            {{- end }}
+            {{- range .Values.sidecar.sync.secrets }}
+            - name: secret-{{ . }}
+              mountPath: /etc/trusttunnel/secrets/{{ . }}
+              readOnly: true
+            {{- end }}
         {{- end }}
       volumes:
         - name: runtime
           emptyDir: {}
+        {{- range .Values.sidecar.sync.configMaps }}
+        - name: configmap-{{ . }}
+          configMap:
+            name: {{ . }}
+        {{- end }}
+        {{- range .Values.sidecar.sync.secrets }}
+        - name: secret-{{ . }}
+          secret:
+            secretName: {{ . }}
+        {{- end }}
