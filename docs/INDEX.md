@@ -15,3 +15,5 @@
 7. [Troubleshooting](TROUBLESHOOTING.md)
 8. [Compatibility / LK Integration Notes](LK_INTEGRATION.md)
 9. [Runbook: Classic Sidecar](RUNBOOK_CLASSIC_SIDECAR.md)
+10. [Task Plan: Sidecar Agent + Auto Sync + Ingress Constraints](tasks/sidecar-agent-sync-lk/README.md)
+
