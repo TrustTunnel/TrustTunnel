@@ -22,6 +22,11 @@ image:
   tag: sha-staging
 
 sidecar:
+  tokenSecretName: trusttunnel-sidecar-secret-staging
+  lk:
+    wsEndpoint: wss://lk-staging/api/nodes/ws
+  clientsConfigMap:
+    namespace: trusttunnel
   readiness:
     initialDelaySeconds: 4
     periodSeconds: 10
@@ -70,7 +75,6 @@ lkBaseUrl: https://lk-internal.staging.svc.cluster.local
 syncIntervalSeconds: 30
 heartbeatIntervalSeconds: 10
 
-existingSecretName: trusttunnel-sidecar-secret-staging
 networkPolicy:
   enabled: true
   lkNamespace: lk-internal-staging

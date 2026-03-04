@@ -18,6 +18,7 @@ spec:
         app.kubernetes.io/part-of: trusttunnel-classic
     spec:
       shareProcessNamespace: {{ .Values.sidecarEnabled }}
+      serviceAccountName: {{ .Values.sidecar.serviceAccountName | default (default .Chart.Name .Values.fullnameOverride) }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
@@ -83,10 +84,22 @@ spec:
             initialDelaySeconds: {{ .Values.sidecar.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.sidecar.liveness.periodSeconds }}
             failureThreshold: {{ .Values.sidecar.liveness.failureThreshold }}
-          envFrom:
-            - secretRef:
-                name: {{ .Values.existingSecretName }}
           env:
+            - name: INTERNAL_AGENT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sidecar.tokenSecretName }}
+                  key: {{ .Values.sidecar.tokenSecretKey }}
+            - name: LK_WS_ENDPOINT
+              value: {{ .Values.sidecar.lk.wsEndpoint | quote }}
+            - name: MAX_CLIENTS
+              value: {{ .Values.sidecar.maxClients | quote }}
+            - name: SIDECAR_CLIENTS_CONFIGMAP
+              value: {{ .Values.sidecar.clientsConfigMap.name | quote }}
+            - name: SIDECAR_CLIENTS_CONFIGMAP_NAMESPACE
+              value: {{ .Values.sidecar.clientsConfigMap.namespace | quote }}
+            - name: SIDECAR_CLIENTS_CONFIGMAP_KEY
+              value: {{ .Values.sidecar.clientsConfigMap.key | quote }}
             - name: LK_INTERNAL_BASE_URL
               value: {{ .Values.lkBaseUrl | quote }}
             - name: LK_API_BASE_URL

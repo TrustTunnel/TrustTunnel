@@ -1,6 +1,6 @@
 # TASK_TT_04 — Helm chart
 
-Status: active
+Status: done
 Priority: medium
 
 ## Sidecar external checklist requirement
@@ -36,3 +36,8 @@ Acceptance (обязательное):
 ## Acceptance criteria
 - helm install запускает sidecar с env и rbac
 
+## Progress
+- [x] Added sidecar chart values for `lk.wsEndpoint`, `tokenSecretName`, `tokenSecretKey`, `maxClients`.
+- [x] Added sidecar ConfigMap sync values (`clientsConfigMap.{name,namespace,key}`).
+- [x] Added ServiceAccount + Role + RoleBinding templates for ConfigMap permissions.
+- [x] Wired deployment env vars to new sidecar values and removed legacy `existingSecretName`.
