@@ -36,6 +36,11 @@ endpoint:
 
 sidecar:
   port: 9105
+  clusterId: "default-cluster"
+  sync:
+    configMaps: []
+    secrets: []
+    secretKeys: []
   readiness:
     initialDelaySeconds: 5
     periodSeconds: 10

@@ -119,14 +119,18 @@ Required sidecar env:
 - `INTERNAL_AGENT_TOKEN`
 - `NODE_ID`
 - `SYNC_INTERVAL_SECONDS` (default: `30`)
-- `HEARTBEAT_INTERVAL_SECONDS` (default: `10`)
+- `HEARTBEAT_INTERVAL_SECONDS` (legacy knob, currently not used by sidecar runtime loop)
+- `METRICS_PUSH_INTERVAL` (default: `30`)
 - `CREDENTIALS_PATH` (default: `/runtime/accounts.toml`)
 - `TRUSTTUNNEL_RELOAD_MODE` (default: `signal`)
 - `TRUSTTUNNEL_PID` (default: `1`)
 - `AGENT_PORT` (default: `9105`)
+- `LK_API_BASE_URL` (optional, fallback to `LK_INTERNAL_BASE_URL`)
+- `CLUSTER_ID`, `POD_NAME`, `POD_NAMESPACE`, `POD_UID`, `POD_IP`, `NODE_NAME` (pod context для register/heartbeat)
+- `TRUSTTUNNEL_CONFIGS_ROOT`, `TRUSTTUNNEL_SECRETS_ROOT`, `TRUSTTUNNEL_SYNC_SECRET_KEYS` (sync mounted ConfigMap/Secret в LK)
 
 Metrics semantics in sidecar:
-- heartbeat push runs on `HEARTBEAT_INTERVAL_SECONDS` cadence;
+- heartbeat push runs on `METRICS_PUSH_INTERVAL` cadence;
 - sidecar health probe checks `127.0.0.1:AGENT_PORT` before posting heartbeat;
 - if endpoint is down, sidecar reports `active_connections=0` and degraded status.
 
@@ -135,6 +139,12 @@ Kubernetes notes:
 - keep LK internal API reachable only inside private network;
 - enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
 - restart is not required for credentials update.
+
+
+Helm wiring для mounted sync-ресурсов:
+- `sidecar.sync.configMaps`: список ConfigMap names для mount в `/etc/trusttunnel/configs/<name>`;
+- `sidecar.sync.secrets`: список Secret names для mount в `/etc/trusttunnel/secrets/<name>`;
+- `sidecar.sync.secretKeys`: opt-in ключи, которые sidecar отправляет в `value_encrypted` поле payload.
 
 ### Production hardening checklist
 
