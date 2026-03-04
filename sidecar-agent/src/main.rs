@@ -231,11 +231,14 @@ async fn main() -> Result<()> {
         cfg.health_check_interval_seconds.max(1),
     ));
     let (resource_events_tx, mut resource_events_rx) = tokio::sync::mpsc::unbounded_channel();
-    let _resource_watcher = configure_resource_watcher(&cfg, resource_events_tx)?;
+    let mut resource_watcher = configure_resource_watcher(&cfg, resource_events_tx.clone())?;
 
     loop {
         tokio::select! {
             _ = sync_interval.tick() => {
+                if resource_watcher.is_none() {
+                    resource_watcher = configure_resource_watcher(&cfg, resource_events_tx.clone())?;
+                }
                 if let Err(e) = sync_once(&cfg, &client, &mut state).await {
                     state.last_sync_failed = true;
                     error!("credentials sync failed: {e:#}");
