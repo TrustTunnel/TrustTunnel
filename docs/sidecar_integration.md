@@ -53,3 +53,12 @@ Epic branch: `epic/sidecar-core`
    - `result` contains `akt_url`
    - checklist has done statuses
    - `artifacts/akt/*.json` created.
+
+## Helm deployment (sidecar core)
+- Chart: `deploy/helm/trusttunnel-classic`.
+- Sidecar values for epic:
+  - `sidecar.lk.wsEndpoint`
+  - `sidecar.tokenSecretName` + `sidecar.tokenSecretKey`
+  - `sidecar.maxClients`
+  - `sidecar.clientsConfigMap.{name,namespace,key}`
+- RBAC templates create `ServiceAccount`, `Role`, `RoleBinding` with ConfigMap read/write permissions when `sidecar.rbac.create=true`.

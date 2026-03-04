@@ -1,0 +1,11 @@
+{{- if and .Values.sidecarEnabled .Values.sidecar.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ default (printf "%s-sidecar" (default .Chart.Name .Values.fullnameOverride)) .Values.sidecar.rbac.roleName }}
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+{{- end }}
