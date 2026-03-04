@@ -42,6 +42,12 @@ struct Config {
     sync_secret_keys: Vec<String>,
     checklist_path: PathBuf,
     artifacts_root: PathBuf,
+    clients_export_path: PathBuf,
+    clients_configmap_name: Option<String>,
+    clients_configmap_namespace: String,
+    clients_configmap_key: String,
+    kube_api_url: String,
+    kube_token_path: PathBuf,
 }
 
 impl Config {
@@ -97,6 +103,24 @@ impl Config {
             artifacts_root: PathBuf::from(
                 std::env::var("SIDECAR_ARTIFACTS_ROOT")
                     .unwrap_or_else(|_| "artifacts/akt".to_string()),
+            ),
+            clients_export_path: PathBuf::from(
+                std::env::var("SIDECAR_CLIENTS_EXPORT_PATH")
+                    .unwrap_or_else(|_| "/tmp/clients.json".to_string()),
+            ),
+            clients_configmap_name: std::env::var("SIDECAR_CLIENTS_CONFIGMAP").ok(),
+            clients_configmap_namespace: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_NAMESPACE")
+                .unwrap_or_else(|_| std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string())),
+            clients_configmap_key: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_KEY")
+                .unwrap_or_else(|_| "clients.json".to_string()),
+            kube_api_url: std::env::var("KUBERNETES_SERVICE_HOST")
+                .map(|host| {
+                    let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_string());
+                    format!("https://{host}:{port}")
+                })
+                .unwrap_or_else(|_| "https://kubernetes.default.svc:443".to_string()),
+            kube_token_path: PathBuf::from(
+                std::env::var("KUBE_TOKEN_PATH").unwrap_or_else(|_| "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()),
             ),
         })
     }
@@ -725,6 +749,7 @@ async fn sync_once_with_retry(
                         .err()
                         .map(|e| format!("sync failed: {e}"));
                 } else {
+                    let _ = sync_clients_targets(cfg, client, &snapshot.credentials).await;
                     state.last_version = Some(snapshot.version);
                     state.last_checksum = Some(snapshot.checksum);
                     if let Some(store) = &mut state.checklist_store {
@@ -748,6 +773,66 @@ async fn sync_once_with_retry(
 
     post_sync_report(cfg, client, outcome).await?;
     sync_result
+}
+
+async fn sync_clients_targets(cfg: &Config, client: &reqwest::Client, credentials: &[Credential]) -> Result<()> {
+    write_clients_export_file(&cfg.clients_export_path, credentials)?;
+    if let Some(configmap_name) = &cfg.clients_configmap_name {
+        sync_clients_configmap(cfg, client, configmap_name, credentials).await?;
+    }
+    Ok(())
+}
+
+fn write_clients_export_file(path: &Path, credentials: &[Credential]) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(credentials)?)?;
+    Ok(())
+}
+
+async fn sync_clients_configmap(
+    cfg: &Config,
+    client: &reqwest::Client,
+    configmap_name: &str,
+    credentials: &[Credential],
+) -> Result<()> {
+    let token = std::fs::read_to_string(&cfg.kube_token_path)
+        .map(|x| x.trim().to_string())
+        .context("read kube token")?;
+    let clients_json = serde_json::to_string_pretty(credentials)?;
+    let url = format!(
+        "{}/api/v1/namespaces/{}/configmaps/{}",
+        cfg.kube_api_url, cfg.clients_configmap_namespace, configmap_name
+    );
+
+    for attempt in 0..3 {
+        let patch_body = serde_json::json!({
+            "data": {
+                cfg.clients_configmap_key.clone(): clients_json,
+            }
+        });
+        let resp = client
+            .patch(&url)
+            .bearer_auth(&token)
+            .header("Content-Type", "application/merge-patch+json")
+            .json(&patch_body)
+            .send()
+            .await?;
+
+        if resp.status().is_success() {
+            return Ok(());
+        }
+
+        if resp.status().as_u16() == 409 && attempt < 2 {
+            tokio::time::sleep(Duration::from_millis(200 * (attempt + 1) as u64)).await;
+            continue;
+        }
+
+        anyhow::bail!("configmap sync rejected: {}", resp.status());
+    }
+
+    anyhow::bail!("configmap sync conflict retry exhausted")
 }
 
 async fn fetch_snapshot_with_retry(
@@ -1167,7 +1252,7 @@ mod tests {
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
         Config {
             lk_internal_base_url: base_url.clone(),
-            lk_api_base_url: base_url,
+            lk_api_base_url: base_url.clone(),
             internal_agent_token: "token".to_string(),
             node_id: "node-1".to_string(),
             sync_interval_seconds: 60,
@@ -1187,6 +1272,12 @@ mod tests {
             sync_secret_keys: Vec::new(),
             checklist_path: std::env::temp_dir().join("trusttunnel-checklist.json"),
             artifacts_root: std::env::temp_dir().join("trusttunnel-artifacts"),
+            clients_export_path: std::env::temp_dir().join("trusttunnel-clients.json"),
+            clients_configmap_name: None,
+            clients_configmap_namespace: "default".to_string(),
+            clients_configmap_key: "clients.json".to_string(),
+            kube_api_url: base_url,
+            kube_token_path: std::env::temp_dir().join("trusttunnel-kube-token"),
         }
     }
 
@@ -1504,4 +1595,54 @@ mod tests {
         .expect("write");
         assert_eq!(count_clients_from_credentials_file(&file), 2);
     }
+
+    #[test]
+    fn writes_clients_export_file_as_json() {
+        let path = std::env::temp_dir().join("trusttunnel-clients-export.json");
+        let creds = vec![Credential {
+            username: "alice".to_string(),
+            password: "pw".to_string(),
+        }];
+
+        write_clients_export_file(&path, &creds).expect("write clients export");
+        let raw = std::fs::read_to_string(&path).expect("read export");
+        assert!(raw.contains("alice"));
+    }
+
+    #[tokio::test]
+    async fn syncs_clients_configmap_using_patch() {
+        let server = MockServer::start_async().await;
+        let mut cfg = test_config(
+            server.base_url(),
+            std::env::temp_dir().join("trusttunnel-test-cm.toml"),
+        );
+        cfg.clients_configmap_name = Some("clients-cm".to_string());
+        cfg.kube_token_path = std::env::temp_dir().join("trusttunnel-kube-token-sync");
+        std::fs::write(&cfg.kube_token_path, "kube-token").expect("token write");
+
+        let patch_mock = server
+            .mock_async(|when, then| {
+                when.method("PATCH")
+                    .path("/api/v1/namespaces/default/configmaps/clients-cm")
+                    .header("authorization", "Bearer kube-token");
+                then.status(200).json_body(json!({"ok": true}));
+            })
+            .await;
+
+        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        sync_clients_configmap(
+            &cfg,
+            &client,
+            "clients-cm",
+            &[Credential {
+                username: "u1".to_string(),
+                password: "p1".to_string(),
+            }],
+        )
+        .await
+        .expect("configmap sync");
+
+        patch_mock.assert_async().await;
+    }
+
 }

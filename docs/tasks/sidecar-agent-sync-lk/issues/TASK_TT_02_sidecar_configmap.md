@@ -1,6 +1,6 @@
 # TASK_TT_02 — ConfigMap sync
 
-Status: in_progress
+Status: done
 Priority: high
 
 ## Sidecar external checklist requirement
@@ -44,4 +44,4 @@ Acceptance (обязательное):
 ## Progress
 - [x] Added local `/tmp/clients.json` sync stub for dev mode.
 - [x] Heartbeat reports dynamic `clients_count` from clients payload.
-- [ ] Add native Kubernetes ConfigMap API writer with conflict handling.
+- [x] Add native Kubernetes ConfigMap API writer with conflict handling.
