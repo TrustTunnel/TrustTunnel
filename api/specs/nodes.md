@@ -13,18 +13,48 @@ ____________________________________________________________________
 
 # Nodes API spec
 
-## WebSocket messages
-- `register` — sidecar registration payload.
-- `heartbeat` — periodic node stats (`clients_count`, `checklist_url`, `akt_url`).
-- `command` — LK -> sidecar command dispatch.
-- `ack` — immediate sidecar acknowledgement for command receive.
-- `result` — command execution result with optional `akt_url`.
-- `checklist_update` — current checklist state sync.
-- `log` — live text log frame for admin console.
+## WebSocket transport
+Endpoint: `wss://lk/api/nodes/ws?node_id={node_id}&token={token}`
+
+### Message: `register` (sidecar -> LK)
+```json
+{"kind":"register","payload":{"node_id":"node-1","fingerprint":"fp","ingress_ip":"10.0.0.12","max_clients":250}}
+```
+
+### Message: `heartbeat` (sidecar -> LK)
+```json
+{"kind":"heartbeat","payload":{"node_id":"node-1","clients_count":12,"status":"online","checklist_url":"file:///tmp/checklist.json","akt_url":"file:///artifacts/akt/cmd-1-node-1-1730000000.json"}}
+```
+
+### Message: `command` (LK -> sidecar)
+```json
+{"kind":"command","command_id":"cmd-1","type":"apply_configmap","payload":{"force":true}}
+```
+
+### Message: `ack` (sidecar -> LK)
+```json
+{"kind":"ack","command_id":"cmd-1","status":"accepted"}
+```
+
+### Message: `result` (sidecar -> LK)
+```json
+{"kind":"result","command_id":"cmd-1","status":"done","akt_url":"file:///artifacts/akt/cmd-1-node-1-1730000000.json","details":{"note":"command executed"}}
+```
+
+### Message: `checklist_update` (sidecar -> LK)
+```json
+{"kind":"checklist_update","payload":{"checklist":[{"id":"sync-configmap","status":"done"}],"akt":{"summary":"..."}}}
+```
+
+### Message: `log` (sidecar -> LK)
+```json
+{"kind":"log","payload":{"level":"info","message":"apply_configmap started"}}
+```
 
 ## REST endpoints
-- `POST /api/nodes/register`
-- `POST /api/nodes/heartbeat`
-- `POST /api/nodes/configsync`
-- `POST /api/nodes/{id}/command`
-- `GET /api/nodes/{id}/checklist`
+- `POST /api/nodes/register` — fallback registration when WS unavailable.
+- `POST /api/nodes/heartbeat` — fallback heartbeat endpoint.
+- `POST /api/nodes/configsync` — accept generated clients/config status.
+- `POST /api/nodes/{id}/command` — enqueue command for node.
+- `GET /api/nodes/{id}/command` — inspect latest command state.
+- `GET /api/nodes/{id}/checklist` — fetch current checklist + akt URL/content metadata.

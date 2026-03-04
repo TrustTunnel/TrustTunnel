@@ -1,6 +1,6 @@
 # TASK_TT_02 — ConfigMap sync
 
-Status: active
+Status: in_progress
 Priority: high
 
 ## Sidecar external checklist requirement
@@ -39,3 +39,9 @@ Acceptance (обязательное):
 - sidecar может обновлять ConfigMap в namespace
 - LK показывает clients used/max
 
+
+
+## Progress
+- [x] Added local `/tmp/clients.json` sync stub for dev mode.
+- [x] Heartbeat reports dynamic `clients_count` from clients payload.
+- [ ] Add native Kubernetes ConfigMap API writer with conflict handling.

@@ -1,6 +1,6 @@
 # TASK_TT_03 — Akt writer + storage
 
-Status: active
+Status: done
 Priority: medium
 
 ## Sidecar external checklist requirement
@@ -37,3 +37,11 @@ Acceptance (обязательное):
 ## Acceptance criteria
 - актработа доступен по ссылке из LK
 
+
+
+## Progress
+- [x] Extracted akt writer flow into reusable sidecar methods.
+- [x] Store both human-readable (`.txt`) and JSON (`.json`) reports.
+- [x] Return and publish `akt_url` in command result and heartbeat.
+
+akt_url: file://artifacts/akt/<command_id>-<node>-<timestamp>.json
