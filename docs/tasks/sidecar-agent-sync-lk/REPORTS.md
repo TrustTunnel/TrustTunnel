@@ -16,6 +16,14 @@
 ## Журнал
 <!-- Добавляйте новые записи сверху -->
 
+- Дата/время: 2026-03-04 13:25 UTC
+  - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)`
+  - Статус: `in_progress`
+  - Что сделано: добавлен inotify-триггер в `sidecar-agent` для mounted `configs/secrets` путей (`/etc/trusttunnel/configs`, `/etc/trusttunnel/secrets`) — при файловых событиях запускается внеочередной sync в LK, при этом сохраняется dedup по checksum.
+  - Что осталось: завершить injector wiring (automated volumes+mounts) и внедрить шифрование opt-in secret keys в `value_encrypted`.
+  - Блокеры/риски: inotify watcher активируется только для существующих директорий на старте sidecar; при позднем появлении mount-точек нужен отдельный re-watch цикл или рестарт контейнера.
+  - Ссылки: commit (текущая ветка)
+
 - Дата/время: 2026-03-04 12:40 UTC
   - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)` + `4) Протокол с LK`
   - Статус: `in_progress`

@@ -55,10 +55,10 @@ Sidecar (`trusttunnel-agent`) должен:
 - [ ] Sidecar читает файлы из:
   - [ ] `/etc/trusttunnel/configs/<name>/...`
   - [ ] `/etc/trusttunnel/secrets/<name>/...`
-- [ ] Отслеживание изменений через `inotify/fsnotify` по файловой системе.
+- [x] Отслеживание изменений через `inotify/fsnotify` по файловой системе.
 
 Статус подзадач (2026-03-04):
-- `in_progress`: sidecar читает mounted files из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets` и отправляет payload в LK; остаётся перейти с polling на fsnotify/inotify и завершить injector mount wiring.
+- `in_progress`: sidecar читает mounted files из `/etc/trusttunnel/configs` и `/etc/trusttunnel/secrets`, отправляет payload в LK и триггерит sync по inotify-событиям; остаётся завершить injector mount wiring.
 
 (Опционально позже) Вариант B:
 - [ ] Sidecar смотрит K8s API (watch). Требует RBAC. **Не делать на первом этапе без необходимости.**
