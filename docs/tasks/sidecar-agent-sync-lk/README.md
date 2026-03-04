@@ -94,8 +94,8 @@ Acceptance:
 
 ## [ ] 4) Протокол с LK
 - [ ] Регистрация:
-  - [ ] `POST /api/trusttunnel/nodes/register`
-  - [ ] получить `node_id` и `node_token`
+  - [x] `POST /api/trusttunnel/nodes/register`
+  - [x] получить `node_id` и `node_token`
 - [ ] Отправка конфигов:
   - [ ] `POST /api/trusttunnel/nodes/:id/configs`
   - [ ] `configs`: список файлов (`path`, `content`, `checksum`)
@@ -103,10 +103,10 @@ Acceptance:
   - [ ] По умолчанию: только masked meta (`keys_count`, `checksum`)
   - [ ] Opt-in: только указанные `secret-keys` шифруются LK public key и отправляются как `value_encrypted`
 - [ ] Heartbeat:
-- [ ] `POST /api/trusttunnel/nodes/:id/heartbeat` каждые 30s (или вместе с configs)
+- [x] `POST /api/trusttunnel/nodes/:id/heartbeat` каждые 30s (или вместе с configs)
 
 Статус подзадач (2026-03-04):
-- `in_progress`: есть внутренние sync-report/metrics endpoint-ы; требуются register/configs/secrets/heartbeat по целевому контракту.
+- `in_progress`: добавлены register + heartbeat по целевому контракту; требуется реализация payload для configs/secrets endpoint-ов.
 
 ---
 

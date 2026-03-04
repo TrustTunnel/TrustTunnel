@@ -14,6 +14,7 @@ use tokio::net::TcpStream;
 #[derive(Clone)]
 struct Config {
     lk_internal_base_url: String,
+    lk_api_base_url: String,
     internal_agent_token: String,
     node_id: String,
     sync_interval_seconds: u64,
@@ -22,12 +23,20 @@ struct Config {
     trusttunnel_health_addr: String,
     health_check_interval_seconds: u64,
     metrics_push_interval: u64,
+    cluster_id: String,
+    pod_name: String,
+    pod_namespace: String,
+    node_name: String,
+    pod_uid: String,
+    pod_ip: String,
 }
 
 impl Config {
     fn from_env() -> Result<Self> {
         Ok(Self {
             lk_internal_base_url: std::env::var("LK_INTERNAL_BASE_URL")?,
+            lk_api_base_url: std::env::var("LK_API_BASE_URL")
+                .or_else(|_| std::env::var("LK_INTERNAL_BASE_URL"))?,
             internal_agent_token: std::env::var("INTERNAL_AGENT_TOKEN")?,
             node_id: std::env::var("NODE_ID")?,
             sync_interval_seconds: std::env::var("SYNC_INTERVAL_SECONDS")
@@ -47,8 +56,30 @@ impl Config {
             metrics_push_interval: std::env::var("METRICS_PUSH_INTERVAL")
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()?,
+            cluster_id: std::env::var("CLUSTER_ID").unwrap_or_else(|_| "unknown".to_string()),
+            pod_name: std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string()),
+            pod_namespace: std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string()),
+            node_name: std::env::var("NODE_NAME").unwrap_or_else(|_| "unknown".to_string()),
+            pod_uid: std::env::var("POD_UID").unwrap_or_else(|_| "unknown".to_string()),
+            pod_ip: std::env::var("POD_IP").unwrap_or_else(|_| "0.0.0.0".to_string()),
         })
     }
+}
+
+#[derive(Serialize)]
+struct RegisterRequest<'a> {
+    cluster_id: &'a str,
+    node_name: &'a str,
+    pod_name: &'a str,
+    pod_namespace: &'a str,
+    pod_uid: &'a str,
+    pod_ip: &'a str,
+}
+
+#[derive(Deserialize)]
+struct RegisterResponse {
+    node_id: String,
+    node_token: String,
 }
 
 #[derive(Deserialize)]
@@ -95,6 +126,23 @@ struct MetricsPayload<'a> {
 }
 
 #[derive(Serialize)]
+struct HeartbeatPayload<'a> {
+    status: &'a str,
+    last_seen: String,
+    health: HeartbeatHealth<'a>,
+}
+
+#[derive(Serialize)]
+struct HeartbeatHealth<'a> {
+    pod_name: &'a str,
+    pod_namespace: &'a str,
+    node_name: &'a str,
+    pod_ip: &'a str,
+    sync_failed: bool,
+    endpoint_healthy: bool,
+}
+
+#[derive(Serialize)]
 struct CredentialsFile {
     client: Vec<Credential>,
 }
@@ -106,6 +154,8 @@ struct AgentState {
     last_network_total: Option<u64>,
     last_sync_failed: bool,
     last_health_ok: bool,
+    registered_node_id: Option<String>,
+    node_token: Option<String>,
 }
 
 #[tokio::main]
@@ -138,6 +188,9 @@ async fn main() -> Result<()> {
                 if let Err(e) = push_metrics(&cfg, &client, &mut state).await {
                     warn!("metrics push failed: {e:#}");
                 }
+                if let Err(e) = push_heartbeat(&cfg, &client, &mut state).await {
+                    warn!("heartbeat push failed: {e:#}");
+                }
             }
             _ = health_check_interval.tick() => {
                 state.last_health_ok = check_health(&cfg.trusttunnel_health_addr).await;
@@ -155,7 +208,45 @@ async fn check_health(health_addr: &str) -> bool {
 }
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
+    ensure_registration(cfg, client, state).await?;
     sync_once_with_retry(cfg, client, state, 5, Duration::from_secs(1)).await
+}
+
+async fn ensure_registration(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: &mut AgentState,
+) -> Result<()> {
+    if state.registered_node_id.is_some() && state.node_token.is_some() {
+        return Ok(());
+    }
+
+    let url = format!("{}/api/trusttunnel/nodes/register", cfg.lk_api_base_url);
+    let payload = RegisterRequest {
+        cluster_id: &cfg.cluster_id,
+        node_name: &cfg.node_name,
+        pod_name: &cfg.pod_name,
+        pod_namespace: &cfg.pod_namespace,
+        pod_uid: &cfg.pod_uid,
+        pod_ip: &cfg.pod_ip,
+    };
+
+    let resp = client
+        .post(url)
+        .bearer_auth(&cfg.internal_agent_token)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("registration rejected: {}", resp.status());
+    }
+
+    let register_response: RegisterResponse = resp.json().await?;
+    state.registered_node_id = Some(register_response.node_id);
+    state.node_token = Some(register_response.node_token);
+    info!("node registration completed");
+    Ok(())
 }
 
 async fn sync_once_with_retry(
@@ -496,6 +587,57 @@ async fn push_metrics(
     Ok(())
 }
 
+async fn push_heartbeat(
+    cfg: &Config,
+    client: &reqwest::Client,
+    state: &mut AgentState,
+) -> Result<()> {
+    ensure_registration(cfg, client, state).await?;
+
+    let node_id = state
+        .registered_node_id
+        .as_deref()
+        .context("registered node id missing")?;
+    let node_token = state
+        .node_token
+        .as_deref()
+        .context("registered node token missing")?;
+
+    let payload = HeartbeatPayload {
+        status: if state.last_sync_failed || !state.last_health_ok {
+            "degraded"
+        } else {
+            "ok"
+        },
+        last_seen: Utc::now().to_rfc3339(),
+        health: HeartbeatHealth {
+            pod_name: &cfg.pod_name,
+            pod_namespace: &cfg.pod_namespace,
+            node_name: &cfg.node_name,
+            pod_ip: &cfg.pod_ip,
+            sync_failed: state.last_sync_failed,
+            endpoint_healthy: state.last_health_ok,
+        },
+    };
+
+    let url = format!(
+        "{}/api/trusttunnel/nodes/{}/heartbeat",
+        cfg.lk_api_base_url, node_id
+    );
+    let resp = client
+        .post(url)
+        .bearer_auth(node_token)
+        .json(&payload)
+        .send()
+        .await?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!("heartbeat push rejected: {}", resp.status());
+    }
+
+    Ok(())
+}
+
 fn read_memory_usage_percent() -> Result<f64> {
     let text = std::fs::read_to_string("/proc/meminfo")?;
     let mut values = HashMap::new();
@@ -564,6 +706,7 @@ mod tests {
     fn test_config(base_url: String, credentials_path: PathBuf) -> Config {
         Config {
             lk_internal_base_url: base_url,
+            lk_api_base_url: base_url,
             internal_agent_token: "token".to_string(),
             node_id: "node-1".to_string(),
             sync_interval_seconds: 60,
@@ -572,6 +715,12 @@ mod tests {
             trusttunnel_health_addr: "localhost:443".to_string(),
             health_check_interval_seconds: 15,
             metrics_push_interval: 30,
+            cluster_id: "cluster-a".to_string(),
+            pod_name: "pod-1".to_string(),
+            pod_namespace: "default".to_string(),
+            node_name: "node-a".to_string(),
+            pod_uid: "pod-uid".to_string(),
+            pod_ip: "10.10.0.11".to_string(),
         }
     }
 
@@ -705,6 +854,48 @@ mod tests {
 
         assert!(result.is_ok());
         success_report.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn registers_once_and_pushes_heartbeat_with_node_token() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-heartbeat.toml");
+        let cfg = test_config(server.base_url(), credentials_path);
+        let client = reqwest::Client::new();
+        let mut state = AgentState {
+            last_sync_failed: false,
+            last_health_ok: true,
+            ..Default::default()
+        };
+
+        let register_mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/api/trusttunnel/nodes/register")
+                    .header("authorization", "Bearer token");
+                then.status(200).json_body(json!({
+                    "node_id": "registered-node",
+                    "node_token": "registered-token"
+                }));
+            })
+            .await;
+
+        let heartbeat_mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/api/trusttunnel/nodes/registered-node/heartbeat")
+                    .header("authorization", "Bearer registered-token")
+                    .json_body_partial(json!({ "status": "ok" }).to_string());
+                then.status(200);
+            })
+            .await;
+
+        push_heartbeat(&cfg, &client, &mut state)
+            .await
+            .expect("heartbeat push should succeed");
+
+        register_mock.assert_async().await;
+        heartbeat_mock.assert_async().await;
     }
 
     #[test]

@@ -8,6 +8,7 @@ Sidecar service for Classic mode nodes.
 - Atomically update credentials file (`[[client]]` TOML format).
 - Trigger TrustTunnel reload via POSIX signal.
 - Push sync status and lightweight node metrics back to LK.
+- Register in LK (`/api/trusttunnel/nodes/register`) and send heartbeat updates (`/api/trusttunnel/nodes/:id/heartbeat`).
 
 ## Metrics and health semantics
 
@@ -24,3 +25,6 @@ cargo run -p trusttunnel_sidecar_agent
 ```
 
 Required environment variables are documented in `docs/DEPLOYMENT.md`.
+
+
+Additional optional env vars for LK registration/heartbeat: `LK_API_BASE_URL`, `CLUSTER_ID`, `POD_NAME`, `POD_NAMESPACE`, `NODE_NAME`, `POD_UID`, `POD_IP`.
