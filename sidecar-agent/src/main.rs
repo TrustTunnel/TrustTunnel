@@ -40,6 +40,8 @@ struct Config {
     configs_root: PathBuf,
     secrets_root: PathBuf,
     sync_secret_keys: Vec<String>,
+    checklist_path: PathBuf,
+    artifacts_root: PathBuf,
 }
 
 impl Config {
@@ -88,6 +90,14 @@ impl Config {
                 .filter(|x| !x.is_empty())
                 .map(ToString::to_string)
                 .collect(),
+            checklist_path: PathBuf::from(
+                std::env::var("SIDECAR_CHECKLIST_PATH")
+                    .unwrap_or_else(|_| "/tmp/trusttunnel-sidecar-checklist.json".to_string()),
+            ),
+            artifacts_root: PathBuf::from(
+                std::env::var("SIDECAR_ARTIFACTS_ROOT")
+                    .unwrap_or_else(|_| "artifacts/akt".to_string()),
+            ),
         })
     }
 }
@@ -156,6 +166,9 @@ struct HeartbeatPayload<'a> {
     status: &'a str,
     last_seen: String,
     health: HeartbeatHealth<'a>,
+    clients_count: usize,
+    checklist_url: Option<String>,
+    akt_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -168,7 +181,7 @@ struct HeartbeatHealth<'a> {
     endpoint_healthy: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct CredentialsFile {
     client: Vec<Credential>,
 }
@@ -213,6 +226,128 @@ struct AgentState {
     registered_node_id: Option<String>,
     node_token: Option<String>,
     last_files_checksum: Option<String>,
+    checklist_store: Option<ChecklistStore>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ChecklistTask {
+    id: String,
+    title: String,
+    status: String,
+    done_at: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct AktReport {
+    generated_at: String,
+    tasks_completed: Vec<String>,
+    summary: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct ChecklistDocument {
+    checklist: Vec<ChecklistTask>,
+    akt: Option<AktReport>,
+}
+
+#[derive(Default, Clone)]
+struct ChecklistStore {
+    checklist_url: Option<String>,
+    akt_url: Option<String>,
+}
+
+impl ChecklistStore {
+    fn init(cfg: &Config) -> Result<Self> {
+        let doc = ChecklistDocument {
+            checklist: vec![
+                ChecklistTask {
+                    id: "register-node".to_string(),
+                    title: "Register node in LK".to_string(),
+                    status: "pending".to_string(),
+                    done_at: None,
+                },
+                ChecklistTask {
+                    id: "sync-configmap".to_string(),
+                    title: "Sync ConfigMap".to_string(),
+                    status: "pending".to_string(),
+                    done_at: None,
+                },
+                ChecklistTask {
+                    id: "send-heartbeat".to_string(),
+                    title: "Send heartbeat".to_string(),
+                    status: "pending".to_string(),
+                    done_at: None,
+                },
+            ],
+            akt: None,
+        };
+
+        write_json_pretty(&cfg.checklist_path, &doc)?;
+        Ok(Self {
+            checklist_url: Some(format!("file://{}", cfg.checklist_path.display())),
+            akt_url: None,
+        })
+    }
+
+    fn mark_done(&mut self, cfg: &Config, task_id: &str, command_id: &str) -> Result<()> {
+        let text = std::fs::read_to_string(&cfg.checklist_path)?;
+        let mut doc: ChecklistDocument = serde_json::from_str(&text)?;
+        for task in &mut doc.checklist {
+            if task.id == task_id {
+                task.status = "done".to_string();
+                task.done_at = Some(Utc::now().to_rfc3339());
+            }
+        }
+        let completed = doc
+            .checklist
+            .iter()
+            .filter(|t| t.status == "done")
+            .map(|t| t.id.clone())
+            .collect::<Vec<_>>();
+        let akt = AktReport {
+            generated_at: Utc::now().to_rfc3339(),
+            tasks_completed: completed,
+            summary: format!("Checklist progress updated after {task_id}"),
+        };
+        doc.akt = Some(akt);
+        write_json_pretty(&cfg.checklist_path, &doc)?;
+        self.akt_url = Some(write_akt_artifact(cfg, command_id, &doc)?);
+        Ok(())
+    }
+}
+
+fn write_json_pretty<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(value)?)?;
+    Ok(())
+}
+
+fn write_akt_artifact(cfg: &Config, command_id: &str, doc: &ChecklistDocument) -> Result<String> {
+    std::fs::create_dir_all(&cfg.artifacts_root)?;
+    let ts = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+    let file_name = format!("{command_id}-{}-{ts}.json", cfg.node_id);
+    let path = cfg.artifacts_root.join(file_name);
+    std::fs::write(&path, serde_json::to_string_pretty(doc)?)?;
+    let human_name = path.with_extension("txt");
+    let summary = doc
+        .checklist
+        .iter()
+        .map(|t| {
+            format!(
+                "- [{}] {}",
+                if t.status == "done" { "x" } else { " " },
+                t.title
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(
+        &human_name,
+        format!("актработа for node {}\n{}\n", cfg.node_id, summary),
+    )?;
+    Ok(format!("file://{}", path.display()))
 }
 
 #[tokio::main]
@@ -224,6 +359,7 @@ async fn main() -> Result<()> {
         .build()?;
 
     let mut state = AgentState::default();
+    state.checklist_store = Some(ChecklistStore::init(&cfg)?);
     let mut sync_interval = tokio::time::interval(Duration::from_secs(cfg.sync_interval_seconds));
     let mut metrics_interval =
         tokio::time::interval(Duration::from_secs(cfg.metrics_push_interval.max(10)));
@@ -542,6 +678,9 @@ async fn ensure_registration(
     let register_response: RegisterResponse = resp.json().await?;
     state.registered_node_id = Some(register_response.node_id);
     state.node_token = Some(register_response.node_token);
+    if let Some(store) = &mut state.checklist_store {
+        let _ = store.mark_done(cfg, "register-node", "register");
+    }
     info!("node registration completed");
     Ok(())
 }
@@ -588,6 +727,9 @@ async fn sync_once_with_retry(
                 } else {
                     state.last_version = Some(snapshot.version);
                     state.last_checksum = Some(snapshot.checksum);
+                    if let Some(store) = &mut state.checklist_store {
+                        let _ = store.mark_done(cfg, "sync-configmap", "sync-configmap");
+                    }
                 }
 
                 (outcome, sync_result)
@@ -915,6 +1057,15 @@ async fn push_heartbeat(
             sync_failed: state.last_sync_failed,
             endpoint_healthy: state.last_health_ok,
         },
+        clients_count: count_clients_from_credentials_file(&cfg.credentials_path),
+        checklist_url: state
+            .checklist_store
+            .as_ref()
+            .and_then(|store| store.checklist_url.clone()),
+        akt_url: state
+            .checklist_store
+            .as_ref()
+            .and_then(|store| store.akt_url.clone()),
     };
 
     let url = format!(
@@ -932,7 +1083,20 @@ async fn push_heartbeat(
         anyhow::bail!("heartbeat push rejected: {}", resp.status());
     }
 
+    if let Some(store) = &mut state.checklist_store {
+        let _ = store.mark_done(cfg, "send-heartbeat", "heartbeat");
+    }
+
     Ok(())
+}
+
+fn count_clients_from_credentials_file(path: &Path) -> usize {
+    match std::fs::read_to_string(path) {
+        Ok(content) => toml::from_str::<CredentialsFile>(&content)
+            .map(|f| f.client.len())
+            .unwrap_or(0),
+        Err(_) => 0,
+    }
 }
 
 fn read_memory_usage_percent() -> Result<f64> {
@@ -1021,6 +1185,8 @@ mod tests {
             configs_root: std::env::temp_dir().join("trusttunnel-configs"),
             secrets_root: std::env::temp_dir().join("trusttunnel-secrets"),
             sync_secret_keys: Vec::new(),
+            checklist_path: std::env::temp_dir().join("trusttunnel-checklist.json"),
+            artifacts_root: std::env::temp_dir().join("trusttunnel-artifacts"),
         }
     }
 
@@ -1046,6 +1212,7 @@ mod tests {
             .build()
             .expect("client");
         let mut state = AgentState::default();
+        state.checklist_store = ChecklistStore::init(&cfg).ok();
 
         let _snapshot = server
             .mock_async(|when, then| {
@@ -1081,6 +1248,7 @@ mod tests {
             .build()
             .expect("client");
         let mut state = AgentState::default();
+        state.checklist_store = ChecklistStore::init(&cfg).ok();
 
         let credentials = vec![Credential {
             username: "alice".to_string(),
@@ -1177,6 +1345,7 @@ mod tests {
         let mut state = AgentState {
             last_sync_failed: false,
             last_health_ok: true,
+            checklist_store: ChecklistStore::init(&cfg).ok(),
             ..Default::default()
         };
 
@@ -1311,5 +1480,28 @@ mod tests {
                 "sync_parent_dir"
             ]
         );
+    }
+    #[test]
+    fn checklist_store_initializes_and_writes_file() {
+        let cfg = test_config(
+            "http://localhost".to_string(),
+            std::env::temp_dir().join("cred-a.toml"),
+        );
+        let _ = std::fs::remove_file(&cfg.checklist_path);
+        let store = ChecklistStore::init(&cfg).expect("init checklist");
+        assert!(store.checklist_url.is_some());
+        let raw = std::fs::read_to_string(&cfg.checklist_path).expect("checklist file");
+        assert!(raw.contains("register-node"));
+    }
+
+    #[test]
+    fn counts_clients_from_toml_credentials() {
+        let file = std::env::temp_dir().join("trusttunnel-clients-count.toml");
+        std::fs::write(
+            &file,
+            "[[client]]\nusername='a'\npassword='1'\n[[client]]\nusername='b'\npassword='2'\n",
+        )
+        .expect("write");
+        assert_eq!(count_clients_from_credentials_file(&file), 2);
     }
 }
