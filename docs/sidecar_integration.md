@@ -36,9 +36,10 @@ Epic branch: `epic/sidecar-core`
   - path: `artifacts/akt/{command_id}-{node}-{ts}.json`
 
 ### ConfigMap/dev sync behavior
-- Dev mode writes generated clients into local file `/tmp/clients.json`.
-- `clients_count` is derived from that file and sent in heartbeat.
-- This is a stub for future k8s ConfigMap writer.
+- Dev mode writes generated clients into local file `/tmp/clients.json` (override with `SIDECAR_CLIENTS_EXPORT_PATH`).
+- Optional native k8s sync updates a ConfigMap via Kubernetes API when `SIDECAR_CLIENTS_CONFIGMAP` is set.
+- ConfigMap sync uses merge-patch with retry on HTTP `409` conflicts.
+- `clients_count` is derived from synced credentials payload and reported in heartbeat.
 
 ## Manual smoke test
 1. Set env:
