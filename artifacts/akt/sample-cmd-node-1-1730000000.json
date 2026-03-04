@@ -1,0 +1,12 @@
+{
+  "generated_at": "2026-01-01T12:00:00Z",
+  "command_id": "sample-cmd",
+  "command_type": "apply_configmap",
+  "node_id": "node-1",
+  "tasks_completed": [
+    {"id": "sync-configmap", "status": "done"},
+    {"id": "clients-sync", "status": "done"},
+    {"id": "command-execute", "status": "done"}
+  ],
+  "summary": "Command sample-cmd executed on node node-1"
+}

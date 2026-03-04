@@ -13,12 +13,42 @@ ____________________________________________________________________
 
 # Sidecar integration notes
 
-Current implementation for epic `epic/sidecar-core` in this repo covers TASK_TT_01 baseline:
-- bootstrap checklist creation at sidecar startup;
-- local akt artifact writer (`artifacts/akt/*.json` + `.txt`);
-- heartbeat now includes `clients_count`, `checklist_url`, `akt_url`.
+Epic branch: `epic/sidecar-core`
 
-Pending for follow-up tasks:
-- WS command bus (`command/ack/result` realtime loop);
-- ConfigMap k8s API writer (currently local file-backed path);
-- Helm/RBAC and CI smoke scenarios.
+## Implemented baseline chain
+`register -> heartbeat -> command ack/result -> local clients sync stub -> akt artifact`
+
+### Sidecar runtime (TT)
+- WS client with reconnect: `wss://lk/api/nodes/ws?node_id=...&token=...`.
+- Register message on connect.
+- Heartbeat every 30s includes:
+  - `clients_count`
+  - `checklist_url`
+  - `akt_url`
+- Command handling:
+  - idempotency by `command_id`
+  - immediate `ack`
+  - command result with `akt_url`
+- External checklist file is initialized with pending tasks and updated to done.
+- Akt writer stores:
+  - human report (`.txt`)
+  - JSON report (`.json`)
+  - path: `artifacts/akt/{command_id}-{node}-{ts}.json`
+
+### ConfigMap/dev sync behavior
+- Dev mode writes generated clients into local file `/tmp/clients.json`.
+- `clients_count` is derived from that file and sent in heartbeat.
+- This is a stub for future k8s ConfigMap writer.
+
+## Manual smoke test
+1. Set env:
+   - `NODE_ID=node-1`
+   - `LK_TOKEN=test-token`
+   - `LK_WS_ENDPOINT=ws://localhost:8080/api/nodes/ws`
+2. Run sidecar.
+3. Send `command` frame from mock LK.
+4. Verify:
+   - `ack` arrives immediately
+   - `result` contains `akt_url`
+   - checklist has done statuses
+   - `artifacts/akt/*.json` created.
