@@ -1,6 +1,15 @@
 # TrustTunnel: план задач и ТЗ для sidecar-agent + auto sync конфигов/секретов + интеграция с ingress-на-нодах
 
-Статус: **черновик задач, ничего не выполнено**.
+Статус: **в работе**.
+
+## Срез выполнения (итерация 2026-03-04)
+- [x] Базовый sidecar-цикл синхронизации с LK уже реализован в `sidecar-agent` (polling, checksum-валидация, atomic apply, sync-report).
+- [x] Реализованы ретраи с exponential backoff.
+- [x] Реализован дедуп по `version+checksum` (повторный apply не выполняется).
+- [x] Реализован heartbeat/health-сигнал в метриках sidecar.
+- [ ] Injection через mutating webhook пока не реализован (используется Helm sidecar в deployment).
+- [ ] Sync ConfigMap/Secret из mounted volumes (вариант A из этого ТЗ) пока не реализован.
+- [ ] Регистрация по API `/api/trusttunnel/nodes/register` и протокол из этого ТЗ пока не реализованы.
 
 ## Правила ведения работ и отчетности
 - Для **каждой задачи ниже** вести короткий прогресс-репорт по мере выполнения.
