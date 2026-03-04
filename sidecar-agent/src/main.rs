@@ -9,6 +9,14 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+#[cfg(target_os = "linux")]
+use std::{
+    os::fd::RawFd,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+};
 use tokio::net::TcpStream;
 
 #[derive(Clone)]
@@ -222,6 +230,8 @@ async fn main() -> Result<()> {
     let mut health_check_interval = tokio::time::interval(Duration::from_secs(
         cfg.health_check_interval_seconds.max(1),
     ));
+    let (resource_events_tx, mut resource_events_rx) = tokio::sync::mpsc::unbounded_channel();
+    let _resource_watcher = configure_resource_watcher(&cfg, resource_events_tx)?;
 
     loop {
         tokio::select! {
@@ -244,6 +254,11 @@ async fn main() -> Result<()> {
             _ = health_check_interval.tick() => {
                 state.last_health_ok = check_health(&cfg.trusttunnel_health_addr).await;
             }
+            Some(()) = resource_events_rx.recv() => {
+                if let Err(e) = sync_mounted_resources(&cfg, &client, &mut state).await {
+                    warn!("resource sync on fs event failed: {e:#}");
+                }
+            }
             _ = tokio::signal::ctrl_c() => {
                 info!("sidecar agent interrupted");
                 return Ok(());
@@ -254,6 +269,109 @@ async fn main() -> Result<()> {
 
 async fn check_health(health_addr: &str) -> bool {
     TcpStream::connect(health_addr).await.is_ok()
+}
+
+#[cfg(target_os = "linux")]
+struct ResourceWatcher {
+    stop: Arc<AtomicBool>,
+    thread_handle: Option<std::thread::JoinHandle<()>>,
+    fd: RawFd,
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for ResourceWatcher {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = unsafe { libc::close(self.fd) };
+        if let Some(handle) = self.thread_handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+struct ResourceWatcher;
+
+#[cfg(not(target_os = "linux"))]
+fn configure_resource_watcher(
+    _cfg: &Config,
+    _tx: tokio::sync::mpsc::UnboundedSender<()>,
+) -> Result<Option<ResourceWatcher>> {
+    Ok(None)
+}
+
+#[cfg(target_os = "linux")]
+fn configure_resource_watcher(
+    cfg: &Config,
+    tx: tokio::sync::mpsc::UnboundedSender<()>,
+) -> Result<Option<ResourceWatcher>> {
+    let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+
+    let mut watched = false;
+    let mask = libc::IN_CREATE
+        | libc::IN_MODIFY
+        | libc::IN_DELETE
+        | libc::IN_MOVED_FROM
+        | libc::IN_MOVED_TO
+        | libc::IN_CLOSE_WRITE;
+
+    for root in [&cfg.configs_root, &cfg.secrets_root] {
+        if !root.exists() {
+            continue;
+        }
+
+        let c_path = std::ffi::CString::new(root.to_string_lossy().as_bytes())?;
+        let watch_rc = unsafe { libc::inotify_add_watch(fd, c_path.as_ptr(), mask) };
+        if watch_rc < 0 {
+            warn!(
+                "failed to watch {}: {}",
+                root.display(),
+                std::io::Error::last_os_error()
+            );
+        } else {
+            watched = true;
+        }
+    }
+
+    if !watched {
+        let _ = unsafe { libc::close(fd) };
+        return Ok(None);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_thread = Arc::clone(&stop);
+    let thread_handle = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while !stop_thread.load(Ordering::Relaxed) {
+            let bytes_read = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if bytes_read > 0 {
+                let _ = tx.send(());
+                continue;
+            }
+
+            if bytes_read == 0 {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                std::thread::sleep(Duration::from_millis(200));
+                continue;
+            }
+
+            break;
+        }
+    });
+
+    Ok(Some(ResourceWatcher {
+        stop,
+        thread_handle: Some(thread_handle),
+        fd,
+    }))
 }
 
 async fn sync_once(cfg: &Config, client: &reqwest::Client, state: &mut AgentState) -> Result<()> {
