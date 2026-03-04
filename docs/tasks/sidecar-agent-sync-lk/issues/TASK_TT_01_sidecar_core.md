@@ -1,6 +1,6 @@
 # TASK_TT_01 — Sidecar core
 
-Status: active
+Status: in_progress
 Priority: high
 
 ## Sidecar external checklist requirement
@@ -39,3 +39,13 @@ Acceptance (обязательное):
 - команды принимаются и возвращают result + akt_url
 - checklist/akt доступны из LK
 
+
+
+## Progress
+- [x] Added sidecar checklist bootstrap (external JSON file).
+- [x] Added akt writer artifacts (`artifacts/akt/*.json` + human `.txt`).
+- [x] Added heartbeat fields: `clients_count`, `checklist_url`, `akt_url`.
+- [ ] Implement WS command stream and command/result pipeline.
+- [ ] Expose checklist/akt in LK admin API + UI.
+
+akt_url: file://artifacts/akt/heartbeat-<node>-<timestamp>.json

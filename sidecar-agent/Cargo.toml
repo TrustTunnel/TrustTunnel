@@ -15,9 +15,10 @@ log = "0.4"
 env_logger = "0.11"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 sha2 = "0.10"
 tokio = { version = "1.42", features = ["macros", "rt-multi-thread", "time", "net", "signal", "sync"] }
-toml = { version = "0.8", default-features = false, features = ["display"] }
+toml = { version = "0.8", default-features = false, features = ["display", "parse"] }
 
 [dev-dependencies]
 httpmock = "0.7"
