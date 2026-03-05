@@ -1,0 +1,39 @@
+name: fresh-install
+
+on:
+  push:
+    branches:
+      - main
+      - epic/**
+  pull_request:
+
+jobs:
+  sidecar-unit-and-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cargo test (sidecar)
+        run: cargo test -p trusttunnel_sidecar_agent
+
+      - name: Cargo build (sidecar)
+        run: cargo build -p trusttunnel_sidecar_agent --release
+
+      - name: Build sidecar Docker image
+        run: docker build -t trusttunnel-sidecar:ci -f Dockerfile .
+
+  sidecar-smoke-integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Smoke test (mock LK + sidecar)
+        run: bash scripts/ci/lk_sidecar_e2e_smoke.sh
