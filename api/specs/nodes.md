@@ -58,3 +58,27 @@ Endpoint: `wss://lk/api/nodes/ws?node_id={node_id}&token={token}`
 - `POST /api/nodes/{id}/command` — enqueue command for node.
 - `GET /api/nodes/{id}/command` — inspect latest command state.
 - `GET /api/nodes/{id}/checklist` — fetch current checklist + akt URL/content metadata.
+
+
+## Command lifecycle
+- LK writes command to queue with `status=queued`.
+- LK WS dispatcher marks command as `sent` when pushed to connected sidecar.
+- Sidecar replies `ack` immediately, LK stores `status=ack` + `acked_at`.
+- During execution LK may store `in_progress` heartbeats for long jobs.
+- Final sidecar `result` sets `done` or `failed` with `result_payload` and `akt_url`.
+- If `ack` timeout elapses, LK returns command to `queued` and increments retry counter (`retry_count`).
+
+## Persistence contract (LK)
+- `node_commands`: queue, delivery state, retries, ack timeout timestamps.
+- `node_checklists`: latest external checklist snapshot + `akt` metadata by node.
+- `node_clients`: generated clients (`bulkGenerateForNode`), capped by `max_clients`.
+
+## REST schema notes
+- `POST /api/nodes/{id}/command` body:
+  ```json
+  {"type":"regenerate_clients|drain|apply_configmap","payload":{},"requested_by":"admin@lk"}
+  ```
+- `GET /api/nodes/{id}/checklist` response:
+  ```json
+  {"node_id":"node-1","checklist":[{"id":"register-node","status":"done"}],"akt_url":"file:///artifacts/akt/cmd-1-node-1-1730000000.json"}
+  ```

@@ -40,6 +40,7 @@ Acceptance (обязательное):
 
 
 ## Progress
+- [x] Epic rerun validation: specs/docs synchronized for sidecar-core acceptance and QA notes.
 - [x] Extracted akt writer flow into reusable sidecar methods.
 - [x] Store both human-readable (`.txt`) and JSON (`.json`) reports.
 - [x] Return and publish `akt_url` in command result and heartbeat.

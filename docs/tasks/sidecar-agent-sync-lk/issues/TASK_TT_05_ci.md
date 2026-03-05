@@ -37,6 +37,7 @@ Acceptance (обязательное):
 
 
 ## Progress
+- [x] Epic rerun validation: specs/docs synchronized for sidecar-core acceptance and QA notes.
 - [x] Added CI workflow `ci/fresh_install.yml` with sidecar unit tests and release build.
 - [x] Added Docker image build step for sidecar in CI flow.
 - [x] Added mock LK ↔ sidecar integration smoke step (`scripts/ci/lk_sidecar_e2e_smoke.sh`).

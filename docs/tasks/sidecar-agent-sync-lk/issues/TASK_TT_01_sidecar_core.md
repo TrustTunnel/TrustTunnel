@@ -42,6 +42,7 @@ Acceptance (обязательное):
 
 
 ## Progress
+- [x] Epic rerun validation: specs/docs synchronized for sidecar-core acceptance and QA notes.
 - [x] Added sidecar checklist bootstrap (external JSON file).
 - [x] Added akt writer artifacts (`artifacts/akt/*.json` + human `.txt`).
 - [x] Added heartbeat fields: `clients_count`, `checklist_url`, `akt_url`.
