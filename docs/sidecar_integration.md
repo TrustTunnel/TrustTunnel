@@ -62,3 +62,22 @@ Epic branch: `epic/sidecar-core`
   - `sidecar.maxClients`
   - `sidecar.clientsConfigMap.{name,namespace,key}`
 - RBAC templates create `ServiceAccount`, `Role`, `RoleBinding` with ConfigMap read/write permissions when `sidecar.rbac.create=true`.
+
+
+## Epic coverage matrix
+- ✅ Registration: WS register frame + REST fallback contracts documented.
+- ✅ Heartbeat: 30s loop with clients/checklist/akt metadata.
+- ✅ Command bus: queued/sent/ack/in_progress/done/failed state machine in API spec.
+- ✅ ConfigMap sync: dev local file + optional Kubernetes API update flow.
+- ✅ Clients sync: generated credentials exported to clients payload and config target.
+- ✅ Akt writer: human+json artifacts and `akt_url` propagation.
+- ✅ Helm/Docker/CI: tracked in `TASK_TT_04` and `TASK_TT_05` progress sections.
+
+## QA quick commands
+```bash
+# unit (sidecar-go prototype)
+cd docs/tasks/sidecar-agent-sync-lk/sidecar && go test ./...
+
+# integration smoke
+bash scripts/ci/lk_sidecar_e2e_smoke.sh
+```

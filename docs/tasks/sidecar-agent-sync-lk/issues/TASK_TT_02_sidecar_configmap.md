@@ -42,6 +42,7 @@ Acceptance (обязательное):
 
 
 ## Progress
+- [x] Epic rerun validation: specs/docs synchronized for sidecar-core acceptance and QA notes.
 - [x] Added local `/tmp/clients.json` sync stub for dev mode.
 - [x] Heartbeat reports dynamic `clients_count` from clients payload.
 - [x] Add native Kubernetes ConfigMap API writer with conflict handling.

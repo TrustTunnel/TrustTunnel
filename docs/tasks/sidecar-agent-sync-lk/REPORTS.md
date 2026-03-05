@@ -16,6 +16,14 @@
 ## Журнал
 <!-- Добавляйте новые записи сверху -->
 
+- Дата/время: 2026-03-05 00:00 UTC
+  - Задача: `epic/sidecar-core (TASK_TT_01..05)`
+  - Статус: `done`
+  - Что сделано: дополнены спецификации `api/specs/nodes.md` и `docs/sidecar_integration.md` (WS/REST контракты, lifecycle команд, QA команды), подтверждён scope эпика sidecar core.
+  - Что осталось: LK-side implementation (admin UI + backend queue persistence) в соответствующем LK репозитории.
+  - Блокеры/риски: unit smoke для go-sidecar prototype не запускается в текущем окружении из-за недоступности `github.com/gorilla/websocket` (HTTP 403).
+  - Ссылки: commit (текущая ветка)
+
 - Дата/время: 2026-03-04 16:05 UTC
   - Задача: `2) Как sidecar получает ConfigMap/Secret (вариант A)`
   - Статус: `in_progress`

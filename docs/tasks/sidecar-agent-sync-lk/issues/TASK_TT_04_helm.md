@@ -37,6 +37,7 @@ Acceptance (обязательное):
 - helm install запускает sidecar с env и rbac
 
 ## Progress
+- [x] Epic rerun validation: specs/docs synchronized for sidecar-core acceptance and QA notes.
 - [x] Added sidecar chart values for `lk.wsEndpoint`, `tokenSecretName`, `tokenSecretKey`, `maxClients`.
 - [x] Added sidecar ConfigMap sync values (`clientsConfigMap.{name,namespace,key}`).
 - [x] Added ServiceAccount + Role + RoleBinding templates for ConfigMap permissions.
