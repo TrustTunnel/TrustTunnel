@@ -260,6 +260,8 @@ struct HeartbeatPayload<'a> {
     clients_count: usize,
     checklist_url: Option<String>,
     akt_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_sync_error: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -313,10 +315,68 @@ struct AgentState {
     last_seen_revision: Option<String>,
     last_apply_status: Option<String>,
     last_health_status: Option<String>,
+    last_sync_error: Option<String>,
     last_network_total: Option<u64>,
     node_token: Option<String>,
     last_files_checksum: Option<String>,
     checklist_store: Option<ChecklistStore>,
+}
+
+struct RuntimeConfigPaths {
+    current: PathBuf,
+    previous: PathBuf,
+    staged: PathBuf,
+}
+
+fn runtime_config_paths(current: &Path) -> RuntimeConfigPaths {
+    let parent = current.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = current
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    RuntimeConfigPaths {
+        current: current.to_path_buf(),
+        previous: parent.join(format!(".{file_name}.previous")),
+        staged: parent.join(format!(".{file_name}.staged")),
+    }
+}
+
+fn switch_staged_to_current(paths: &RuntimeConfigPaths) -> Result<()> {
+    if let Some(parent) = paths.current.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if paths.previous.exists() {
+        let _ = std::fs::remove_file(&paths.previous);
+    }
+    if paths.current.exists() {
+        std::fs::rename(&paths.current, &paths.previous).with_context(|| {
+            format!(
+                "rename {} -> {}",
+                paths.current.display(),
+                paths.previous.display()
+            )
+        })?;
+    }
+    std::fs::rename(&paths.staged, &paths.current).with_context(|| {
+        format!(
+            "rename {} -> {}",
+            paths.staged.display(),
+            paths.current.display()
+        )
+    })?;
+    if let Some(parent) = paths.current.parent() {
+        let dir = std::fs::File::open(parent)?;
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+fn rollback_to_previous(paths: &RuntimeConfigPaths) -> Result<()> {
+    let previous = std::fs::read(&paths.previous)
+        .with_context(|| format!("read previous runtime config: {}", paths.previous.display()))?;
+    write_runtime_config_atomically(&paths.current, std::str::from_utf8(&previous)?)
+        .context("restore current from previous")
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -466,10 +526,7 @@ async fn main() -> Result<()> {
                     resource_watcher = configure_resource_watcher(&cfg, resource_events_tx.clone())?;
                 }
                 if let Err(e) = sync_once(&cfg, &client, &mut state).await {
-                    state.last_apply_status = Some("failed".to_string());
                     error!("credentials sync failed: {e:#}");
-                } else {
-                    state.last_apply_status = Some("success".to_string());
                 }
             }
             _ = metrics_interval.tick() => {
@@ -814,29 +871,79 @@ async fn sync_once_with_retry(
             let should_apply = reconcile.apply_instructions.should_apply
                 && state.last_seen_revision.as_deref() != Some(&reconcile.revision);
 
-            let sync_result = (|| -> Result<()> {
-                if should_apply {
-                    let rendered_config = render_runtime_config(
-                        &reconcile.runtime_payload,
-                        cfg.legacy_credentials_flow_enabled,
-                    )?;
-                    write_runtime_config_atomically(
-                        &cfg.credentials_path,
-                        &rendered_config.contents,
-                    )
-                    .context("write_credentials_atomically")?;
-                    send_reload_signal(&cfg.trusttunnel_reload_signal)
-                        .context("send_reload_signal")?;
+            let sync_result = if should_apply {
+                let rendered_config = render_runtime_config(
+                    &reconcile.runtime_payload,
+                    cfg.legacy_credentials_flow_enabled,
+                )?;
+                let paths = runtime_config_paths(&cfg.credentials_path);
+                write_runtime_config_atomically(&paths.staged, &rendered_config.contents)
+                    .context("write_staged_credentials_atomically")?;
+                switch_staged_to_current(&paths).context("switch_staged_to_current")?;
+
+                let apply_error = if let Err(err) =
+                    send_reload_signal(&cfg.trusttunnel_reload_signal).context("send_reload_signal")
+                {
+                    Some(err)
+                } else if !check_health(&cfg.trusttunnel_health_addr).await {
+                    Some(anyhow::anyhow!("healthcheck failed after reload"))
+                } else {
+                    None
+                };
+
+                if apply_error.is_none() {
                     info!("applied reconcile revision={} desired_pool={} allocated_pool={} healthy_pool={}",
-                            reconcile.revision,
-                            reconcile.pool_summary.desired_pool_size,
-                            reconcile.pool_summary.allocated_pool_size,
-                            reconcile.pool_summary.healthy_pool_size,
-                        );
+                        reconcile.revision,
+                        reconcile.pool_summary.desired_pool_size,
+                        reconcile.pool_summary.allocated_pool_size,
+                        reconcile.pool_summary.healthy_pool_size,
+                    );
+                    state.last_seen_revision = Some(reconcile.revision);
+                    state.last_apply_status = Some("applied".to_string());
+                    state.last_health_status = Some("ok".to_string());
+                    state.last_sync_error = None;
+                    if let Some(store) = &mut state.checklist_store {
+                        let _ = store.mark_done(cfg, "sync-runtime", "sync-runtime");
+                    }
                     outcome.applied_count = rendered_config.clients_count;
+                    Ok(())
+                } else {
+                    let apply_error = apply_error.expect("apply_error must be set");
+                    let rollback_result = async {
+                        rollback_to_previous(&paths).context("rollback_to_previous")?;
+                        send_reload_signal(&cfg.trusttunnel_reload_signal)
+                            .context("send_reload_signal_for_rollback")?;
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        if !check_health(&cfg.trusttunnel_health_addr).await {
+                            anyhow::bail!("healthcheck failed after rollback");
+                        }
+                        Ok::<(), anyhow::Error>(())
+                    }
+                    .await;
+
+                    match rollback_result {
+                        Ok(_) => {
+                            state.last_sync_error = Some(apply_error.to_string());
+                            Err(apply_error)
+                        }
+                        Err(rollback_err) => {
+                            state.last_sync_error = Some(format!(
+                                "{}; rollback failed: {}",
+                                apply_error, rollback_err
+                            ));
+                            Err(anyhow::anyhow!(
+                                "{}; rollback failed: {}",
+                                apply_error,
+                                rollback_err
+                            ))
+                        }
+                    }
                 }
+            } else {
+                state.last_sync_error = None;
+                state.last_apply_status = Some("noop".to_string());
                 Ok(())
-            })();
+            };
 
             if sync_result.is_err() {
                 outcome.status = "failed".to_string();
@@ -844,21 +951,12 @@ async fn sync_once_with_retry(
                     .as_ref()
                     .err()
                     .map(|e| format!("sync failed: {e}"));
-            } else {
-                state.last_seen_revision = Some(reconcile.revision);
-                state.last_apply_status = Some(if should_apply {
-                    "applied".to_string()
-                } else {
-                    "noop".to_string()
-                });
-                if let Some(store) = &mut state.checklist_store {
-                    let _ = store.mark_done(cfg, "sync-runtime", "sync-runtime");
-                }
             }
 
             (outcome, sync_result)
         }
         Err(err) => {
+            state.last_sync_error = Some(format!("reconcile failed: {err}"));
             let outcome = SyncOutcome {
                 revision: state
                     .last_seen_revision
@@ -1046,6 +1144,9 @@ impl AtomicWriteOps for FileSystemAtomicWriteOps {
 fn send_reload_signal(signal_name: &str) -> Result<()> {
     #[cfg(unix)]
     {
+        if signal_name.eq_ignore_ascii_case("NOOP") {
+            return Ok(());
+        }
         let signal = match signal_name.to_uppercase().as_str() {
             "SIGHUP" => libc::SIGHUP,
             "SIGUSR1" => libc::SIGUSR1,
@@ -1198,6 +1299,7 @@ async fn push_heartbeat(
             .checklist_store
             .as_ref()
             .and_then(|store| store.akt_url.clone()),
+        last_sync_error: state.last_sync_error.as_deref(),
     };
 
     let url = format!(
@@ -1664,6 +1766,246 @@ mod tests {
 
         register_mock.assert_hits_async(2).await;
         heartbeat_mock.assert_hits_async(2).await;
+    }
+
+    fn free_local_addr() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
+        let addr = listener.local_addr().expect("local addr");
+        drop(listener);
+        addr.to_string()
+    }
+
+    #[tokio::test]
+    async fn reload_fail_triggers_failed_sync_report() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-reload-fail.toml");
+        std::fs::write(
+            &credentials_path,
+            "client = []
+",
+        )
+        .expect("seed current");
+        let mut cfg = test_config(server.base_url(), credentials_path.clone());
+        cfg.trusttunnel_reload_signal = "BAD".to_string();
+        cfg.trusttunnel_health_addr = free_local_addr();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
+                then.status(200).json_body(json!({
+                    "revision": "r-reload-fail",
+                    "hash": "h1",
+                    "pool_summary": {},
+                    "runtime_payload": {"runtime_config": "client = []"},
+                    "apply_instructions": {"should_apply": true}
+                }));
+            })
+            .await;
+
+        let failed_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
+                    .json_body_partial(json!({ "status": "failed" }).to_string());
+                then.status(200);
+            })
+            .await;
+
+        let mut state = AgentState::default();
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+        assert!(result.is_err());
+        assert!(state
+            .last_sync_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("rollback failed"));
+        failed_report.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn health_fail_after_reload_rolls_back_and_sets_last_sync_error() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-health-fail.toml");
+        std::fs::write(
+            &credentials_path,
+            "client = []
+",
+        )
+        .expect("seed current");
+        let mut cfg = test_config(server.base_url(), credentials_path.clone());
+        cfg.trusttunnel_reload_signal = "NOOP".to_string();
+        cfg.trusttunnel_health_addr = free_local_addr();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
+                then.status(200).json_body(json!({
+                    "revision": "r-health-fail",
+                    "hash": "h1",
+                    "pool_summary": {},
+                    "runtime_payload": {"runtime_config": "[[client]]
+username='u'
+password='p'
+"},
+                    "apply_instructions": {"should_apply": true}
+                }));
+            })
+            .await;
+
+        let _failed_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report");
+                then.status(200);
+            })
+            .await;
+
+        let mut state = AgentState::default();
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+        assert!(result.is_err());
+        assert!(state
+            .last_sync_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("healthcheck failed after reload"));
+    }
+
+    #[tokio::test]
+    async fn rollback_success_after_health_fail_restores_previous_config() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-rollback-success.toml");
+        std::fs::write(
+            &credentials_path,
+            "client = []
+",
+        )
+        .expect("seed current");
+        let mut cfg = test_config(server.base_url(), credentials_path.clone());
+        cfg.trusttunnel_reload_signal = "NOOP".to_string();
+        let addr = free_local_addr();
+        cfg.trusttunnel_health_addr = addr.clone();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let _listener = tokio::net::TcpListener::bind(addr)
+                .await
+                .expect("bind health");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
+                then.status(200).json_body(json!({
+                    "revision": "r-rollback-success",
+                    "hash": "h1",
+                    "pool_summary": {},
+                    "runtime_payload": {"runtime_config": "[[client]]
+username='x'
+password='y'
+"},
+                    "apply_instructions": {"should_apply": true}
+                }));
+            })
+            .await;
+
+        let _report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report");
+                then.status(200);
+            })
+            .await;
+
+        let mut state = AgentState::default();
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+        assert!(result.is_err());
+        let restored = std::fs::read_to_string(&credentials_path).expect("read current");
+        assert_eq!(
+            restored,
+            "client = []
+"
+        );
+        assert!(state
+            .last_sync_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("healthcheck failed after reload"));
+    }
+
+    #[tokio::test]
+    async fn rollback_failure_sets_combined_error() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-rollback-failure.toml");
+        std::fs::write(
+            &credentials_path,
+            "client = []
+",
+        )
+        .expect("seed current");
+        let mut cfg = test_config(server.base_url(), credentials_path.clone());
+        cfg.trusttunnel_reload_signal = "NOOP".to_string();
+        cfg.trusttunnel_health_addr = free_local_addr();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        let _snapshot = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
+                then.status(200).json_body(json!({
+                    "revision": "r-rollback-failure",
+                    "hash": "h1",
+                    "pool_summary": {},
+                    "runtime_payload": {"runtime_config": "[[client]]
+username='x'
+password='y'
+"},
+                    "apply_instructions": {"should_apply": true}
+                }));
+            })
+            .await;
+
+        let _report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report");
+                then.status(200);
+            })
+            .await;
+
+        let previous_path = runtime_config_paths(&credentials_path).previous;
+        std::fs::remove_file(&previous_path).ok();
+
+        let mut state = AgentState::default();
+        let result =
+            sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
+        assert!(result.is_err());
+        assert!(state
+            .last_sync_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("rollback failed"));
     }
 
     #[test]
