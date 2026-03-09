@@ -1,10 +1,14 @@
 use bytes::Bytes;
+use futures::stream;
 use http::{Request, Response};
 use log::info;
+use once_cell::sync::Lazy;
+use ring::digest::{digest, SHA256};
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpListener;
+use trusttunnel::net_utils;
 use trusttunnel::settings::{
     Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, ReverseProxySettings,
     Settings, TlsHostInfo, TlsHostsSettings,
@@ -12,6 +16,9 @@ use trusttunnel::settings::{
 
 #[allow(dead_code)]
 mod common;
+
+// Use a larger body to catch partial responses without flooding logs.
+static RESPONSE_BODY: Lazy<Bytes> = Lazy::new(|| Bytes::from(vec![b'x'; 1024 * 1024]));
 
 macro_rules! reverse_proxy_tests {
     ($($name:ident: $client_fn:expr,)*) => {
@@ -26,7 +33,7 @@ macro_rules! reverse_proxy_tests {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 let (response, body) = $client_fn(&endpoint_address).await;
                 assert_eq!(response.status, http::StatusCode::OK);
-                assert_eq!(body.as_ref(), b"how much watch?");
+                assert_body_matches(&body);
             };
 
             // Pin both tasks to avoid moving them
@@ -55,7 +62,81 @@ reverse_proxy_tests! {
     sni_h1: sni_h1_client,
     sni_h3: sni_h3_client,
     path_h1: path_h1_client,
+    path_h2: path_h2_client,
     path_h3: path_h3_client,
+}
+
+#[tokio::test]
+async fn path_h2_chunked() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let (proxy_address, proxy_task) = run_proxy_chunked();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (response, body) = path_h2_client(&endpoint_address).await;
+        assert_eq!(response.status, http::StatusCode::OK);
+        assert_body_matches(&body);
+    };
+
+    tokio::pin!(client_task);
+    tokio::pin!(proxy_task);
+
+    tokio::select! {
+        _ = run_endpoint(&endpoint_address, &proxy_address) => unreachable!(),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+        _ = &mut client_task => (),
+        _ = &mut proxy_task => {
+            tokio::select! {
+                _ = client_task => (),
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
+                }
+            }
+        },
+    }
+}
+
+#[tokio::test]
+async fn path_h3_chunked() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let (proxy_address, proxy_task) = run_proxy_chunked();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (response, body) = path_h3_client(&endpoint_address).await;
+        assert_eq!(response.status, http::StatusCode::OK);
+        assert_body_matches(&body);
+    };
+
+    tokio::pin!(client_task);
+    tokio::pin!(proxy_task);
+
+    tokio::select! {
+        _ = run_endpoint(&endpoint_address, &proxy_address) => unreachable!(),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+        _ = &mut client_task => (),
+        _ = &mut proxy_task => {
+            tokio::select! {
+                _ = client_task => (),
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
+                }
+            }
+        },
+    }
+}
+
+fn assert_body_matches(body: &Bytes) {
+    assert_eq!(body.len(), RESPONSE_BODY.len(), "response length mismatch");
+    let expected_hash = digest(&SHA256, RESPONSE_BODY.as_ref());
+    let actual_hash = digest(&SHA256, body.as_ref());
+    assert_eq!(
+        actual_hash.as_ref(),
+        expected_hash.as_ref(),
+        "response hash mismatch"
+    );
 }
 
 async fn sni_h1_client(endpoint_address: &SocketAddr) -> (http::response::Parts, Bytes) {
@@ -112,6 +193,27 @@ async fn path_h1_client(endpoint_address: &SocketAddr) -> (http::response::Parts
             endpoint_address.port()
         ),
         &[(http::header::UPGRADE.as_str(), "1")],
+    )
+    .await
+}
+
+async fn path_h2_client(endpoint_address: &SocketAddr) -> (http::response::Parts, Bytes) {
+    let stream = common::establish_tls_connection(
+        common::MAIN_DOMAIN_NAME,
+        endpoint_address,
+        Some(net_utils::HTTP2_ALPN.as_bytes()),
+    )
+    .await;
+
+    common::do_get_request(
+        stream,
+        http::Version::HTTP_2,
+        &format!(
+            "https://{}:{}/hello/haha",
+            common::MAIN_DOMAIN_NAME,
+            endpoint_address.port()
+        ),
+        &[],
     )
     .await
 }
@@ -193,11 +295,48 @@ fn run_proxy() -> (SocketAddr, impl Future<Output = ()>) {
     })
 }
 
+fn run_proxy_chunked() -> (SocketAddr, impl Future<Output = ()>) {
+    let server = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let _ = server.set_nonblocking(true);
+    let server_addr = server.local_addr().unwrap();
+    (server_addr, async move {
+        let (socket, peer) = TcpListener::from_std(server)
+            .unwrap()
+            .accept()
+            .await
+            .unwrap();
+        info!("New connection from {}", peer);
+        hyper::server::conn::Http::new()
+            .http1_only(true)
+            .serve_connection(
+                socket,
+                hyper::service::service_fn(request_handler_chunked),
+            )
+            .await
+            .unwrap();
+    })
+}
+
 async fn request_handler(
     request: Request<hyper::Body>,
 ) -> Result<Response<hyper::Body>, hyper::Error> {
     info!("Received request: {:?}", request);
     Ok(Response::builder()
-        .body(hyper::Body::from("how much watch?"))
+        .body(hyper::Body::from(RESPONSE_BODY.clone()))
+        .unwrap())
+}
+
+async fn request_handler_chunked(
+    request: Request<hyper::Body>,
+) -> Result<Response<hyper::Body>, hyper::Error> {
+    info!("Received request: {:?}", request);
+    let chunk_size = 16 * 1024;
+    let chunks = RESPONSE_BODY
+        .chunks(chunk_size)
+        .map(|c| Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(c)))
+        .collect::<Vec<_>>();
+
+    Ok(Response::builder()
+        .body(hyper::Body::wrap_stream(stream::iter(chunks)))
         .unwrap())
 }

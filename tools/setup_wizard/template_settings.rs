@@ -67,6 +67,18 @@ udp_connections_timeout_secs = {}
 
 {}
 speedtest_enable = {}
+
+{}
+ping_enable = {}
+
+{}
+ping_path = ""
+
+{}
+speedtest_path = ""
+
+{}
+allow_without_token = false
 "#,
         Settings::doc_listen_address().to_toml_comment(),
         crate::library_settings::DEFAULT_CREDENTIALS_PATH,
@@ -91,6 +103,11 @@ speedtest_enable = {}
         Settings::default_udp_connections_timeout().as_secs(),
         Settings::doc_speedtest_enable().to_toml_comment(),
         Settings::default_speedtest_enable(),
+        Settings::doc_ping_enable().to_toml_comment(),
+        Settings::default_ping_enable(),
+        Settings::doc_ping_path().to_toml_comment(),
+        Settings::doc_speedtest_path().to_toml_comment(),
+        Settings::doc_allow_without_token().to_toml_comment(),
     )
 });
 
