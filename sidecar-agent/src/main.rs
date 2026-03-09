@@ -74,15 +74,31 @@ impl Config {
                 .filter(|x| !x.is_empty())
         }
 
+        fn bounded_env_u64(name: &str, default: u64, min: u64, max: u64) -> Result<u64> {
+            let raw = std::env::var(name).unwrap_or_else(|_| default.to_string());
+            let parsed: u64 = raw
+                .parse()
+                .with_context(|| format!("invalid integer for {name}: {raw}"))?;
+
+            if parsed < min {
+                warn!("{name}={parsed} below minimum {min}; clamping to {min}");
+                return Ok(min);
+            }
+            if parsed > max {
+                warn!("{name}={parsed} above maximum {max}; clamping to {max}");
+                return Ok(max);
+            }
+
+            Ok(parsed)
+        }
+
         Ok(Self {
             lk_internal_base_url: required_env("LK_INTERNAL_BASE_URL")?,
             lk_api_base_url: std::env::var("LK_API_BASE_URL")
                 .or_else(|_| std::env::var("LK_INTERNAL_BASE_URL"))?,
             internal_agent_token: required_env("INTERNAL_AGENT_TOKEN")?,
             node_id: required_env("NODE_ID")?,
-            sync_interval_seconds: std::env::var("SYNC_INTERVAL_SECONDS")
-                .unwrap_or_else(|_| "60".to_string())
-                .parse()?,
+            sync_interval_seconds: bounded_env_u64("SYNC_INTERVAL_SECONDS", 30, 15, 300)?,
             credentials_path: PathBuf::from(
                 std::env::var("CREDENTIALS_PATH")
                     .unwrap_or_else(|_| "/shared/credentials.toml".to_string()),
@@ -316,10 +332,73 @@ struct AgentState {
     last_apply_status: Option<String>,
     last_health_status: Option<String>,
     last_sync_error: Option<String>,
+    last_sync_status: Option<String>,
     last_network_total: Option<u64>,
     node_token: Option<String>,
     last_files_checksum: Option<String>,
     checklist_store: Option<ChecklistStore>,
+}
+
+#[derive(Clone)]
+struct SyncLogCtx {
+    node_id: String,
+    node_name: String,
+    desired_pool_size: u32,
+    current_revision: String,
+    fetched_revision: String,
+    last_sync_status: String,
+    last_sync_error: String,
+}
+
+fn redact_sensitive(input: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    if ["username", "password", "token", "secret"]
+        .iter()
+        .any(|k| lower.contains(k))
+    {
+        "[REDACTED]".to_string()
+    } else {
+        input.to_string()
+    }
+}
+
+fn log_sync_event(level: &str, stage: &str, message: &str, ctx: &SyncLogCtx) {
+    let payload = serde_json::json!({
+        "event": "sidecar_sync",
+        "stage": stage,
+        "message": redact_sensitive(message),
+        "node_id": ctx.node_id,
+        "node_name": ctx.node_name,
+        "desired_pool_size": ctx.desired_pool_size,
+        "current_revision": ctx.current_revision,
+        "fetched_revision": ctx.fetched_revision,
+        "last_sync_status": ctx.last_sync_status,
+        "last_sync_error": redact_sensitive(&ctx.last_sync_error),
+    });
+
+    match level {
+        "error" => error!("{}", payload),
+        "warn" => warn!("{}", payload),
+        _ => info!("{}", payload),
+    }
+}
+
+fn sync_log_ctx(cfg: &Config, state: &AgentState, fetched_revision: Option<&str>) -> SyncLogCtx {
+    SyncLogCtx {
+        node_id: state.node_id.clone().unwrap_or_else(|| cfg.node_id.clone()),
+        node_name: cfg.node_name.clone(),
+        desired_pool_size: cfg.desired_pool_size,
+        current_revision: state
+            .last_seen_revision
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        fetched_revision: fetched_revision.unwrap_or("unknown").to_string(),
+        last_sync_status: state
+            .last_sync_status
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string()),
+        last_sync_error: state.last_sync_error.clone().unwrap_or_default(),
+    }
 }
 
 struct RuntimeConfigPaths {
@@ -611,6 +690,12 @@ async fn main() -> Result<()> {
             }
             _ = health_check_interval.tick() => {
                 state.last_health_status = Some(if check_health(&cfg.trusttunnel_health_addr).await { "ok".to_string() } else { "degraded".to_string() });
+                log_sync_event(
+                    "info",
+                    "health",
+                    "periodic health probe completed",
+                    &sync_log_ctx(&cfg, &state, None),
+                );
             }
             Some(()) = resource_events_rx.recv() => {
                 if let Err(e) = sync_mounted_resources(&cfg, &client, &mut state).await {
@@ -873,6 +958,13 @@ async fn ensure_registration(
         return Ok(());
     }
 
+    log_sync_event(
+        "info",
+        "register",
+        "registration started",
+        &sync_log_ctx(cfg, state, None),
+    );
+
     if let Some(store) = &mut state.checklist_store {
         let _ = store.mark_event(
             cfg,
@@ -910,6 +1002,14 @@ async fn ensure_registration(
         .await?;
 
     if !resp.status().is_success() {
+        state.last_sync_status = Some("failed".to_string());
+        state.last_sync_error = Some(format!("registration rejected: {}", resp.status()));
+        log_sync_event(
+            "error",
+            "register",
+            &format!("registration rejected: {}", resp.status()),
+            &sync_log_ctx(cfg, state, None),
+        );
         if let Some(store) = &mut state.checklist_store {
             let _ = store.mark_event(
                 cfg,
@@ -925,6 +1025,8 @@ async fn ensure_registration(
     let register_response: RegisterResponse = resp.json().await?;
     state.node_id = Some(register_response.node_id);
     state.node_token = Some(register_response.node_token);
+    state.last_sync_status = Some("registered".to_string());
+    state.last_sync_error = None;
     if let Some(store) = &mut state.checklist_store {
         let _ = store.mark_event(
             cfg,
@@ -934,7 +1036,12 @@ async fn ensure_registration(
             "Node registration completed",
         );
     }
-    info!("node registration completed");
+    log_sync_event(
+        "info",
+        "register",
+        "node registration completed",
+        &sync_log_ctx(cfg, state, None),
+    );
     Ok(())
 }
 
@@ -946,6 +1053,12 @@ async fn sync_once_with_retry(
     initial_backoff: Duration,
 ) -> Result<()> {
     let node_id = state.node_id.as_deref().unwrap_or(&cfg.node_id);
+    log_sync_event(
+        "info",
+        "reconcile",
+        "reconcile started",
+        &sync_log_ctx(cfg, state, None),
+    );
     if let Some(store) = &mut state.checklist_store {
         let _ = store.mark_event(
             cfg,
@@ -966,6 +1079,12 @@ async fn sync_once_with_retry(
     .await
     {
         Ok(reconcile) => {
+            log_sync_event(
+                "info",
+                "fetch",
+                &format!("fetched revision {}", reconcile.revision),
+                &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+            );
             let mut outcome = SyncOutcome {
                 revision: reconcile.revision.clone(),
                 status: "success".to_string(),
@@ -1003,23 +1122,48 @@ async fn sync_once_with_retry(
                 let apply_error = if let Err(err) =
                     send_reload_signal(&cfg.trusttunnel_reload_signal).context("send_reload_signal")
                 {
+                    log_sync_event(
+                        "error",
+                        "reload",
+                        &format!("reload failed: {err}"),
+                        &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                    );
                     Some(err)
                 } else if !check_health(&cfg.trusttunnel_health_addr).await {
+                    log_sync_event(
+                        "warn",
+                        "health",
+                        "healthcheck failed after reload",
+                        &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                    );
                     Some(anyhow::anyhow!("healthcheck failed after reload"))
                 } else {
+                    log_sync_event(
+                        "info",
+                        "reload",
+                        "reload completed",
+                        &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                    );
                     None
                 };
 
                 if apply_error.is_none() {
-                    info!("applied reconcile revision={} desired_pool={} allocated_pool={} healthy_pool={}",
-                        reconcile.revision,
-                        reconcile.pool_summary.desired_pool_size,
-                        reconcile.pool_summary.allocated_pool_size,
-                        reconcile.pool_summary.healthy_pool_size,
+                    log_sync_event(
+                        "info",
+                        "apply",
+                        &format!(
+                            "applied reconcile revision={} desired_pool={} allocated_pool={} healthy_pool={}",
+                            reconcile.revision,
+                            reconcile.pool_summary.desired_pool_size,
+                            reconcile.pool_summary.allocated_pool_size,
+                            reconcile.pool_summary.healthy_pool_size,
+                        ),
+                        &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
                     );
                     state.last_seen_revision = Some(reconcile.revision.clone());
                     state.last_apply_status = Some("applied".to_string());
                     state.last_health_status = Some("ok".to_string());
+                    state.last_sync_status = Some("success".to_string());
                     state.last_sync_error = None;
                     if let Some(store) = &mut state.checklist_store {
                         let _ = store.mark_event(
@@ -1034,6 +1178,7 @@ async fn sync_once_with_retry(
                     Ok(())
                 } else {
                     let apply_error = apply_error.expect("apply_error must be set");
+                    state.last_sync_status = Some("failed".to_string());
                     if let Some(store) = &mut state.checklist_store {
                         let _ = store.mark_event(
                             cfg,
@@ -1082,6 +1227,12 @@ async fn sync_once_with_retry(
                                 );
                             }
                             state.last_sync_error = Some(apply_error.to_string());
+                            log_sync_event(
+                                "warn",
+                                "apply",
+                                &format!("apply failed, rollback success: {}", apply_error),
+                                &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                            );
                             Err(apply_error)
                         }
                         Err(rollback_err) => {
@@ -1101,6 +1252,15 @@ async fn sync_once_with_retry(
                                 "{}; rollback failed: {}",
                                 apply_error, rollback_err
                             ));
+                            log_sync_event(
+                                "error",
+                                "apply",
+                                &format!(
+                                    "apply and rollback failed: {}; {}",
+                                    apply_error, rollback_err
+                                ),
+                                &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                            );
                             Err(anyhow::anyhow!(
                                 "{}; rollback failed: {}",
                                 apply_error,
@@ -1112,6 +1272,13 @@ async fn sync_once_with_retry(
             } else {
                 state.last_sync_error = None;
                 state.last_apply_status = Some("noop".to_string());
+                state.last_sync_status = Some("noop".to_string());
+                log_sync_event(
+                    "info",
+                    "apply",
+                    &format!("no apply required for revision {}", reconcile.revision),
+                    &sync_log_ctx(cfg, state, Some(&reconcile.revision)),
+                );
                 if let Some(store) = &mut state.checklist_store {
                     let _ = store.mark_event(
                         cfg,
@@ -1135,7 +1302,14 @@ async fn sync_once_with_retry(
             (outcome, sync_result)
         }
         Err(err) => {
+            state.last_sync_status = Some("failed".to_string());
             state.last_sync_error = Some(format!("reconcile failed: {err}"));
+            log_sync_event(
+                "error",
+                "reconcile",
+                &format!("reconcile failed: {err}"),
+                &sync_log_ctx(cfg, state, None),
+            );
             if let Some(store) = &mut state.checklist_store {
                 let _ = store.mark_event(
                     cfg,
@@ -1365,6 +1539,8 @@ async fn post_sync_report(
     node_id: &str,
     outcome: SyncOutcome,
 ) -> Result<()> {
+    let mut status_for_log = outcome.status.clone();
+    let mut error_for_log = outcome.error.clone();
     let url = format!(
         "{}/internal/trusttunnel/nodes/{}/sync-report",
         cfg.lk_internal_base_url, node_id
@@ -1387,8 +1563,31 @@ async fn post_sync_report(
         .await?;
 
     if !resp.status().is_success() {
+        status_for_log = "failed".to_string();
+        error_for_log = Some(format!("sync report rejected: {}", resp.status()));
+        let report_ctx = SyncLogCtx {
+            node_id: node_id.to_string(),
+            node_name: cfg.node_name.clone(),
+            desired_pool_size: cfg.desired_pool_size,
+            current_revision: report.revision.clone(),
+            fetched_revision: report.revision.clone(),
+            last_sync_status: status_for_log,
+            last_sync_error: error_for_log.unwrap_or_default(),
+        };
+        log_sync_event("error", "report", "sync report rejected", &report_ctx);
         anyhow::bail!("sync report rejected: {}", resp.status());
     }
+
+    let report_ctx = SyncLogCtx {
+        node_id: node_id.to_string(),
+        node_name: cfg.node_name.clone(),
+        desired_pool_size: cfg.desired_pool_size,
+        current_revision: report.revision.clone(),
+        fetched_revision: report.revision,
+        last_sync_status: status_for_log,
+        last_sync_error: error_for_log.unwrap_or_default(),
+    };
+    log_sync_event("info", "report", "sync report sent", &report_ctx);
 
     Ok(())
 }
