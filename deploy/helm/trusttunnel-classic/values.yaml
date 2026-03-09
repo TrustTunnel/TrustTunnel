@@ -37,6 +37,17 @@ endpoint:
 sidecar:
   port: 9105
   clusterId: "default-cluster"
+  registration:
+    publicHost: ""
+    endpointIp: ""
+    desiredPoolSize: 1
+    weight: 100
+    stage: "prod"
+    isEnabled: true
+    rolloutGroup: ""
+    cluster: ""
+    namespace: ""
+    podName: ""
   maxClients: 250
   tokenSecretName: trusttunnel-sidecar-secret
   tokenSecretKey: INTERNAL_AGENT_TOKEN
