@@ -385,6 +385,10 @@ struct ChecklistTask {
     title: String,
     status: String,
     done_at: Option<String>,
+    name: Option<String>,
+    date: Option<String>,
+    result: Option<String>,
+    details: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -392,6 +396,10 @@ struct AktReport {
     generated_at: String,
     tasks_completed: Vec<String>,
     summary: String,
+    name: String,
+    date: String,
+    result: String,
+    details: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -411,41 +419,82 @@ impl ChecklistStore {
         let doc = ChecklistDocument {
             checklist: vec![
                 ChecklistTask {
-                    id: "register-node".to_string(),
+                    id: "register".to_string(),
                     title: "Register node in LK".to_string(),
                     status: "pending".to_string(),
                     done_at: None,
+                    name: None,
+                    date: None,
+                    result: None,
+                    details: None,
                 },
                 ChecklistTask {
-                    id: "sync-runtime".to_string(),
+                    id: "reconcile".to_string(),
+                    title: "Reconcile desired state".to_string(),
+                    status: "pending".to_string(),
+                    done_at: None,
+                    name: None,
+                    date: None,
+                    result: None,
+                    details: None,
+                },
+                ChecklistTask {
+                    id: "apply".to_string(),
                     title: "Apply runtime payload".to_string(),
                     status: "pending".to_string(),
                     done_at: None,
+                    name: None,
+                    date: None,
+                    result: None,
+                    details: None,
                 },
                 ChecklistTask {
-                    id: "send-heartbeat".to_string(),
-                    title: "Send heartbeat".to_string(),
+                    id: "rollback".to_string(),
+                    title: "Rollback to previous runtime payload".to_string(),
                     status: "pending".to_string(),
                     done_at: None,
+                    name: None,
+                    date: None,
+                    result: None,
+                    details: None,
                 },
             ],
             akt: None,
         };
 
         write_json_pretty(&cfg.checklist_path, &doc)?;
+        let checklist_url = Some(format!("file://{}", cfg.checklist_path.display()));
+        let akt_url = Some(write_akt_artifact(cfg, "init", &doc)?);
         Ok(Self {
-            checklist_url: Some(format!("file://{}", cfg.checklist_path.display())),
-            akt_url: None,
+            checklist_url,
+            akt_url,
         })
     }
 
-    fn mark_done(&mut self, cfg: &Config, task_id: &str, command_id: &str) -> Result<()> {
+    fn mark_event(
+        &mut self,
+        cfg: &Config,
+        task_id: &str,
+        command_id: &str,
+        result: &str,
+        details: impl Into<String>,
+    ) -> Result<()> {
         let text = std::fs::read_to_string(&cfg.checklist_path)?;
         let mut doc: ChecklistDocument = serde_json::from_str(&text)?;
+        let date = Utc::now().to_rfc3339();
+        let details = details.into();
         for task in &mut doc.checklist {
             if task.id == task_id {
-                task.status = "done".to_string();
-                task.done_at = Some(Utc::now().to_rfc3339());
+                task.status = match result {
+                    "success" | "skipped" => "done".to_string(),
+                    "failed" => "failed".to_string(),
+                    _ => "in_progress".to_string(),
+                };
+                task.done_at = Some(date.clone());
+                task.name = Some(task_id.to_string());
+                task.date = Some(date.clone());
+                task.result = Some(result.to_string());
+                task.details = Some(details.clone());
             }
         }
         let completed = doc
@@ -455,12 +504,17 @@ impl ChecklistStore {
             .map(|t| t.id.clone())
             .collect::<Vec<_>>();
         let akt = AktReport {
-            generated_at: Utc::now().to_rfc3339(),
+            generated_at: date.clone(),
             tasks_completed: completed,
             summary: format!("Checklist progress updated after {task_id}"),
+            name: task_id.to_string(),
+            date,
+            result: result.to_string(),
+            details,
         };
         doc.akt = Some(akt);
         write_json_pretty(&cfg.checklist_path, &doc)?;
+        self.checklist_url = Some(format!("file://{}", cfg.checklist_path.display()));
         self.akt_url = Some(write_akt_artifact(cfg, command_id, &doc)?);
         Ok(())
     }
@@ -486,8 +540,14 @@ fn write_akt_artifact(cfg: &Config, command_id: &str, doc: &ChecklistDocument) -
         .iter()
         .map(|t| {
             format!(
-                "- [{}] {}",
-                if t.status == "done" { "x" } else { " " },
+                "- {} {}",
+                if t.status == "done" {
+                    "✅"
+                } else if t.status == "failed" {
+                    "❌"
+                } else {
+                    "⬜"
+                },
                 t.title
             )
         })
@@ -835,7 +895,13 @@ async fn ensure_registration(
     state.node_id = Some(register_response.node_id);
     state.node_token = Some(register_response.node_token);
     if let Some(store) = &mut state.checklist_store {
-        let _ = store.mark_done(cfg, "register-node", "register");
+        let _ = store.mark_event(
+            cfg,
+            "register",
+            "register",
+            "success",
+            "Node registration completed",
+        );
     }
     info!("node registration completed");
     Ok(())
@@ -868,6 +934,16 @@ async fn sync_once_with_retry(
                 error: None,
             };
 
+            if let Some(store) = &mut state.checklist_store {
+                let _ = store.mark_event(
+                    cfg,
+                    "reconcile",
+                    "reconcile",
+                    "success",
+                    format!("Reconcile received revision {}", reconcile.revision),
+                );
+            }
+
             let should_apply = reconcile.apply_instructions.should_apply
                 && state.last_seen_revision.as_deref() != Some(&reconcile.revision);
 
@@ -898,17 +974,35 @@ async fn sync_once_with_retry(
                         reconcile.pool_summary.allocated_pool_size,
                         reconcile.pool_summary.healthy_pool_size,
                     );
-                    state.last_seen_revision = Some(reconcile.revision);
+                    state.last_seen_revision = Some(reconcile.revision.clone());
                     state.last_apply_status = Some("applied".to_string());
                     state.last_health_status = Some("ok".to_string());
                     state.last_sync_error = None;
                     if let Some(store) = &mut state.checklist_store {
-                        let _ = store.mark_done(cfg, "sync-runtime", "sync-runtime");
+                        let _ = store.mark_event(
+                            cfg,
+                            "apply",
+                            "apply",
+                            "success",
+                            format!("Applied reconcile revision {}", reconcile.revision),
+                        );
                     }
                     outcome.applied_count = rendered_config.clients_count;
                     Ok(())
                 } else {
                     let apply_error = apply_error.expect("apply_error must be set");
+                    if let Some(store) = &mut state.checklist_store {
+                        let _ = store.mark_event(
+                            cfg,
+                            "apply",
+                            "apply",
+                            "failed",
+                            format!(
+                                "Apply failed for revision {}: {}",
+                                reconcile.revision, apply_error
+                            ),
+                        );
+                    }
                     let rollback_result = async {
                         rollback_to_previous(&paths).context("rollback_to_previous")?;
                         send_reload_signal(&cfg.trusttunnel_reload_signal)
@@ -923,10 +1017,34 @@ async fn sync_once_with_retry(
 
                     match rollback_result {
                         Ok(_) => {
+                            if let Some(store) = &mut state.checklist_store {
+                                let _ = store.mark_event(
+                                    cfg,
+                                    "rollback",
+                                    "rollback",
+                                    "success",
+                                    format!(
+                                        "Rollback completed after failed apply for revision {}",
+                                        reconcile.revision
+                                    ),
+                                );
+                            }
                             state.last_sync_error = Some(apply_error.to_string());
                             Err(apply_error)
                         }
                         Err(rollback_err) => {
+                            if let Some(store) = &mut state.checklist_store {
+                                let _ = store.mark_event(
+                                    cfg,
+                                    "rollback",
+                                    "rollback",
+                                    "failed",
+                                    format!(
+                                        "Rollback failed for revision {}: {}",
+                                        reconcile.revision, rollback_err
+                                    ),
+                                );
+                            }
                             state.last_sync_error = Some(format!(
                                 "{}; rollback failed: {}",
                                 apply_error, rollback_err
@@ -942,6 +1060,15 @@ async fn sync_once_with_retry(
             } else {
                 state.last_sync_error = None;
                 state.last_apply_status = Some("noop".to_string());
+                if let Some(store) = &mut state.checklist_store {
+                    let _ = store.mark_event(
+                        cfg,
+                        "apply",
+                        "apply",
+                        "skipped",
+                        format!("No apply required for revision {}", reconcile.revision),
+                    );
+                }
                 Ok(())
             };
 
@@ -957,6 +1084,15 @@ async fn sync_once_with_retry(
         }
         Err(err) => {
             state.last_sync_error = Some(format!("reconcile failed: {err}"));
+            if let Some(store) = &mut state.checklist_store {
+                let _ = store.mark_event(
+                    cfg,
+                    "reconcile",
+                    "reconcile",
+                    "failed",
+                    format!("Reconcile failed: {}", err),
+                );
+            }
             let outcome = SyncOutcome {
                 revision: state
                     .last_seen_revision
@@ -1315,10 +1451,6 @@ async fn push_heartbeat(
 
     if !resp.status().is_success() {
         anyhow::bail!("heartbeat push rejected: {}", resp.status());
-    }
-
-    if let Some(store) = &mut state.checklist_store {
-        let _ = store.mark_done(cfg, "send-heartbeat", "heartbeat");
     }
 
     Ok(())
@@ -2081,7 +2213,7 @@ password='y'
         let store = ChecklistStore::init(&cfg).expect("init checklist");
         assert!(store.checklist_url.is_some());
         let raw = std::fs::read_to_string(&cfg.checklist_path).expect("checklist file");
-        assert!(raw.contains("register-node"));
+        assert!(raw.contains("\"register\""));
     }
 
     #[test]
