@@ -195,11 +195,42 @@ struct RegisterResponse {
     node_token: String,
 }
 
+#[derive(Serialize)]
+struct ReconcileRequest<'a> {
+    node_id: &'a str,
+    desired_pool_size: u32,
+    current_revision: Option<&'a str>,
+}
+
 #[derive(Deserialize)]
-struct SnapshotResponse {
-    version: String,
+struct ReconcileResponse {
+    revision: String,
+    hash: String,
+    pool_summary: PoolSummary,
+    runtime_payload: RuntimePayload,
+    apply_instructions: ApplyInstructions,
+}
+
+#[derive(Default, Deserialize)]
+struct PoolSummary {
+    #[serde(default)]
+    desired_pool_size: u32,
+    #[serde(default)]
+    allocated_pool_size: u32,
+    #[serde(default)]
+    healthy_pool_size: u32,
+}
+
+#[derive(Default, Deserialize)]
+struct RuntimePayload {
+    #[serde(default)]
     credentials: Vec<Credential>,
-    checksum: String,
+}
+
+#[derive(Default, Deserialize)]
+struct ApplyInstructions {
+    #[serde(default)]
+    should_apply: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -210,20 +241,20 @@ struct Credential {
 
 #[derive(Serialize)]
 struct SyncReport {
-    version: String,
+    revision: String,
     status: String,
     applied_count: usize,
-    checksum: String,
+    hash: String,
     error: Option<String>,
     collected_at: String,
 }
 
 #[derive(Clone)]
 struct SyncOutcome {
-    version: String,
+    revision: String,
     status: String,
     applied_count: usize,
-    checksum: String,
+    hash: String,
     error: Option<String>,
 }
 
@@ -295,12 +326,11 @@ struct SecretEntry {
 
 #[derive(Default)]
 struct AgentState {
-    last_version: Option<String>,
-    last_checksum: Option<String>,
+    node_id: Option<String>,
+    last_seen_revision: Option<String>,
+    last_apply_status: Option<String>,
+    last_health_status: Option<String>,
     last_network_total: Option<u64>,
-    last_sync_failed: bool,
-    last_health_ok: bool,
-    registered_node_id: Option<String>,
     node_token: Option<String>,
     last_files_checksum: Option<String>,
     checklist_store: Option<ChecklistStore>,
@@ -453,10 +483,10 @@ async fn main() -> Result<()> {
                     resource_watcher = configure_resource_watcher(&cfg, resource_events_tx.clone())?;
                 }
                 if let Err(e) = sync_once(&cfg, &client, &mut state).await {
-                    state.last_sync_failed = true;
+                    state.last_apply_status = Some("failed".to_string());
                     error!("credentials sync failed: {e:#}");
                 } else {
-                    state.last_sync_failed = false;
+                    state.last_apply_status = Some("success".to_string());
                 }
             }
             _ = metrics_interval.tick() => {
@@ -468,7 +498,7 @@ async fn main() -> Result<()> {
                 }
             }
             _ = health_check_interval.tick() => {
-                state.last_health_ok = check_health(&cfg.trusttunnel_health_addr).await;
+                state.last_health_status = Some(if check_health(&cfg.trusttunnel_health_addr).await { "ok".to_string() } else { "degraded".to_string() });
             }
             Some(()) = resource_events_rx.recv() => {
                 if let Err(e) = sync_mounted_resources(&cfg, &client, &mut state).await {
@@ -602,7 +632,7 @@ async fn sync_mounted_resources(
     state: &mut AgentState,
 ) -> Result<()> {
     let node_id = state
-        .registered_node_id
+        .node_id
         .as_deref()
         .context("registered node id missing")?;
     let node_token = state
@@ -727,7 +757,7 @@ async fn ensure_registration(
     client: &reqwest::Client,
     state: &mut AgentState,
 ) -> Result<()> {
-    if state.registered_node_id.is_some() && state.node_token.is_some() {
+    if state.node_id.is_some() && state.node_token.is_some() {
         return Ok(());
     }
 
@@ -762,7 +792,7 @@ async fn ensure_registration(
     }
 
     let register_response: RegisterResponse = resp.json().await?;
-    state.registered_node_id = Some(register_response.node_id);
+    state.node_id = Some(register_response.node_id);
     state.node_token = Some(register_response.node_token);
     if let Some(store) = &mut state.checklist_store {
         let _ = store.mark_done(cfg, "register-node", "register");
@@ -778,61 +808,85 @@ async fn sync_once_with_retry(
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<()> {
-    let node_id = state.registered_node_id.as_deref().unwrap_or(&cfg.node_id);
-    let (outcome, sync_result) =
-        match fetch_snapshot_with_retry(cfg, client, node_id, max_retries, initial_backoff).await {
-            Ok(snapshot) => {
-                let mut outcome = SyncOutcome {
-                    version: snapshot.version.clone(),
-                    status: "success".to_string(),
-                    applied_count: snapshot.credentials.len(),
-                    checksum: snapshot.checksum.clone(),
-                    error: None,
-                };
+    let node_id = state.node_id.as_deref().unwrap_or(&cfg.node_id);
+    let (outcome, sync_result) = match reconcile_with_retry(
+        cfg,
+        client,
+        node_id,
+        state.last_seen_revision.as_deref(),
+        max_retries,
+        initial_backoff,
+    )
+    .await
+    {
+        Ok(reconcile) => {
+            let mut outcome = SyncOutcome {
+                revision: reconcile.revision.clone(),
+                status: "success".to_string(),
+                applied_count: 0,
+                hash: reconcile.hash.clone(),
+                error: None,
+            };
 
-                let is_new = state.last_version.as_deref() != Some(&snapshot.version)
-                    || state.last_checksum.as_deref() != Some(&snapshot.checksum);
+            let should_apply = reconcile.apply_instructions.should_apply
+                && state.last_seen_revision.as_deref() != Some(&reconcile.revision);
 
-                let sync_result = (|| -> Result<()> {
-                    if is_new {
-                        validate_checksum(&snapshot).context("validate_checksum")?;
-                        write_credentials_atomically(&cfg.credentials_path, &snapshot.credentials)
-                            .context("write_credentials_atomically")?;
-                        send_reload_signal(&cfg.trusttunnel_reload_signal)
-                            .context("send_reload_signal")?;
-                        info!("applied credentials snapshot version={}", snapshot.version);
-                    }
-                    Ok(())
-                })();
-
-                if sync_result.is_err() {
-                    outcome.status = "failed".to_string();
-                    outcome.error = sync_result
-                        .as_ref()
-                        .err()
-                        .map(|e| format!("sync failed: {e}"));
-                } else {
-                    let _ = sync_clients_targets(cfg, client, &snapshot.credentials).await;
-                    state.last_version = Some(snapshot.version);
-                    state.last_checksum = Some(snapshot.checksum);
-                    if let Some(store) = &mut state.checklist_store {
-                        let _ = store.mark_done(cfg, "sync-configmap", "sync-configmap");
-                    }
+            let sync_result = (|| -> Result<()> {
+                if should_apply {
+                    write_credentials_atomically(
+                        &cfg.credentials_path,
+                        &reconcile.runtime_payload.credentials,
+                    )
+                    .context("write_credentials_atomically")?;
+                    send_reload_signal(&cfg.trusttunnel_reload_signal)
+                        .context("send_reload_signal")?;
+                    info!("applied reconcile revision={} desired_pool={} allocated_pool={} healthy_pool={}",
+                            reconcile.revision,
+                            reconcile.pool_summary.desired_pool_size,
+                            reconcile.pool_summary.allocated_pool_size,
+                            reconcile.pool_summary.healthy_pool_size,
+                        );
+                    outcome.applied_count = reconcile.runtime_payload.credentials.len();
                 }
+                Ok(())
+            })();
 
-                (outcome, sync_result)
+            if sync_result.is_err() {
+                outcome.status = "failed".to_string();
+                outcome.error = sync_result
+                    .as_ref()
+                    .err()
+                    .map(|e| format!("sync failed: {e}"));
+            } else {
+                let _ =
+                    sync_clients_targets(cfg, client, &reconcile.runtime_payload.credentials).await;
+                state.last_seen_revision = Some(reconcile.revision);
+                state.last_apply_status = Some(if should_apply {
+                    "applied".to_string()
+                } else {
+                    "noop".to_string()
+                });
+                if let Some(store) = &mut state.checklist_store {
+                    let _ = store.mark_done(cfg, "sync-configmap", "sync-configmap");
+                }
             }
-            Err(err) => {
-                let outcome = SyncOutcome {
-                    version: "unknown".to_string(),
-                    status: "failed".to_string(),
-                    applied_count: 0,
-                    checksum: "unknown".to_string(),
-                    error: Some(format!("fetch_snapshot failed: {err}")),
-                };
-                (outcome, Err(err))
-            }
-        };
+
+            (outcome, sync_result)
+        }
+        Err(err) => {
+            let outcome = SyncOutcome {
+                revision: state
+                    .last_seen_revision
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                status: "failed".to_string(),
+                applied_count: 0,
+                hash: "unknown".to_string(),
+                error: Some(format!("reconcile failed: {err}")),
+            };
+            (outcome, Err(err))
+        }
+    };
 
     post_sync_report(cfg, client, node_id, outcome).await?;
     sync_result
@@ -902,100 +956,58 @@ async fn sync_clients_configmap(
     anyhow::bail!("configmap sync conflict retry exhausted")
 }
 
-async fn fetch_snapshot_with_retry(
+async fn reconcile_with_retry(
     cfg: &Config,
     client: &reqwest::Client,
     node_id: &str,
+    current_revision: Option<&str>,
     max_retries: usize,
     initial_backoff: Duration,
-) -> Result<SnapshotResponse> {
+) -> Result<ReconcileResponse> {
     let mut backoff = initial_backoff;
     for _ in 0..max_retries {
-        match fetch_snapshot(cfg, client, node_id).await {
-            Ok(snapshot) => return Ok(snapshot),
+        match reconcile(cfg, client, node_id, current_revision).await {
+            Ok(resp) => return Ok(resp),
             Err(e) => {
-                warn!("snapshot fetch failed: {e:#}; retrying in {:?}", backoff);
+                warn!("reconcile failed: {e:#}; retrying in {:?}", backoff);
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
         }
     }
 
-    fetch_snapshot(cfg, client, node_id).await
+    reconcile(cfg, client, node_id, current_revision).await
 }
 
-async fn fetch_snapshot(
+async fn reconcile(
     cfg: &Config,
     client: &reqwest::Client,
     node_id: &str,
-) -> Result<SnapshotResponse> {
+    current_revision: Option<&str>,
+) -> Result<ReconcileResponse> {
     let url = format!(
-        "{}/internal/trusttunnel/nodes/{}/credentials-snapshot",
-        cfg.lk_internal_base_url, node_id
+        "{}/internal/trusttunnel/nodes/reconcile",
+        cfg.lk_internal_base_url
     );
 
+    let payload = ReconcileRequest {
+        node_id,
+        desired_pool_size: cfg.desired_pool_size,
+        current_revision,
+    };
+
     let resp = client
-        .get(url)
+        .post(url)
         .bearer_auth(&cfg.internal_agent_token)
+        .json(&payload)
         .send()
         .await?;
 
     if resp.status() != StatusCode::OK {
-        anyhow::bail!("unexpected snapshot response status: {}", resp.status());
+        anyhow::bail!("unexpected reconcile response status: {}", resp.status());
     }
 
     Ok(resp.json().await?)
-}
-
-fn validate_checksum(snapshot: &SnapshotResponse) -> Result<()> {
-    let checksum = canonical_checksum(&snapshot.credentials);
-    if checksum != snapshot.checksum {
-        anyhow::bail!("snapshot checksum mismatch");
-    }
-    Ok(())
-}
-
-fn canonical_checksum(credentials: &[Credential]) -> String {
-    let mut canonical_credentials = credentials.to_vec();
-    canonical_credentials.sort_by(|a, b| {
-        a.username
-            .cmp(&b.username)
-            .then_with(|| a.password.cmp(&b.password))
-    });
-
-    let entries = canonical_credentials
-        .iter()
-        .map(|credential| {
-            format!(
-                "{{\"username\":\"{}\",\"password\":\"{}\"}}",
-                escape_json_string(&credential.username),
-                escape_json_string(&credential.password)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let raw = format!("{{\"credentials\":[{}]}}", entries);
-
-    format!("{:x}", Sha256::digest(raw.as_bytes()))
-}
-
-fn escape_json_string(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for ch in value.chars() {
-        match ch {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\u{08}' => escaped.push_str("\\b"),
-            '\u{0C}' => escaped.push_str("\\f"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            c if c.is_control() => escaped.push_str(&format!("\\u{:04x}", c as u32)),
-            c => escaped.push(c),
-        }
-    }
-
-    escaped
 }
 
 fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Result<()> {
@@ -1116,10 +1128,10 @@ async fn post_sync_report(
     );
 
     let report = SyncReport {
-        version: outcome.version,
+        revision: outcome.revision,
         status: outcome.status,
         applied_count: outcome.applied_count,
-        checksum: outcome.checksum,
+        hash: outcome.hash,
         error: outcome.error,
         collected_at: Utc::now().to_rfc3339(),
     };
@@ -1156,12 +1168,18 @@ async fn push_metrics(
     state.last_network_total = Some(current_net);
 
     let payload = MetricsPayload {
-        node_id: state.registered_node_id.as_deref().unwrap_or(&cfg.node_id),
-        active_connections: if state.last_health_ok { 1 } else { 0 },
+        node_id: state.node_id.as_deref().unwrap_or(&cfg.node_id),
+        active_connections: if state.last_health_status.as_deref() == Some("ok") {
+            1
+        } else {
+            0
+        },
         cpu_usage_percent,
         memory_usage_percent,
         bandwidth_mbps,
-        error_rate: if state.last_sync_failed || !state.last_health_ok {
+        error_rate: if state.last_apply_status.as_deref() == Some("failed")
+            || state.last_health_status.as_deref() != Some("ok")
+        {
             1.0
         } else {
             0.0
@@ -1192,7 +1210,7 @@ async fn push_heartbeat(
     ensure_registration(cfg, client, state).await?;
 
     let node_id = state
-        .registered_node_id
+        .node_id
         .as_deref()
         .context("registered node id missing")?;
     let node_token = state
@@ -1201,7 +1219,9 @@ async fn push_heartbeat(
         .context("registered node token missing")?;
 
     let payload = HeartbeatPayload {
-        status: if state.last_sync_failed || !state.last_health_ok {
+        status: if state.last_apply_status.as_deref() == Some("failed")
+            || state.last_health_status.as_deref() == Some("degraded")
+        {
             "degraded"
         } else {
             "ok"
@@ -1212,8 +1232,8 @@ async fn push_heartbeat(
             pod_namespace: &cfg.pod_namespace,
             node_name: &cfg.node_name,
             pod_ip: &cfg.pod_ip,
-            sync_failed: state.last_sync_failed,
-            endpoint_healthy: state.last_health_ok,
+            sync_failed: state.last_apply_status.as_deref() == Some("failed"),
+            endpoint_healthy: state.last_health_status.as_deref() == Some("ok"),
         },
         clients_count: count_clients_from_credentials_file(&cfg.credentials_path),
         checklist_url: state
@@ -1364,23 +1384,12 @@ mod tests {
         }
     }
 
-    fn checksum_for(credentials: Vec<Credential>) -> String {
-        canonical_checksum(&credentials)
-    }
-
-    fn legacy_toml_checksum_for(credentials: Vec<Credential>) -> String {
-        let raw = toml::to_string(&CredentialsFile {
-            client: credentials,
-        })
-        .expect("toml serialization");
-        format!("{:x}", Sha256::digest(raw.as_bytes()))
-    }
-
     #[tokio::test]
-    async fn sends_failed_report_when_snapshot_fetch_fails() {
+    async fn sends_failed_report_when_reconcile_fails() {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-fetch-fail.toml");
-        let cfg = test_config(server.base_url(), credentials_path);
+        let mut cfg = test_config(server.base_url(), credentials_path);
+        cfg.trusttunnel_reload_signal = "BAD".to_string();
         let client = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -1390,8 +1399,8 @@ mod tests {
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
                 then.status(500);
             })
             .await;
@@ -1413,10 +1422,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sends_failed_report_when_checksum_mismatch() {
+    async fn sends_failed_report_when_apply_fails() {
         let server = MockServer::start_async().await;
         let credentials_path = std::env::temp_dir().join("trusttunnel-test-checksum-fail.toml");
-        let cfg = test_config(server.base_url(), credentials_path);
+        let mut cfg = test_config(server.base_url(), credentials_path);
+        cfg.trusttunnel_reload_signal = "BAD".to_string();
         let client = reqwest::Client::builder()
             .no_proxy()
             .build()
@@ -1431,12 +1441,14 @@ mod tests {
 
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
                 then.status(200).json_body(json!({
-                    "version": "v1",
-                    "credentials": credentials,
-                    "checksum": "deadbeef"
+                    "revision": "r1",
+                    "hash": "h1",
+                    "pool_summary": {},
+                    "runtime_payload": {"credentials": credentials},
+                    "apply_instructions": {"should_apply": true}
                 }));
             })
             .await;
@@ -1445,7 +1457,7 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "failed", "version": "v1" }).to_string());
+                    .json_body_partial(json!({ "status": "failed" }).to_string());
                 then.status(200);
             })
             .await;
@@ -1471,16 +1483,16 @@ mod tests {
             username: "bob".to_string(),
             password: "pw".to_string(),
         }];
-        let checksum = checksum_for(credentials.clone());
-
         let _snapshot = server
             .mock_async(|when, then| {
-                when.method(GET)
-                    .path("/internal/trusttunnel/nodes/node-1/credentials-snapshot");
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
                 then.status(200).json_body(json!({
-                    "version": "v2",
-                    "credentials": credentials,
-                    "checksum": checksum
+                    "revision": "r2",
+                    "hash": "h2",
+                    "pool_summary": {},
+                    "runtime_payload": {"credentials": credentials},
+                    "apply_instructions": {"should_apply": true}
                 }));
             })
             .await;
@@ -1489,14 +1501,15 @@ mod tests {
             .mock_async(|when, then| {
                 when.method(POST)
                     .path("/internal/trusttunnel/nodes/node-1/sync-report")
-                    .json_body_partial(json!({ "status": "success", "version": "v2" }).to_string());
+                    .json_body_partial(
+                        json!({ "status": "success", "revision": "r2" }).to_string(),
+                    );
                 then.status(200);
             })
             .await;
 
         let mut state = AgentState {
-            last_version: Some("v2".to_string()),
-            last_checksum: Some(checksum),
+            last_seen_revision: Some("r2".to_string()),
             ..Default::default()
         };
 
@@ -1504,6 +1517,66 @@ mod tests {
             sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1)).await;
 
         assert!(result.is_ok());
+        success_report.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn skips_apply_when_revision_unchanged() {
+        let server = MockServer::start_async().await;
+        let credentials_path = std::env::temp_dir().join("trusttunnel-test-noop.toml");
+        std::fs::write(
+            &credentials_path,
+            "client = []
+",
+        )
+        .expect("seed credentials file");
+        let cfg = test_config(server.base_url(), credentials_path.clone());
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        let reconcile_mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/reconcile");
+                then.status(200).json_body(json!({
+                    "revision": "r2",
+                    "hash": "h2",
+                    "pool_summary": {},
+                    "runtime_payload": {"credentials": [{"username": "new", "password": "pw"}]},
+                    "apply_instructions": {"should_apply": false}
+                }));
+            })
+            .await;
+
+        let success_report = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/internal/trusttunnel/nodes/node-1/sync-report")
+                    .json_body_partial(
+                        json!({ "status": "success", "applied_count": 0 }).to_string(),
+                    );
+                then.status(200);
+            })
+            .await;
+
+        let mut state = AgentState {
+            last_seen_revision: Some("r2".to_string()),
+            ..Default::default()
+        };
+
+        sync_once_with_retry(&cfg, &client, &mut state, 0, Duration::from_millis(1))
+            .await
+            .expect("sync should be no-op");
+
+        let content = std::fs::read_to_string(&credentials_path).expect("read credentials");
+        assert_eq!(
+            content,
+            "client = []
+"
+        );
+        reconcile_mock.assert_async().await;
         success_report.assert_async().await;
     }
 
@@ -1517,8 +1590,8 @@ mod tests {
             .build()
             .expect("client");
         let mut state = AgentState {
-            last_sync_failed: false,
-            last_health_ok: true,
+            last_apply_status: Some("success".to_string()),
+            last_health_status: Some("ok".to_string()),
             checklist_store: ChecklistStore::init(&cfg).ok(),
             ..Default::default()
         };
@@ -1584,7 +1657,7 @@ mod tests {
             .expect("second registration");
 
         register_mock.assert_hits_async(1).await;
-        assert_eq!(state.registered_node_id.as_deref(), Some("registered-node"));
+        assert_eq!(state.node_id.as_deref(), Some("registered-node"));
     }
 
     #[tokio::test]
@@ -1619,8 +1692,8 @@ mod tests {
             .await;
 
         let mut first_state = AgentState {
-            last_sync_failed: false,
-            last_health_ok: true,
+            last_apply_status: Some("success".to_string()),
+            last_health_status: Some("ok".to_string()),
             ..Default::default()
         };
         push_heartbeat(&cfg, &client, &mut first_state)
@@ -1628,8 +1701,8 @@ mod tests {
             .expect("first heartbeat");
 
         let mut second_state = AgentState {
-            last_sync_failed: false,
-            last_health_ok: true,
+            last_apply_status: Some("success".to_string()),
+            last_health_status: Some("ok".to_string()),
             ..Default::default()
         };
         push_heartbeat(&cfg, &client, &mut second_state)
@@ -1653,44 +1726,6 @@ mod tests {
         assert_eq!(files[0].content, "abc");
 
         let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn checksum_rejects_legacy_toml_algorithm() {
-        let snapshot = SnapshotResponse {
-            version: "v-legacy".to_string(),
-            credentials: vec![Credential {
-                username: "alice".to_string(),
-                password: "secret".to_string(),
-            }],
-            checksum: legacy_toml_checksum_for(vec![Credential {
-                username: "alice".to_string(),
-                password: "secret".to_string(),
-            }]),
-        };
-
-        assert!(validate_checksum(&snapshot).is_err());
-    }
-
-    #[test]
-    fn checksum_accepts_documented_canonical_example() {
-        let snapshot = SnapshotResponse {
-            version: "v-doc-example".to_string(),
-            credentials: vec![
-                Credential {
-                    username: "bob".to_string(),
-                    password: "pw2".to_string(),
-                },
-                Credential {
-                    username: "alice".to_string(),
-                    password: "pw1".to_string(),
-                },
-            ],
-            checksum: "84cf9958ba7047e33b96652394c2ee7314185913a2517bf89954472c1bdafb14"
-                .to_string(),
-        };
-
-        assert!(validate_checksum(&snapshot).is_ok());
     }
 
     #[derive(Default)]
