@@ -32,6 +32,16 @@ struct Config {
     health_check_interval_seconds: u64,
     metrics_push_interval: u64,
     cluster_id: String,
+    public_host: String,
+    endpoint_ip: String,
+    desired_pool_size: u32,
+    weight: u32,
+    stage: String,
+    is_enabled: bool,
+    rollout_group: Option<String>,
+    cluster: Option<String>,
+    namespace: Option<String>,
+    register_pod_name: Option<String>,
     pod_name: String,
     pod_namespace: String,
     node_name: String,
@@ -52,12 +62,29 @@ struct Config {
 
 impl Config {
     fn from_env() -> Result<Self> {
+        fn required_env(name: &str) -> Result<String> {
+            let value =
+                std::env::var(name).with_context(|| format!("missing required env {name}"))?;
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("required env {name} must not be empty");
+            }
+            Ok(trimmed.to_string())
+        }
+
+        fn optional_env(name: &str) -> Option<String> {
+            std::env::var(name)
+                .ok()
+                .map(|x| x.trim().to_string())
+                .filter(|x| !x.is_empty())
+        }
+
         Ok(Self {
-            lk_internal_base_url: std::env::var("LK_INTERNAL_BASE_URL")?,
+            lk_internal_base_url: required_env("LK_INTERNAL_BASE_URL")?,
             lk_api_base_url: std::env::var("LK_API_BASE_URL")
                 .or_else(|_| std::env::var("LK_INTERNAL_BASE_URL"))?,
-            internal_agent_token: std::env::var("INTERNAL_AGENT_TOKEN")?,
-            node_id: std::env::var("NODE_ID")?,
+            internal_agent_token: required_env("INTERNAL_AGENT_TOKEN")?,
+            node_id: required_env("NODE_ID")?,
             sync_interval_seconds: std::env::var("SYNC_INTERVAL_SECONDS")
                 .unwrap_or_else(|_| "60".to_string())
                 .parse()?,
@@ -75,7 +102,17 @@ impl Config {
             metrics_push_interval: std::env::var("METRICS_PUSH_INTERVAL")
                 .unwrap_or_else(|_| "30".to_string())
                 .parse()?,
-            cluster_id: std::env::var("CLUSTER_ID").unwrap_or_else(|_| "unknown".to_string()),
+            cluster_id: required_env("CLUSTER_ID")?,
+            public_host: required_env("PUBLIC_HOST")?,
+            endpoint_ip: required_env("ENDPOINT_IP")?,
+            desired_pool_size: required_env("DESIRED_POOL_SIZE")?.parse()?,
+            weight: required_env("WEIGHT")?.parse()?,
+            stage: required_env("STAGE")?,
+            is_enabled: required_env("IS_ENABLED")?.parse()?,
+            rollout_group: optional_env("ROLLOUT_GROUP"),
+            cluster: optional_env("CLUSTER"),
+            namespace: optional_env("NAMESPACE"),
+            register_pod_name: optional_env("REGISTER_POD_NAME"),
             pod_name: std::env::var("POD_NAME").unwrap_or_else(|_| "unknown".to_string()),
             pod_namespace: std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string()),
             node_name: std::env::var("NODE_NAME").unwrap_or_else(|_| "unknown".to_string()),
@@ -110,18 +147,21 @@ impl Config {
             ),
             clients_configmap_name: std::env::var("SIDECAR_CLIENTS_CONFIGMAP").ok(),
             clients_configmap_namespace: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_NAMESPACE")
-                .unwrap_or_else(|_| std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string())),
+                .unwrap_or_else(|_| {
+                    std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string())
+                }),
             clients_configmap_key: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_KEY")
                 .unwrap_or_else(|_| "clients.json".to_string()),
             kube_api_url: std::env::var("KUBERNETES_SERVICE_HOST")
                 .map(|host| {
-                    let port = std::env::var("KUBERNETES_SERVICE_PORT").unwrap_or_else(|_| "443".to_string());
+                    let port = std::env::var("KUBERNETES_SERVICE_PORT")
+                        .unwrap_or_else(|_| "443".to_string());
                     format!("https://{host}:{port}")
                 })
                 .unwrap_or_else(|_| "https://kubernetes.default.svc:443".to_string()),
-            kube_token_path: PathBuf::from(
-                std::env::var("KUBE_TOKEN_PATH").unwrap_or_else(|_| "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()),
-            ),
+            kube_token_path: PathBuf::from(std::env::var("KUBE_TOKEN_PATH").unwrap_or_else(|_| {
+                "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
+            })),
         })
     }
 }
@@ -129,8 +169,21 @@ impl Config {
 #[derive(Serialize)]
 struct RegisterRequest<'a> {
     cluster_id: &'a str,
+    public_host: &'a str,
+    endpoint_ip: &'a str,
+    desired_pool_size: u32,
+    weight: u32,
+    stage: &'a str,
+    is_enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rollout_group: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cluster: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pod_name: Option<&'a str>,
     node_name: &'a str,
-    pod_name: &'a str,
     pod_namespace: &'a str,
     pod_uid: &'a str,
     pod_ip: &'a str,
@@ -681,8 +734,17 @@ async fn ensure_registration(
     let url = format!("{}/api/trusttunnel/nodes/register", cfg.lk_api_base_url);
     let payload = RegisterRequest {
         cluster_id: &cfg.cluster_id,
+        public_host: &cfg.public_host,
+        endpoint_ip: &cfg.endpoint_ip,
+        desired_pool_size: cfg.desired_pool_size,
+        weight: cfg.weight,
+        stage: &cfg.stage,
+        is_enabled: cfg.is_enabled,
+        rollout_group: cfg.rollout_group.as_deref(),
+        cluster: cfg.cluster.as_deref(),
+        namespace: cfg.namespace.as_deref(),
+        pod_name: cfg.register_pod_name.as_deref().or(Some(&cfg.pod_name)),
         node_name: &cfg.node_name,
-        pod_name: &cfg.pod_name,
         pod_namespace: &cfg.pod_namespace,
         pod_uid: &cfg.pod_uid,
         pod_ip: &cfg.pod_ip,
@@ -716,8 +778,9 @@ async fn sync_once_with_retry(
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<()> {
+    let node_id = state.registered_node_id.as_deref().unwrap_or(&cfg.node_id);
     let (outcome, sync_result) =
-        match fetch_snapshot_with_retry(cfg, client, max_retries, initial_backoff).await {
+        match fetch_snapshot_with_retry(cfg, client, node_id, max_retries, initial_backoff).await {
             Ok(snapshot) => {
                 let mut outcome = SyncOutcome {
                     version: snapshot.version.clone(),
@@ -771,11 +834,15 @@ async fn sync_once_with_retry(
             }
         };
 
-    post_sync_report(cfg, client, outcome).await?;
+    post_sync_report(cfg, client, node_id, outcome).await?;
     sync_result
 }
 
-async fn sync_clients_targets(cfg: &Config, client: &reqwest::Client, credentials: &[Credential]) -> Result<()> {
+async fn sync_clients_targets(
+    cfg: &Config,
+    client: &reqwest::Client,
+    credentials: &[Credential],
+) -> Result<()> {
     write_clients_export_file(&cfg.clients_export_path, credentials)?;
     if let Some(configmap_name) = &cfg.clients_configmap_name {
         sync_clients_configmap(cfg, client, configmap_name, credentials).await?;
@@ -838,12 +905,13 @@ async fn sync_clients_configmap(
 async fn fetch_snapshot_with_retry(
     cfg: &Config,
     client: &reqwest::Client,
+    node_id: &str,
     max_retries: usize,
     initial_backoff: Duration,
 ) -> Result<SnapshotResponse> {
     let mut backoff = initial_backoff;
     for _ in 0..max_retries {
-        match fetch_snapshot(cfg, client).await {
+        match fetch_snapshot(cfg, client, node_id).await {
             Ok(snapshot) => return Ok(snapshot),
             Err(e) => {
                 warn!("snapshot fetch failed: {e:#}; retrying in {:?}", backoff);
@@ -853,13 +921,17 @@ async fn fetch_snapshot_with_retry(
         }
     }
 
-    fetch_snapshot(cfg, client).await
+    fetch_snapshot(cfg, client, node_id).await
 }
 
-async fn fetch_snapshot(cfg: &Config, client: &reqwest::Client) -> Result<SnapshotResponse> {
+async fn fetch_snapshot(
+    cfg: &Config,
+    client: &reqwest::Client,
+    node_id: &str,
+) -> Result<SnapshotResponse> {
     let url = format!(
         "{}/internal/trusttunnel/nodes/{}/credentials-snapshot",
-        cfg.lk_internal_base_url, cfg.node_id
+        cfg.lk_internal_base_url, node_id
     );
 
     let resp = client
@@ -1035,11 +1107,12 @@ fn send_reload_signal(signal_name: &str) -> Result<()> {
 async fn post_sync_report(
     cfg: &Config,
     client: &reqwest::Client,
+    node_id: &str,
     outcome: SyncOutcome,
 ) -> Result<()> {
     let url = format!(
         "{}/internal/trusttunnel/nodes/{}/sync-report",
-        cfg.lk_internal_base_url, cfg.node_id
+        cfg.lk_internal_base_url, node_id
     );
 
     let report = SyncReport {
@@ -1083,7 +1156,7 @@ async fn push_metrics(
     state.last_network_total = Some(current_net);
 
     let payload = MetricsPayload {
-        node_id: &cfg.node_id,
+        node_id: state.registered_node_id.as_deref().unwrap_or(&cfg.node_id),
         active_connections: if state.last_health_ok { 1 } else { 0 },
         cpu_usage_percent,
         memory_usage_percent,
@@ -1262,6 +1335,16 @@ mod tests {
             health_check_interval_seconds: 15,
             metrics_push_interval: 30,
             cluster_id: "cluster-a".to_string(),
+            public_host: "gw.example.com".to_string(),
+            endpoint_ip: "10.10.0.11".to_string(),
+            desired_pool_size: 1,
+            weight: 100,
+            stage: "prod".to_string(),
+            is_enabled: true,
+            rollout_group: None,
+            cluster: None,
+            namespace: None,
+            register_pod_name: None,
             pod_name: "pod-1".to_string(),
             pod_namespace: "default".to_string(),
             node_name: "node-a".to_string(),
@@ -1470,6 +1553,93 @@ mod tests {
         heartbeat_mock.assert_async().await;
     }
 
+    #[tokio::test]
+    async fn ensure_registration_is_idempotent_without_duplicate_register_requests() {
+        let server = MockServer::start_async().await;
+        let cfg = test_config(
+            server.base_url(),
+            std::env::temp_dir().join("trusttunnel-test-idempotent-register.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+        let mut state = AgentState::default();
+
+        let register_mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/api/trusttunnel/nodes/register");
+                then.status(200).json_body(json!({
+                    "node_id": "registered-node",
+                    "node_token": "registered-token"
+                }));
+            })
+            .await;
+
+        ensure_registration(&cfg, &client, &mut state)
+            .await
+            .expect("first registration");
+        ensure_registration(&cfg, &client, &mut state)
+            .await
+            .expect("second registration");
+
+        register_mock.assert_hits_async(1).await;
+        assert_eq!(state.registered_node_id.as_deref(), Some("registered-node"));
+    }
+
+    #[tokio::test]
+    async fn reregister_on_restart_reuses_single_lk_node_id_for_requests() {
+        let server = MockServer::start_async().await;
+        let cfg = test_config(
+            server.base_url(),
+            std::env::temp_dir().join("trusttunnel-test-reregister-restart.toml"),
+        );
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
+
+        let register_mock = server
+            .mock_async(|when, then| {
+                when.method(POST).path("/api/trusttunnel/nodes/register");
+                then.status(200).json_body(json!({
+                    "node_id": "stable-node-id",
+                    "node_token": "stable-token"
+                }));
+            })
+            .await;
+
+        let heartbeat_mock = server
+            .mock_async(|when, then| {
+                when.method(POST)
+                    .path("/api/trusttunnel/nodes/stable-node-id/heartbeat")
+                    .header("authorization", "Bearer stable-token");
+                then.status(200);
+            })
+            .await;
+
+        let mut first_state = AgentState {
+            last_sync_failed: false,
+            last_health_ok: true,
+            ..Default::default()
+        };
+        push_heartbeat(&cfg, &client, &mut first_state)
+            .await
+            .expect("first heartbeat");
+
+        let mut second_state = AgentState {
+            last_sync_failed: false,
+            last_health_ok: true,
+            ..Default::default()
+        };
+        push_heartbeat(&cfg, &client, &mut second_state)
+            .await
+            .expect("second heartbeat after restart");
+
+        register_mock.assert_hits_async(2).await;
+        heartbeat_mock.assert_hits_async(2).await;
+    }
+
     #[test]
     fn collects_files_from_nested_directories() {
         let root = std::env::temp_dir().join(format!("trusttunnel-collect-{}", std::process::id()));
@@ -1629,7 +1799,10 @@ mod tests {
             })
             .await;
 
-        let client = reqwest::Client::builder().no_proxy().build().expect("client");
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .expect("client");
         sync_clients_configmap(
             &cfg,
             &client,
@@ -1644,5 +1817,4 @@ mod tests {
 
         patch_mock.assert_async().await;
     }
-
 }

@@ -106,6 +106,26 @@ spec:
               value: {{ .Values.lkBaseUrl | quote }}
             - name: CLUSTER_ID
               value: {{ .Values.sidecar.clusterId | quote }}
+            - name: PUBLIC_HOST
+              value: {{ .Values.sidecar.registration.publicHost | quote }}
+            - name: ENDPOINT_IP
+              value: {{ .Values.sidecar.registration.endpointIp | quote }}
+            - name: DESIRED_POOL_SIZE
+              value: {{ .Values.sidecar.registration.desiredPoolSize | quote }}
+            - name: WEIGHT
+              value: {{ .Values.sidecar.registration.weight | quote }}
+            - name: STAGE
+              value: {{ .Values.sidecar.registration.stage | quote }}
+            - name: IS_ENABLED
+              value: {{ .Values.sidecar.registration.isEnabled | quote }}
+            - name: ROLLOUT_GROUP
+              value: {{ .Values.sidecar.registration.rolloutGroup | quote }}
+            - name: CLUSTER
+              value: {{ .Values.sidecar.registration.cluster | quote }}
+            - name: NAMESPACE
+              value: {{ .Values.sidecar.registration.namespace | quote }}
+            - name: REGISTER_POD_NAME
+              value: {{ .Values.sidecar.registration.podName | quote }}
             - name: NODE_ID
               valueFrom:
                 fieldRef:
