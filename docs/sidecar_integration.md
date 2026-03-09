@@ -5,8 +5,8 @@ ____________________________________________________________________
 3. Чек-лист и акт должны быть доступны из LK (админка) по ссылке на ноду.
 Пример JSON:
 {
- "checklist":[{"id":"sync-configmap","title":"Sync ConfigMap","status":"pending"}],
- "akt": {"generated_at":"...","tasks_completed":["sync-configmap"],"summary":"..."}
+ "checklist":[{"id":"sync-runtime","title":"Apply runtime payload","status":"pending"}],
+ "akt": {"generated_at":"...","tasks_completed":["sync-runtime"],"summary":"..."}
 }
 Acceptance: в админке доступен checklist и akt ссылка после выполнения задач.
 ____________________________________________________________________
@@ -16,7 +16,7 @@ ____________________________________________________________________
 Epic branch: `epic/sidecar-core`
 
 ## Implemented baseline chain
-`register -> heartbeat -> command ack/result -> local clients sync stub -> akt artifact`
+`register -> heartbeat -> command ack/result -> runtime payload apply -> akt artifact`
 
 ### Sidecar runtime (TT)
 - WS client with reconnect: `wss://lk/api/nodes/ws?node_id=...&token=...`.
@@ -35,11 +35,11 @@ Epic branch: `epic/sidecar-core`
   - JSON report (`.json`)
   - path: `artifacts/akt/{command_id}-{node}-{ts}.json`
 
-### ConfigMap/dev sync behavior
-- Dev mode writes generated clients into local file `/tmp/clients.json` (override with `SIDECAR_CLIENTS_EXPORT_PATH`).
-- Optional native k8s sync updates a ConfigMap via Kubernetes API when `SIDECAR_CLIENTS_CONFIGMAP` is set.
-- ConfigMap sync uses merge-patch with retry on HTTP `409` conflicts.
-- `clients_count` is derived from synced credentials payload and reported in heartbeat.
+### Runtime payload behavior
+- Sidecar applies runtime config only from `runtime_payload.runtime_config`.
+- Runtime file is written atomically into `CREDENTIALS_PATH` and then endpoint reload is triggered.
+- Legacy fallback from `runtime_payload.credentials` is gated by `SIDECAR_ENABLE_LEGACY_CREDENTIALS_FLOW=true` and is disabled by default in production.
+- `clients_count` is derived from rendered runtime config and reported in heartbeat.
 
 ## Manual smoke test
 1. Set env:
@@ -60,16 +60,16 @@ Epic branch: `epic/sidecar-core`
   - `sidecar.lk.wsEndpoint`
   - `sidecar.tokenSecretName` + `sidecar.tokenSecretKey`
   - `sidecar.maxClients`
-  - `sidecar.clientsConfigMap.{name,namespace,key}`
-- RBAC templates create `ServiceAccount`, `Role`, `RoleBinding` with ConfigMap read/write permissions when `sidecar.rbac.create=true`.
+  - `nodeConfigMap.{enabled,name}` with fixed technical keys (`node_name/public_host/endpoint_ip/desired_pool_size/weight/stage/is_enabled`)
+  - `runtime.enableLegacyCredentialsFlow` for migration-only fallback
 
 
 ## Epic coverage matrix
 - ✅ Registration: WS register frame + REST fallback contracts documented.
 - ✅ Heartbeat: 30s loop with clients/checklist/akt metadata.
 - ✅ Command bus: queued/sent/ack/in_progress/done/failed state machine in API spec.
-- ✅ ConfigMap sync: dev local file + optional Kubernetes API update flow.
-- ✅ Clients sync: generated credentials exported to clients payload and config target.
+- ✅ Runtime sync: `runtime_payload.runtime_config` atomic apply + reload.
+- ✅ Legacy flow: optional feature-flagged credentials fallback.
 - ✅ Akt writer: human+json artifacts and `akt_url` propagation.
 - ✅ Helm/Docker/CI: tracked in `TASK_TT_04` and `TASK_TT_05` progress sections.
 

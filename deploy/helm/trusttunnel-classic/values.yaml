@@ -48,16 +48,13 @@ sidecar:
     cluster: ""
     namespace: ""
     podName: ""
+    nodeName: ""
   maxClients: 250
   tokenSecretName: trusttunnel-sidecar-secret
   tokenSecretKey: INTERNAL_AGENT_TOKEN
   serviceAccountName: ""
   lk:
     wsEndpoint: "wss://lk/api/nodes/ws"
-  clientsConfigMap:
-    name: trusttunnel-sidecar-clients
-    namespace: default
-    key: clients.json
   rbac:
     create: true
     roleName: ""
@@ -106,6 +103,11 @@ runtime:
   trustTunnelReloadMode: signal
   trustTunnelPid: "1"
   trustTunnelTcpAddr: 127.0.0.1:8443
+  enableLegacyCredentialsFlow: false
+
+nodeConfigMap:
+  enabled: true
+  name: trusttunnel-node-runtime
 
 networkPolicy:
   enabled: true

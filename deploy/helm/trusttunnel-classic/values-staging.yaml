@@ -25,8 +25,6 @@ sidecar:
   tokenSecretName: trusttunnel-sidecar-secret-staging
   lk:
     wsEndpoint: wss://lk-staging/api/nodes/ws
-  clientsConfigMap:
-    namespace: trusttunnel
   readiness:
     initialDelaySeconds: 4
     periodSeconds: 10

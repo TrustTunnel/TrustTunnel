@@ -52,12 +52,7 @@ struct Config {
     sync_secret_keys: Vec<String>,
     checklist_path: PathBuf,
     artifacts_root: PathBuf,
-    clients_export_path: PathBuf,
-    clients_configmap_name: Option<String>,
-    clients_configmap_namespace: String,
-    clients_configmap_key: String,
-    kube_api_url: String,
-    kube_token_path: PathBuf,
+    legacy_credentials_flow_enabled: bool,
 }
 
 impl Config {
@@ -141,27 +136,13 @@ impl Config {
                 std::env::var("SIDECAR_ARTIFACTS_ROOT")
                     .unwrap_or_else(|_| "artifacts/akt".to_string()),
             ),
-            clients_export_path: PathBuf::from(
-                std::env::var("SIDECAR_CLIENTS_EXPORT_PATH")
-                    .unwrap_or_else(|_| "/tmp/clients.json".to_string()),
-            ),
-            clients_configmap_name: std::env::var("SIDECAR_CLIENTS_CONFIGMAP").ok(),
-            clients_configmap_namespace: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_NAMESPACE")
-                .unwrap_or_else(|_| {
-                    std::env::var("POD_NAMESPACE").unwrap_or_else(|_| "default".to_string())
-                }),
-            clients_configmap_key: std::env::var("SIDECAR_CLIENTS_CONFIGMAP_KEY")
-                .unwrap_or_else(|_| "clients.json".to_string()),
-            kube_api_url: std::env::var("KUBERNETES_SERVICE_HOST")
-                .map(|host| {
-                    let port = std::env::var("KUBERNETES_SERVICE_PORT")
-                        .unwrap_or_else(|_| "443".to_string());
-                    format!("https://{host}:{port}")
-                })
-                .unwrap_or_else(|_| "https://kubernetes.default.svc:443".to_string()),
-            kube_token_path: PathBuf::from(std::env::var("KUBE_TOKEN_PATH").unwrap_or_else(|_| {
-                "/var/run/secrets/kubernetes.io/serviceaccount/token".to_string()
-            })),
+            legacy_credentials_flow_enabled: std::env::var(
+                "SIDECAR_ENABLE_LEGACY_CREDENTIALS_FLOW",
+            )
+            .ok()
+            .map(|x| x.parse())
+            .transpose()?
+            .unwrap_or_else(|| std::env::var("STAGE").map(|x| x != "prod").unwrap_or(true)),
         })
     }
 }
@@ -223,6 +204,8 @@ struct PoolSummary {
 
 #[derive(Default, Deserialize)]
 struct RuntimePayload {
+    #[serde(default)]
+    runtime_config: Option<String>,
     #[serde(default)]
     credentials: Vec<Credential>,
 }
@@ -374,8 +357,8 @@ impl ChecklistStore {
                     done_at: None,
                 },
                 ChecklistTask {
-                    id: "sync-configmap".to_string(),
-                    title: "Sync ConfigMap".to_string(),
+                    id: "sync-runtime".to_string(),
+                    title: "Apply runtime payload".to_string(),
                     status: "pending".to_string(),
                     done_at: None,
                 },
@@ -833,9 +816,13 @@ async fn sync_once_with_retry(
 
             let sync_result = (|| -> Result<()> {
                 if should_apply {
-                    write_credentials_atomically(
+                    let rendered_config = render_runtime_config(
+                        &reconcile.runtime_payload,
+                        cfg.legacy_credentials_flow_enabled,
+                    )?;
+                    write_runtime_config_atomically(
                         &cfg.credentials_path,
-                        &reconcile.runtime_payload.credentials,
+                        &rendered_config.contents,
                     )
                     .context("write_credentials_atomically")?;
                     send_reload_signal(&cfg.trusttunnel_reload_signal)
@@ -846,7 +833,7 @@ async fn sync_once_with_retry(
                             reconcile.pool_summary.allocated_pool_size,
                             reconcile.pool_summary.healthy_pool_size,
                         );
-                    outcome.applied_count = reconcile.runtime_payload.credentials.len();
+                    outcome.applied_count = rendered_config.clients_count;
                 }
                 Ok(())
             })();
@@ -858,8 +845,6 @@ async fn sync_once_with_retry(
                     .err()
                     .map(|e| format!("sync failed: {e}"));
             } else {
-                let _ =
-                    sync_clients_targets(cfg, client, &reconcile.runtime_payload.credentials).await;
                 state.last_seen_revision = Some(reconcile.revision);
                 state.last_apply_status = Some(if should_apply {
                     "applied".to_string()
@@ -867,7 +852,7 @@ async fn sync_once_with_retry(
                     "noop".to_string()
                 });
                 if let Some(store) = &mut state.checklist_store {
-                    let _ = store.mark_done(cfg, "sync-configmap", "sync-configmap");
+                    let _ = store.mark_done(cfg, "sync-runtime", "sync-runtime");
                 }
             }
 
@@ -892,68 +877,41 @@ async fn sync_once_with_retry(
     sync_result
 }
 
-async fn sync_clients_targets(
-    cfg: &Config,
-    client: &reqwest::Client,
-    credentials: &[Credential],
-) -> Result<()> {
-    write_clients_export_file(&cfg.clients_export_path, credentials)?;
-    if let Some(configmap_name) = &cfg.clients_configmap_name {
-        sync_clients_configmap(cfg, client, configmap_name, credentials).await?;
-    }
-    Ok(())
+#[derive(Debug)]
+struct RenderedRuntimeConfig {
+    contents: String,
+    clients_count: usize,
 }
 
-fn write_clients_export_file(path: &Path, credentials: &[Credential]) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(path, serde_json::to_string_pretty(credentials)?)?;
-    Ok(())
-}
-
-async fn sync_clients_configmap(
-    cfg: &Config,
-    client: &reqwest::Client,
-    configmap_name: &str,
-    credentials: &[Credential],
-) -> Result<()> {
-    let token = std::fs::read_to_string(&cfg.kube_token_path)
-        .map(|x| x.trim().to_string())
-        .context("read kube token")?;
-    let clients_json = serde_json::to_string_pretty(credentials)?;
-    let url = format!(
-        "{}/api/v1/namespaces/{}/configmaps/{}",
-        cfg.kube_api_url, cfg.clients_configmap_namespace, configmap_name
-    );
-
-    for attempt in 0..3 {
-        let patch_body = serde_json::json!({
-            "data": {
-                cfg.clients_configmap_key.clone(): clients_json,
-            }
+fn render_runtime_config(
+    payload: &RuntimePayload,
+    legacy_credentials_flow_enabled: bool,
+) -> Result<RenderedRuntimeConfig> {
+    if let Some(runtime_config) = payload
+        .runtime_config
+        .as_ref()
+        .map(|x| x.trim())
+        .filter(|x| !x.is_empty())
+    {
+        return Ok(RenderedRuntimeConfig {
+            contents: runtime_config.to_string(),
+            clients_count: count_clients_from_rendered_config(runtime_config),
         });
-        let resp = client
-            .patch(&url)
-            .bearer_auth(&token)
-            .header("Content-Type", "application/merge-patch+json")
-            .json(&patch_body)
-            .send()
-            .await?;
-
-        if resp.status().is_success() {
-            return Ok(());
-        }
-
-        if resp.status().as_u16() == 409 && attempt < 2 {
-            tokio::time::sleep(Duration::from_millis(200 * (attempt + 1) as u64)).await;
-            continue;
-        }
-
-        anyhow::bail!("configmap sync rejected: {}", resp.status());
     }
 
-    anyhow::bail!("configmap sync conflict retry exhausted")
+    if legacy_credentials_flow_enabled {
+        let rendered = toml::to_string(&CredentialsFile {
+            client: payload.credentials.clone(),
+        })?;
+        return Ok(RenderedRuntimeConfig {
+            clients_count: payload.credentials.len(),
+            contents: rendered,
+        });
+    }
+
+    anyhow::bail!(
+        "runtime_payload.runtime_config is required when legacy credentials flow is disabled"
+    )
 }
 
 async fn reconcile_with_retry(
@@ -1010,14 +968,14 @@ async fn reconcile(
     Ok(resp.json().await?)
 }
 
-fn write_credentials_atomically(path: &Path, credentials: &[Credential]) -> Result<()> {
+fn write_runtime_config_atomically(path: &Path, contents: &str) -> Result<()> {
     let mut fs_ops = FileSystemAtomicWriteOps;
-    write_credentials_atomically_with_ops(path, credentials, &mut fs_ops)
+    write_runtime_config_atomically_with_ops(path, contents, &mut fs_ops)
 }
 
-fn write_credentials_atomically_with_ops(
+fn write_runtime_config_atomically_with_ops(
     path: &Path,
-    credentials: &[Credential],
+    contents: &str,
     ops: &mut impl AtomicWriteOps,
 ) -> Result<()> {
     let parent = path.parent().context("credentials path without parent")?;
@@ -1029,11 +987,7 @@ fn write_credentials_atomically_with_ops(
         path.file_name().unwrap_or_default().to_string_lossy()
     ));
 
-    let toml = toml::to_string(&CredentialsFile {
-        client: credentials.to_vec(),
-    })?;
-
-    ops.write_tmp_and_sync(&tmp_path, toml.as_bytes())
+    ops.write_tmp_and_sync(&tmp_path, contents.as_bytes())
         .with_context(|| format!("write and sync temp file: {}", tmp_path.display()))?;
     ops.rename_temp_to_target(&tmp_path, path)
         .with_context(|| format!("rename {} -> {}", tmp_path.display(), path.display()))?;
@@ -1235,7 +1189,7 @@ async fn push_heartbeat(
             sync_failed: state.last_apply_status.as_deref() == Some("failed"),
             endpoint_healthy: state.last_health_status.as_deref() == Some("ok"),
         },
-        clients_count: count_clients_from_credentials_file(&cfg.credentials_path),
+        clients_count: count_clients_from_runtime_file(&cfg.credentials_path),
         checklist_url: state
             .checklist_store
             .as_ref()
@@ -1268,11 +1222,15 @@ async fn push_heartbeat(
     Ok(())
 }
 
-fn count_clients_from_credentials_file(path: &Path) -> usize {
+fn count_clients_from_rendered_config(content: &str) -> usize {
+    toml::from_str::<CredentialsFile>(content)
+        .map(|f| f.client.len())
+        .unwrap_or(0)
+}
+
+fn count_clients_from_runtime_file(path: &Path) -> usize {
     match std::fs::read_to_string(path) {
-        Ok(content) => toml::from_str::<CredentialsFile>(&content)
-            .map(|f| f.client.len())
-            .unwrap_or(0),
+        Ok(content) => count_clients_from_rendered_config(&content),
         Err(_) => 0,
     }
 }
@@ -1375,12 +1333,7 @@ mod tests {
             sync_secret_keys: Vec::new(),
             checklist_path: std::env::temp_dir().join("trusttunnel-checklist.json"),
             artifacts_root: std::env::temp_dir().join("trusttunnel-artifacts"),
-            clients_export_path: std::env::temp_dir().join("trusttunnel-clients.json"),
-            clients_configmap_name: None,
-            clients_configmap_namespace: "default".to_string(),
-            clients_configmap_key: "clients.json".to_string(),
-            kube_api_url: base_url,
-            kube_token_path: std::env::temp_dir().join("trusttunnel-kube-token"),
+            legacy_credentials_flow_enabled: true,
         }
     }
 
@@ -1756,16 +1709,15 @@ mod tests {
     }
 
     #[test]
-    fn write_credentials_follows_expected_operation_order() {
+    fn write_runtime_config_follows_expected_operation_order() {
         let mut ops = RecordingAtomicWriteOps::default();
         let path = Path::new("/tmp/trusttunnel/credentials.toml");
-        let credentials = vec![Credential {
-            username: "user".to_string(),
-            password: "pass".to_string(),
-        }];
-
-        write_credentials_atomically_with_ops(path, &credentials, &mut ops)
-            .expect("atomic write should succeed");
+        write_runtime_config_atomically_with_ops(
+            path,
+            "[[client]]\nusername=\"user\"\npassword=\"pass\"\n",
+            &mut ops,
+        )
+        .expect("atomic write should succeed");
 
         assert_eq!(
             ops.steps,
@@ -1798,58 +1750,52 @@ mod tests {
             "[[client]]\nusername='a'\npassword='1'\n[[client]]\nusername='b'\npassword='2'\n",
         )
         .expect("write");
-        assert_eq!(count_clients_from_credentials_file(&file), 2);
+        assert_eq!(count_clients_from_runtime_file(&file), 2);
     }
 
     #[test]
-    fn writes_clients_export_file_as_json() {
-        let path = std::env::temp_dir().join("trusttunnel-clients-export.json");
-        let creds = vec![Credential {
-            username: "alice".to_string(),
-            password: "pw".to_string(),
-        }];
+    fn render_runtime_config_prefers_runtime_payload_config() {
+        let payload = RuntimePayload {
+            runtime_config: Some("[[client]]\nusername='alice'\npassword='pw'\n".to_string()),
+            credentials: vec![Credential {
+                username: "legacy".to_string(),
+                password: "legacy".to_string(),
+            }],
+        };
 
-        write_clients_export_file(&path, &creds).expect("write clients export");
-        let raw = std::fs::read_to_string(&path).expect("read export");
-        assert!(raw.contains("alice"));
+        let rendered = render_runtime_config(&payload, false).expect("render runtime config");
+        assert!(rendered.contents.contains("alice"));
+        assert_eq!(rendered.clients_count, 1);
     }
 
-    #[tokio::test]
-    async fn syncs_clients_configmap_using_patch() {
-        let server = MockServer::start_async().await;
-        let mut cfg = test_config(
-            server.base_url(),
-            std::env::temp_dir().join("trusttunnel-test-cm.toml"),
-        );
-        cfg.clients_configmap_name = Some("clients-cm".to_string());
-        cfg.kube_token_path = std::env::temp_dir().join("trusttunnel-kube-token-sync");
-        std::fs::write(&cfg.kube_token_path, "kube-token").expect("token write");
-
-        let patch_mock = server
-            .mock_async(|when, then| {
-                when.method("PATCH")
-                    .path("/api/v1/namespaces/default/configmaps/clients-cm")
-                    .header("authorization", "Bearer kube-token");
-                then.status(200).json_body(json!({"ok": true}));
-            })
-            .await;
-
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .build()
-            .expect("client");
-        sync_clients_configmap(
-            &cfg,
-            &client,
-            "clients-cm",
-            &[Credential {
-                username: "u1".to_string(),
-                password: "p1".to_string(),
+    #[test]
+    fn render_runtime_config_fails_without_feature_flag_and_runtime_config() {
+        let payload = RuntimePayload {
+            runtime_config: None,
+            credentials: vec![Credential {
+                username: "legacy".to_string(),
+                password: "legacy".to_string(),
             }],
-        )
-        .await
-        .expect("configmap sync");
+        };
 
-        patch_mock.assert_async().await;
+        let err = render_runtime_config(&payload, false).expect_err("must fail");
+        assert!(err
+            .to_string()
+            .contains("runtime_payload.runtime_config is required"));
+    }
+
+    #[test]
+    fn render_runtime_config_uses_legacy_credentials_when_enabled() {
+        let payload = RuntimePayload {
+            runtime_config: None,
+            credentials: vec![Credential {
+                username: "legacy".to_string(),
+                password: "legacy".to_string(),
+            }],
+        };
+
+        let rendered = render_runtime_config(&payload, true).expect("legacy render");
+        assert!(rendered.contents.contains("legacy"));
+        assert_eq!(rendered.clients_count, 1);
     }
 }

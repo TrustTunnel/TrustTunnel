@@ -121,7 +121,8 @@ Required sidecar env:
 - `SYNC_INTERVAL_SECONDS` (default: `30`)
 - `HEARTBEAT_INTERVAL_SECONDS` (legacy knob, currently not used by sidecar runtime loop)
 - `METRICS_PUSH_INTERVAL` (default: `30`)
-- `CREDENTIALS_PATH` (default: `/runtime/accounts.toml`)
+- `CREDENTIALS_PATH` (default: `/runtime/accounts.toml`, runtime payload writes full rendered config)
+- `SIDECAR_ENABLE_LEGACY_CREDENTIALS_FLOW` (default: `false` in production charts; enable only for migration)
 - `TRUSTTUNNEL_RELOAD_MODE` (default: `signal`)
 - `TRUSTTUNNEL_PID` (default: `1`)
 - `AGENT_PORT` (default: `9105`)
@@ -138,13 +139,14 @@ Kubernetes notes:
 - use `envFrom.secretRef` for `INTERNAL_AGENT_TOKEN`;
 - keep LK internal API reachable only inside private network;
 - enable `shareProcessNamespace: true` so sidecar can signal endpoint PID;
-- restart is not required for credentials update.
+- restart is not required for runtime payload update.
 
 
-Helm wiring для mounted sync-ресурсов:
-- `sidecar.sync.configMaps`: список ConfigMap names для mount в `/etc/trusttunnel/configs/<name>`;
-- `sidecar.sync.secrets`: список Secret names для mount в `/etc/trusttunnel/secrets/<name>`;
-- `sidecar.sync.secretKeys`: opt-in ключи, которые sidecar отправляет в `value_encrypted` поле payload.
+Helm wiring для runtime-sync:
+- sidecar применяет только `runtime_payload.runtime_config` (полный render runtime-файла);
+- legacy путь `runtime_payload.credentials` допускается только при `SIDECAR_ENABLE_LEGACY_CREDENTIALS_FLOW=true`;
+- `nodeConfigMap` ограничен техническими полями: `node_name`, `public_host`, `endpoint_ip`, `desired_pool_size`, `weight`, `stage`, `is_enabled`;
+- `sidecar.sync.configMaps/secrets/secretKeys` используются только для sync mounted конфигов/секретов в LK и не участвуют в runtime credentials-flow.
 
 ### Production hardening checklist
 
