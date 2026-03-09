@@ -70,6 +70,39 @@ Canonical sidecar names for new dashboards/alerts:
 
 Backward compatibility is preserved via dual-publish of `agent_*` names.
 
+## 7. Correlating metrics with structured sidecar logs
+
+For incident triage, correlate metric spikes with `event=sidecar_sync` logs on these stages:
+
+- `register`
+- `reconcile`
+- `fetch`
+- `apply`
+- `reload`
+- `health`
+- `report`
+
+Mandatory fields available in every stage event:
+
+- `node_id`
+- `node_name`
+- `desired_pool_size`
+- `current_revision`
+- `fetched_revision`
+- `last_sync_status`
+- `last_sync_error`
+
+Practical diagnostics:
+
+1. `lk_timeout_total` growth + repeated `stage=reconcile` with `last_sync_status=failed` indicates LK/API pressure or timeout chain.
+2. healthy `reconcile` + failing `stage=reload|health` with non-empty `last_sync_error` indicates local endpoint rollout issue.
+3. `node_sync_failures_total` growth with `stage=report` failures indicates report delivery path issue (auth/routing/LK ingress).
+
+Log hygiene:
+
+- Sidecar log messages redact sensitive tokens (`username/password/token/secret`) to `[REDACTED]`.
+- If you need raw secrets for debugging, inspect secret stores directly with break-glass procedures, not logs.
+
 ### PromQL alert examples for SLA
 
 1. LK timeout growth:

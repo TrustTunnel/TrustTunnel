@@ -53,3 +53,41 @@ openssl s_client -connect <ip>:443 -servername <sni-hostname>
 # Metrics reachability
 curl -s http://127.0.0.1:1987/metrics | head -n 40
 ```
+
+## 4. Sidecar structured logs (register/reconcile/fetch/apply/reload/health/report)
+
+Sidecar now emits JSON events with a fixed envelope (`event=sidecar_sync`) and mandatory operational fields:
+
+- `node_id`
+- `node_name`
+- `desired_pool_size`
+- `current_revision`
+- `fetched_revision`
+- `last_sync_status`
+- `last_sync_error`
+
+Example successful apply/report flow:
+
+```json
+{"event":"sidecar_sync","stage":"fetch","message":"fetched revision r-2026-03-01","node_id":"node-1","node_name":"worker-a","desired_pool_size":30,"current_revision":"r-2026-02-28","fetched_revision":"r-2026-03-01","last_sync_status":"registered","last_sync_error":""}
+{"event":"sidecar_sync","stage":"apply","message":"applied reconcile revision=r-2026-03-01 desired_pool=30 allocated_pool=30 healthy_pool=30","node_id":"node-1","node_name":"worker-a","desired_pool_size":30,"current_revision":"r-2026-02-28","fetched_revision":"r-2026-03-01","last_sync_status":"success","last_sync_error":""}
+{"event":"sidecar_sync","stage":"report","message":"sync report sent","node_id":"node-1","node_name":"worker-a","desired_pool_size":30,"current_revision":"r-2026-03-01","fetched_revision":"r-2026-03-01","last_sync_status":"success","last_sync_error":""}
+```
+
+Example degraded case (reload/health failure):
+
+```json
+{"event":"sidecar_sync","stage":"reload","message":"[REDACTED]","node_id":"node-1","node_name":"worker-a","desired_pool_size":30,"current_revision":"r-2026-03-01","fetched_revision":"r-2026-03-02","last_sync_status":"failed","last_sync_error":"[REDACTED]"}
+{"event":"sidecar_sync","stage":"health","message":"healthcheck failed after reload","node_id":"node-1","node_name":"worker-a","desired_pool_size":30,"current_revision":"r-2026-03-01","fetched_revision":"r-2026-03-02","last_sync_status":"failed","last_sync_error":"[REDACTED]"}
+```
+
+Sensitive value guardrails in logs:
+
+- messages/errors containing `username`, `password`, `token`, `secret` are replaced with `[REDACTED]`.
+- never rely on sidecar logs as a secret source of truth.
+
+Sync polling guardrails:
+
+- default `SYNC_INTERVAL_SECONDS` is `30` (MVP-safe baseline).
+- values below `15` are clamped to `15`.
+- values above `300` are clamped to `300`.
