@@ -471,6 +471,18 @@ impl ChecklistStore {
         })
     }
 
+    fn ensure_urls(&mut self, cfg: &Config) -> Result<()> {
+        if self.checklist_url.is_none() {
+            self.checklist_url = Some(format!("file://{}", cfg.checklist_path.display()));
+        }
+        if self.akt_url.is_none() {
+            let text = std::fs::read_to_string(&cfg.checklist_path)?;
+            let doc: ChecklistDocument = serde_json::from_str(&text)?;
+            self.akt_url = Some(write_akt_artifact(cfg, "heartbeat", &doc)?);
+        }
+        Ok(())
+    }
+
     fn mark_event(
         &mut self,
         cfg: &Config,
@@ -546,7 +558,7 @@ fn write_akt_artifact(cfg: &Config, command_id: &str, doc: &ChecklistDocument) -
                 } else if t.status == "failed" {
                     "❌"
                 } else {
-                    "⬜"
+                    "❌"
                 },
                 t.title
             )
@@ -861,6 +873,16 @@ async fn ensure_registration(
         return Ok(());
     }
 
+    if let Some(store) = &mut state.checklist_store {
+        let _ = store.mark_event(
+            cfg,
+            "register",
+            "register",
+            "started",
+            "Registration started",
+        );
+    }
+
     let url = format!("{}/api/trusttunnel/nodes/register", cfg.lk_api_base_url);
     let payload = RegisterRequest {
         cluster_id: &cfg.cluster_id,
@@ -888,6 +910,15 @@ async fn ensure_registration(
         .await?;
 
     if !resp.status().is_success() {
+        if let Some(store) = &mut state.checklist_store {
+            let _ = store.mark_event(
+                cfg,
+                "register",
+                "register",
+                "failed",
+                format!("Registration rejected with status {}", resp.status()),
+            );
+        }
         anyhow::bail!("registration rejected: {}", resp.status());
     }
 
@@ -915,6 +946,15 @@ async fn sync_once_with_retry(
     initial_backoff: Duration,
 ) -> Result<()> {
     let node_id = state.node_id.as_deref().unwrap_or(&cfg.node_id);
+    if let Some(store) = &mut state.checklist_store {
+        let _ = store.mark_event(
+            cfg,
+            "reconcile",
+            "reconcile",
+            "started",
+            "Reconcile started",
+        );
+    }
     let (outcome, sync_result) = match reconcile_with_retry(
         cfg,
         client,
@@ -948,6 +988,9 @@ async fn sync_once_with_retry(
                 && state.last_seen_revision.as_deref() != Some(&reconcile.revision);
 
             let sync_result = if should_apply {
+                if let Some(store) = &mut state.checklist_store {
+                    let _ = store.mark_event(cfg, "apply", "apply", "started", "Apply started");
+                }
                 let rendered_config = render_runtime_config(
                     &reconcile.runtime_payload,
                     cfg.legacy_credentials_flow_enabled,
@@ -1004,6 +1047,15 @@ async fn sync_once_with_retry(
                         );
                     }
                     let rollback_result = async {
+                        if let Some(store) = &mut state.checklist_store {
+                            let _ = store.mark_event(
+                                cfg,
+                                "rollback",
+                                "rollback",
+                                "started",
+                                format!("Rollback started for revision {}", reconcile.revision),
+                            );
+                        }
                         rollback_to_previous(&paths).context("rollback_to_previous")?;
                         send_reload_signal(&cfg.trusttunnel_reload_signal)
                             .context("send_reload_signal_for_rollback")?;
@@ -1399,6 +1451,9 @@ async fn push_heartbeat(
     state: &mut AgentState,
 ) -> Result<()> {
     ensure_registration(cfg, client, state).await?;
+    if let Some(store) = &mut state.checklist_store {
+        store.ensure_urls(cfg)?;
+    }
 
     let node_id = state
         .node_id
