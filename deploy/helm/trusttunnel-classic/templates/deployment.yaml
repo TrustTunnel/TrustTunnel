@@ -94,12 +94,6 @@ spec:
               value: {{ .Values.sidecar.lk.wsEndpoint | quote }}
             - name: MAX_CLIENTS
               value: {{ .Values.sidecar.maxClients | quote }}
-            - name: SIDECAR_CLIENTS_CONFIGMAP
-              value: {{ .Values.sidecar.clientsConfigMap.name | quote }}
-            - name: SIDECAR_CLIENTS_CONFIGMAP_NAMESPACE
-              value: {{ .Values.sidecar.clientsConfigMap.namespace | quote }}
-            - name: SIDECAR_CLIENTS_CONFIGMAP_KEY
-              value: {{ .Values.sidecar.clientsConfigMap.key | quote }}
             - name: LK_INTERNAL_BASE_URL
               value: {{ .Values.lkBaseUrl | quote }}
             - name: LK_API_BASE_URL
@@ -158,6 +152,8 @@ spec:
               value: {{ .Values.heartbeatIntervalSeconds | quote }}
             - name: CREDENTIALS_PATH
               value: {{ .Values.runtime.credentialsPath | quote }}
+            - name: SIDECAR_ENABLE_LEGACY_CREDENTIALS_FLOW
+              value: {{ .Values.runtime.enableLegacyCredentialsFlow | quote }}
             - name: TRUSTTUNNEL_CONFIGS_ROOT
               value: "/etc/trusttunnel/configs"
             - name: TRUSTTUNNEL_SECRETS_ROOT

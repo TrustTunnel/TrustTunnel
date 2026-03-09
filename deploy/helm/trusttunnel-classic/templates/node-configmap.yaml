@@ -1,0 +1,15 @@
+{{- if and .Values.sidecarEnabled .Values.nodeConfigMap.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.nodeConfigMap.name | quote }}
+  namespace: {{ .Release.Namespace }}
+data:
+  node_name: {{ .Values.sidecar.registration.nodeName | quote }}
+  public_host: {{ .Values.sidecar.registration.publicHost | quote }}
+  endpoint_ip: {{ .Values.sidecar.registration.endpointIp | quote }}
+  desired_pool_size: {{ .Values.sidecar.registration.desiredPoolSize | quote }}
+  weight: {{ .Values.sidecar.registration.weight | quote }}
+  stage: {{ .Values.sidecar.registration.stage | quote }}
+  is_enabled: {{ .Values.sidecar.registration.isEnabled | quote }}
+{{- end }}
