@@ -8,9 +8,12 @@ use crate::pipe::DuplexPipe;
 use crate::{
     authentication, core, datagram_pipe, downstream, forwarder, log_id, log_utils, pipe, udp_pipe,
 };
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::ErrorKind;
+use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
@@ -28,6 +31,8 @@ pub(crate) struct Tunnel {
     forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
     authentication_policy: AuthenticationPolicy<'static>,
     id: log_utils::IdChain<u64>,
+    client_remote_addr: IpAddr,
+    session_guard_handle: Arc<Mutex<Option<crate::session_guard::SessionHandle>>>,
 }
 
 #[derive(Debug)]
@@ -62,6 +67,7 @@ impl Tunnel {
         forwarder: Box<dyn Forwarder>,
         authentication_policy: AuthenticationPolicy<'static>,
         id: log_utils::IdChain<u64>,
+        client_remote_addr: IpAddr,
     ) -> Self {
         Self {
             context,
@@ -69,6 +75,8 @@ impl Tunnel {
             forwarder: Arc::new(Mutex::new(forwarder)),
             authentication_policy,
             id,
+            client_remote_addr,
+            session_guard_handle: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -120,6 +128,9 @@ impl Tunnel {
             let tls_domain = self.downstream.tls_domain().to_string();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
+            let session_guard_handle = self.session_guard_handle.clone();
+            let client_remote_addr = self.client_remote_addr;
+            let protocol = self.downstream.protocol();
             let update_metrics = {
                 let metrics = context.metrics.clone();
                 let protocol = self.downstream.protocol();
@@ -181,6 +192,43 @@ impl Tunnel {
                         return;
                     }
                 };
+
+                if let Some(username) = forwarder_auth
+                    .as_ref()
+                    .and_then(|source| extract_username(source))
+                {
+                    let mut guard_slot = session_guard_handle.lock().unwrap();
+                    if guard_slot.is_none() {
+                        let session_id = format!("{}", log_id);
+                        match context.session_guard.try_acquire(
+                            session_id,
+                            username.clone(),
+                            client_remote_addr,
+                            protocol,
+                        ) {
+                            Ok(handle) => {
+                                *guard_slot = Some(handle);
+                            }
+                            Err(crate::session_guard::AcquireError::MaxSessionsExceeded {
+                                current_active_sessions,
+                            }) => {
+                                log_id!(
+                                    warn,
+                                    request_id,
+                                    "Session rejected: username={}, remote_addr={}, protocol={}, current_active_sessions={}, reason=max_sessions_exceeded",
+                                    username,
+                                    client_remote_addr,
+                                    protocol.as_str(),
+                                    current_active_sessions,
+                                );
+                                request.fail_request(ConnectionError::Authentication(
+                                    "Too many active sessions for user".to_string(),
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                }
 
                 log_id!(
                     trace,
@@ -474,4 +522,21 @@ impl Tunnel {
             )),
         }
     }
+}
+
+fn extract_username(source: &authentication::Source<'_>) -> Option<String> {
+    let basic = match source {
+        authentication::Source::ProxyBasic(value) => value.as_ref(),
+        authentication::Source::ProxyBearerAndBasic { basic, .. } => basic.as_ref(),
+        _ => return None,
+    };
+
+    let decoded = BASE64_ENGINE.decode(basic).ok()?;
+    let credentials = String::from_utf8(decoded).ok()?;
+    let mut split = credentials.splitn(2, ':');
+    let username = split.next()?;
+    if username.is_empty() {
+        return None;
+    }
+    Some(username.to_string())
 }

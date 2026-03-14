@@ -27,6 +27,11 @@ pub(crate) struct Metrics {
     request_latency_seconds: prometheus::HistogramVec,
     outbound_tcp_sockets: prometheus::IntGauge,
     outbound_udp_sockets: prometheus::IntGauge,
+    session_guard_active_sessions_total: prometheus::IntGauge,
+    session_guard_rejections_total: prometheus::IntCounter,
+    session_guard_stale_reaped_total: prometheus::IntCounter,
+    session_guard_users_at_limit: prometheus::IntGauge,
+    session_guard_registry_size: prometheus::IntGauge,
 }
 
 pub(crate) struct ClientSessionsCounter {
@@ -188,6 +193,36 @@ impl Metrics {
                 registry,
             )
             .map_err(prometheus_to_io_error)?,
+            session_guard_active_sessions_total: prometheus::register_int_gauge_with_registry!(
+                "session_guard_active_sessions_total",
+                "Current total active client sessions tracked by session guard",
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            session_guard_rejections_total: prometheus::register_int_counter_with_registry!(
+                "session_guard_rejections_total",
+                "Total number of rejected session acquisitions due to max per-user limit",
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            session_guard_stale_reaped_total: prometheus::register_int_counter_with_registry!(
+                "session_guard_stale_reaped_total",
+                "Total number of stale sessions reaped by session guard cleaner",
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            session_guard_users_at_limit: prometheus::register_int_gauge_with_registry!(
+                "session_guard_users_at_limit",
+                "Current number of users with active sessions equal to or above limit",
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
+            session_guard_registry_size: prometheus::register_int_gauge_with_registry!(
+                "session_guard_registry_size",
+                "Current number of users in session guard registry",
+                registry,
+            )
+            .map_err(prometheus_to_io_error)?,
             _registry: registry,
         }))
     }
@@ -234,6 +269,26 @@ impl Metrics {
         tunnel_type: &'static str,
     ) -> RequestLatencyObserver {
         RequestLatencyObserver::new(self, tunnel_type)
+    }
+
+    pub fn set_session_guard_active_sessions_total(&self, value: i64) {
+        self.session_guard_active_sessions_total.set(value);
+    }
+
+    pub fn inc_session_guard_rejections_total(&self) {
+        self.session_guard_rejections_total.inc();
+    }
+
+    pub fn inc_session_guard_stale_reaped_total_by(&self, value: u64) {
+        self.session_guard_stale_reaped_total.inc_by(value);
+    }
+
+    pub fn set_session_guard_users_at_limit(&self, value: i64) {
+        self.session_guard_users_at_limit.set(value);
+    }
+
+    pub fn set_session_guard_registry_size(&self, value: i64) {
+        self.session_guard_registry_size.set(value);
     }
 
     pub fn observe_handshake_duration(&self, protocol: Protocol, duration: Duration) {

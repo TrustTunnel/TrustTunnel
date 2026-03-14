@@ -208,6 +208,14 @@ Latency of processing tunnel requests.
 
 Bytes split by direction (`in`, `out`).
 
+### Session Guard Metrics
+
+- `session_guard_active_sessions_total` (gauge): current total active client sessions tracked by session guard.
+- `session_guard_rejections_total` (counter): total session acquisition rejections due to per-user session limit.
+- `session_guard_stale_reaped_total` (counter): total stale sessions removed by background cleanup.
+- `session_guard_users_at_limit` (gauge): current number of users that reached the configured session limit.
+- `session_guard_registry_size` (gauge): current number of users present in the in-memory session registry.
+
 ## Metric Types
 
 ### Gauge

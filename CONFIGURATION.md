@@ -127,6 +127,13 @@ public_key_path = "jwt/public.pem" # required for RS256
 # Path to rules file (optional)
 rules_file = "rules.toml"
 
+
+[session_guard]
+enabled = true
+max_active_sessions_per_user = 3
+stale_ttl_seconds = 120
+cleanup_interval_seconds = 30
+
 # Listen protocol settings
 [listen_protocols]
 
@@ -271,6 +278,10 @@ action = "deny"
 | `auth.mode` | String | `credentials` | Auth mode: `credentials`, `jwt`, or `mixed` |
 | `auth.cache_ttl_seconds` | Integer | `5` | TTL for cached Basic/JWT validation results to reduce LK/DB load |
 | `auth.revocation_sync_seconds` | Integer | `15` | Periodic cache flush interval for revocation synchronization |
+| `session_guard.enabled` | Boolean | `true` | Enables/disables per-user concurrent session limiting |
+| `session_guard.max_active_sessions_per_user` | Integer | `3` | Maximum number of simultaneously active client sessions per username |
+| `session_guard.stale_ttl_seconds` | Integer | `120` | TTL for inactive/stale sessions before slot cleanup |
+| `session_guard.cleanup_interval_seconds` | Integer | `30` | Background stale-session cleanup interval |
 
 ### JWT Authentication Settings (`[auth.jwt]`)
 
@@ -304,6 +315,18 @@ JWT claims are validated against `credentials.toml`:
   1. create `credentials.toml`;
   2. set `auth.mode = "mixed"`;
   3. configure `[auth.jwt]`.
+
+
+### Session Guard Settings (`[session_guard]`)
+
+Limits concurrent client transport sessions (HTTP/2 or HTTP/3 connections) per authenticated username.
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `enabled` | Boolean | `true` | Enable session guard checks |
+| `max_active_sessions_per_user` | Integer | `3` | Maximum active sessions allowed for one username |
+| `stale_ttl_seconds` | Integer | `120` | Session considered stale if no activity for this time |
+| `cleanup_interval_seconds` | Integer | `30` | Interval of background stale cleanup loop |
 
 ### Listen Protocol Settings
 

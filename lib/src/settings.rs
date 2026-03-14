@@ -187,6 +187,9 @@ pub struct Settings {
     #[serde(default = "Settings::default_speedtest_enable")]
     pub(crate) speedtest_enable: bool,
 
+    #[serde(default)]
+    pub(crate) session_guard: SessionGuardSettings,
+
     /// Whether an instance was built through a [`SettingsBuilder`].
     /// This flag is a workaround for absence of the ability to validate
     /// the deserialized structure.
@@ -452,6 +455,20 @@ pub struct MetricsSettings {
 }
 
 /// The set of HTTP/1.1 listener codec settings
+
+#[derive(Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
+pub struct SessionGuardSettings {
+    #[serde(default = "SessionGuardSettings::default_enabled")]
+    pub(crate) enabled: bool,
+    #[serde(default = "SessionGuardSettings::default_max_active_sessions_per_user")]
+    pub(crate) max_active_sessions_per_user: usize,
+    #[serde(default = "SessionGuardSettings::default_stale_ttl_seconds")]
+    pub(crate) stale_ttl_seconds: u64,
+    #[serde(default = "SessionGuardSettings::default_cleanup_interval_seconds")]
+    pub(crate) cleanup_interval_seconds: u64,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
 pub struct Http1Settings {
@@ -672,6 +689,7 @@ impl Default for Settings {
             metrics: Default::default(),
             rules_engine: Some(rules::RulesEngine::default_allow()),
             speedtest_enable: false,
+            session_guard: Default::default(),
             built: false,
         }
     }
@@ -903,6 +921,35 @@ impl MetricsSettings {
     }
 }
 
+impl SessionGuardSettings {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn default_max_active_sessions_per_user() -> usize {
+        3
+    }
+
+    fn default_stale_ttl_seconds() -> u64 {
+        120
+    }
+
+    fn default_cleanup_interval_seconds() -> u64 {
+        30
+    }
+}
+
+impl Default for SessionGuardSettings {
+    fn default() -> Self {
+        Self {
+            enabled: Self::default_enabled(),
+            max_active_sessions_per_user: Self::default_max_active_sessions_per_user(),
+            stale_ttl_seconds: Self::default_stale_ttl_seconds(),
+            cleanup_interval_seconds: Self::default_cleanup_interval_seconds(),
+        }
+    }
+}
+
 impl Default for MetricsSettings {
     fn default() -> Self {
         Self {
@@ -937,6 +984,7 @@ impl SettingsBuilder {
                 metrics: Default::default(),
                 rules_engine: Some(rules::RulesEngine::default_allow()),
                 speedtest_enable: Settings::default_speedtest_enable(),
+                session_guard: Default::default(),
                 built: true,
             },
         }
