@@ -9,6 +9,7 @@ use crate::icmp_forwarder::IcmpForwarder;
 use crate::metrics::Metrics;
 use crate::net_utils::PeerAddr;
 use crate::quic_multiplexer::{QuicMultiplexer, QuicSocket};
+use crate::session_guard::SessionGuard;
 use crate::settings::{ForwardProtocolSettings, Settings};
 use crate::shutdown::Shutdown;
 use crate::socks5_forwarder::Socks5Forwarder;
@@ -81,6 +82,7 @@ pub(crate) struct Context {
     pub metrics: Arc<Metrics>,
     next_client_id: Arc<AtomicU64>,
     next_tunnel_id: Arc<AtomicU64>,
+    pub session_guard: Arc<SessionGuard>,
 }
 
 impl Context {
@@ -115,6 +117,7 @@ impl Core {
         let settings = Arc::new(settings);
 
         let (fatal_error, _fatal_error_rx) = watch::channel(None);
+        let metrics = Metrics::new().map_err(|e| Error::Metrics(e.to_string()))?;
 
         Ok(Self {
             context: Arc::new(Context {
@@ -127,19 +130,29 @@ impl Core {
                 icmp_forwarder: if settings.icmp.is_none() {
                     None
                 } else {
-                    Some(Arc::new(IcmpForwarder::new(settings)))
+                    Some(Arc::new(IcmpForwarder::new(settings.clone())))
                 },
-                shutdown,
+                shutdown: shutdown.clone(),
                 fatal_error,
-                metrics: Metrics::new().map_err(|e| Error::Metrics(e.to_string()))?,
+                metrics: metrics.clone(),
                 next_client_id: Default::default(),
                 next_tunnel_id: Default::default(),
+                session_guard: SessionGuard::new(
+                    settings.session_guard.enabled,
+                    settings.session_guard.max_active_sessions_per_user,
+                    std::time::Duration::from_secs(settings.session_guard.stale_ttl_seconds),
+                    std::time::Duration::from_secs(settings.session_guard.cleanup_interval_seconds),
+                    metrics,
+                ),
             }),
         })
     }
 
     /// Run an endpoint instance inside the caller provided asynchronous runtime.
     pub async fn listen(&self) -> io::Result<()> {
+        self.context
+            .session_guard
+            .spawn_cleanup_task(self.context.shutdown.clone());
         let listen_tcp = async {
             self.listen_tcp()
                 .await
@@ -477,6 +490,7 @@ impl Core {
                     },
                     tls_connection_meta.sni,
                     tls_connection_meta.sni_auth_creds,
+                    client_ip,
                     tunnel_id,
                 )
                 .await
@@ -587,6 +601,7 @@ impl Core {
                     Box::new(Http3Codec::new(socket, tunnel_id.clone())),
                     sni,
                     sni_auth_creds,
+                    client_ip.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
                     tunnel_id,
                 )
                 .await
@@ -665,6 +680,7 @@ impl Core {
         codec: Box<dyn HttpCodec>,
         server_name: String,
         sni_auth_creds: Option<String>,
+        remote_addr: std::net::IpAddr,
         tunnel_id: log_utils::IdChain<u64>,
     ) {
         let _metrics_guard = Metrics::client_sessions_counter(context.metrics.clone(), protocol);
@@ -693,6 +709,7 @@ impl Core {
             Self::make_forwarder(context),
             authentication_policy,
             tunnel_id.clone(),
+            remote_addr,
         );
 
         log_id!(trace, tunnel_id, "Listening for client tunnel");
@@ -747,6 +764,13 @@ impl Default for Context {
             metrics: Metrics::new().unwrap(),
             next_client_id: Default::default(),
             next_tunnel_id: Default::default(),
+            session_guard: SessionGuard::new(
+                settings.session_guard.enabled,
+                settings.session_guard.max_active_sessions_per_user,
+                std::time::Duration::from_secs(settings.session_guard.stale_ttl_seconds),
+                std::time::Duration::from_secs(settings.session_guard.cleanup_interval_seconds),
+                Metrics::new().unwrap(),
+            ),
         }
     }
 }

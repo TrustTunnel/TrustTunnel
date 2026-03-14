@@ -10,6 +10,7 @@ pub mod core;
 pub mod log_utils;
 pub mod net_utils;
 pub mod rules;
+pub mod session_guard;
 pub mod settings;
 pub mod shutdown;
 pub mod utils;
