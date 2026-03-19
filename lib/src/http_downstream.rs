@@ -447,6 +447,9 @@ fn tunnel_error_to_warn_header(
             (DNS_WARNING_HEADER_NAME.to_string(), hostname.to_string()),
             (WARNING_HEADER_NAME.to_string(), format!("311 - {}", error)),
         ],
+        tunnel::ConnectionError::DestinationDenied => {
+            vec![(WARNING_HEADER_NAME.to_string(), format!("320 - {}", error))]
+        }
         tunnel::ConnectionError::Other(_) => vec![(
             WARNING_HEADER_NAME.to_string(),
             "300 - Connection failed for some reason".to_string(),

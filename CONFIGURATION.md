@@ -218,26 +218,46 @@ password = "secure_password_2"
 
 ### Rules File (rules.toml)
 
-Defines connection filtering rules. Example:
+Defines connection filtering rules. Rules are split into two independent sections:
+
+- `[inbound]` — client filtering (evaluated at TLS handshake)
+- `[outbound]` — destination filtering (evaluated per request)
+
+Each section has its own `default_action` and rules list.
+
+Example:
 
 ```toml
-# Rules are evaluated in order, first matching rule's action is applied.
-# If no rules match, the connection is allowed by default.
-
-# Deny connections from specific IP range
-[[rule]]
-cidr = "192.168.1.0/24"
-action = "deny"
+[inbound]
+# WARNING: with default_action = "deny", all clients are blocked
+# unless explicitly allowed by a rule below.
+default_action = "deny"
 
 # Allow connections with specific TLS client random prefix
-[[rule]]
+[[inbound.rule]]
 client_random_prefix = "aabbcc"
 action = "allow"
 
-# Deny connections matching both IP and client random with mask
-[[rule]]
+# Allow connections from specific IP range
+[[inbound.rule]]
 cidr = "10.0.0.0/8"
-client_random_prefix = "a0b0/f0f0"
+action = "allow"
+
+[outbound]
+default_action = "allow"
+
+# Block BitTorrent peer ports
+[[outbound.rule]]
+destination_port = "6881-6889"
+action = "deny"
+
+[[outbound.rule]]
+destination_port = "6969"
+action = "deny"
+
+# Block connections to private networks
+[[outbound.rule]]
+destination_cidr = "10.0.0.0/8"
 action = "deny"
 ```
 
@@ -407,23 +427,43 @@ Each TLS host entry requires:
 
 ## Rules Reference
 
-Rules filter incoming connections based on client IP and/or TLS client random data.
+Rules are split into two independent sections with separate defaults:
 
-### Rule Structure
+- `[inbound]` — client filtering (evaluated at TLS handshake)
+- `[outbound]` — destination filtering (evaluated per TCP CONNECT / UDP request)
+
+### Structure
 
 ```toml
-[[rule]]
+[inbound]
+default_action = "allow"          # Optional: "allow" (default) or "deny"
+
+[[inbound.rule]]
 cidr = "192.168.0.0/16"           # Optional: IP range in CIDR notation
 client_random_prefix = "aabbcc"   # Optional: Hex-encoded prefix or prefix/mask
 action = "allow"                  # Required: "allow" or "deny"
+
+[outbound]
+default_action = "allow"          # Optional: "allow" (default) or "deny"
+
+[[outbound.rule]]
+destination_port = "6881-6889"    # Optional: Port or port range
+destination_cidr = "0.0.0.0/0"   # Optional: IP range in CIDR notation
+action = "deny"                   # Required: "allow" or "deny"
 ```
 
 ### Evaluation
 
+Within each section:
+
 1. Rules are evaluated in order
 2. First matching rule's action is applied
-3. If no rules match, connection is **allowed** by default
-4. If both `cidr` and `client_random_prefix` are specified, both must match
+3. If no rules match, `default_action` is used (`"allow"` if not set)
+4. Inbound: if both `cidr` and `client_random_prefix` are specified, both must match
+5. Outbound: if both `destination_port` and `destination_cidr` are specified, both must match
+6. Outbound: at least one of `destination_port` or `destination_cidr` must be present
+
+Inbound and outbound defaults are independent — an inbound `default_action = "deny"` does not affect outbound evaluation and vice versa.
 
 ### Client Random Matching
 
@@ -445,27 +485,71 @@ client_random_prefix = "a0b0/f0f0"
 
 Matches if `(client_random & 0xf0f0) == (0xa0b0 & 0xf0f0)`.
 
+### Destination Filtering
+
+Outbound rules are evaluated per-request (not at TLS handshake time), since the destination is not known until a TCP CONNECT or UDP request is made.
+
+Outbound rules support filtering by destination port, destination IP (CIDR), or both:
+
+```toml
+# Block by port only
+[[outbound.rule]]
+destination_port = "6881-6889"
+action = "deny"
+
+# Block by IP range only
+[[outbound.rule]]
+destination_cidr = "10.0.0.0/8"
+action = "deny"
+
+# Block by both (both must match)
+[[outbound.rule]]
+destination_cidr = "203.0.113.0/24"
+destination_port = "25"
+action = "deny"
+```
+
+> **Note:** For TCP CONNECT requests with hostname destinations (not resolved to IP yet), `destination_cidr` rules will not match. Use `destination_port` for hostname-based connections.
+
 ### Examples
 
 ```toml
-# Block specific IP range
-[[rule]]
-cidr = "192.168.1.0/24"
-action = "deny"
+# Whitelist mode: only allow known clients.
+# WARNING: all clients are blocked unless explicitly allowed below.
+[inbound]
+default_action = "deny"
 
-# Allow specific client random prefix
-[[rule]]
+[[inbound.rule]]
 client_random_prefix = "deadbeef"
 action = "allow"
 
-# Block internal networks with specific client signature
-[[rule]]
+[[inbound.rule]]
 cidr = "10.0.0.0/8"
-client_random_prefix = "bad0/ff00"
+action = "allow"
+
+# Block torrent ports, allow everything else
+[outbound]
+default_action = "allow"
+
+[[outbound.rule]]
+destination_port = "6881-6889"
 action = "deny"
 
-# Catch-all deny (place last)
-[[rule]]
+[[outbound.rule]]
+destination_port = "6969"
+action = "deny"
+
+# Block access to private networks
+[[outbound.rule]]
+destination_cidr = "10.0.0.0/8"
+action = "deny"
+
+[[outbound.rule]]
+destination_cidr = "172.16.0.0/12"
+action = "deny"
+
+[[outbound.rule]]
+destination_cidr = "192.168.0.0/16"
 action = "deny"
 ```
 

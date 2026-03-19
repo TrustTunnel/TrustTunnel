@@ -273,7 +273,7 @@ fn main() {
                     Some(input_mask)
                 };
 
-                let matching_rule = rules_engine.config().rule.iter().find(|rule| {
+                let matching_rule = rules_engine.config().inbound.rule.iter().find(|rule| {
                     rule.client_random_prefix
                         .as_ref()
                         .map(|p| {

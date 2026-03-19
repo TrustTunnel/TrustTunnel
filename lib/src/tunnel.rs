@@ -7,7 +7,8 @@ use crate::downstream::{
 use crate::forwarder::Forwarder;
 use crate::pipe::DuplexPipe;
 use crate::{
-    authentication, core, datagram_pipe, downstream, forwarder, log_id, log_utils, pipe, udp_pipe,
+    authentication, core, datagram_pipe, downstream, forwarder, log_id, log_utils, net_utils, pipe,
+    rules, udp_pipe,
 };
 use std::fmt::{Display, Formatter};
 use std::io;
@@ -43,6 +44,7 @@ pub(crate) enum ConnectionError {
     HostUnreachable,
     DnsNonroutable,
     DnsLoopback,
+    DestinationDenied,
     Other(String),
 }
 
@@ -55,6 +57,7 @@ impl Display for ConnectionError {
             Self::HostUnreachable => write!(f, "Remote host is unreachable"),
             Self::DnsNonroutable => write!(f, "DNS: resolved address in non-routable network"),
             Self::DnsLoopback => write!(f, "DNS: resolved address in loopback"),
+            Self::DestinationDenied => write!(f, "Destination denied by filtering rules"),
             Self::Other(x) => write!(f, "{}", x),
         }
     }
@@ -326,6 +329,28 @@ impl Tunnel {
                 ))
             }
         };
+
+        // Evaluate destination filtering rules (port and/or IP)
+        if let Some(rules_engine) = &context.settings.rules_engine {
+            let (dest_ip, port) = match &destination {
+                net_utils::TcpDestination::Address(addr) => (Some(addr.ip()), addr.port()),
+                net_utils::TcpDestination::HostName((_, port)) => (None, *port),
+            };
+            if rules_engine.evaluate_destination(dest_ip.as_ref(), port)
+                == rules::RuleEvaluation::Deny
+            {
+                log_id!(
+                    debug,
+                    request_id,
+                    "TCP connect denied: destination blocked by filtering rules",
+                );
+                return Err((
+                    Some(request),
+                    "Destination denied",
+                    ConnectionError::DestinationDenied,
+                ));
+            }
+        }
 
         let meta = forwarder::TcpConnectionMeta {
             client_address: match request.client_address() {

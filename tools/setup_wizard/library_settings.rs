@@ -183,42 +183,92 @@ fn compose_credentials_content(clients: impl Iterator<Item = (String, String)>) 
 fn generate_rules_toml_content(rules_config: &trusttunnel::rules::RulesConfig) -> String {
     let mut content = String::new();
 
-    // Add header comments explaining the format
     content.push_str("# Rules configuration for VPN endpoint connection filtering\n");
-    content.push_str("# \n");
-    content.push_str("# This file defines filter rules for incoming connections.\n");
-    content.push_str(
-        "# Rules are evaluated in order, and the first matching rule's action is applied.\n",
-    );
-    content.push_str("# If no rules match, the connection is allowed by default.\n");
     content.push_str("#\n");
-    content.push_str("# Each rule can specify:\n");
-    content.push_str("# - cidr: IP address range in CIDR notation\n");
-    content.push_str("# - client_random_prefix: Hex-encoded prefix of TLS client random data\n");
-    content.push_str(
-        "#   Can optionally include a mask in format \"prefix[/mask]\" for bitwise matching\n",
-    );
-    content.push_str("# - action: \"allow\" or \"deny\"\n");
+    content.push_str("# Rules are split into two independent sections:\n");
+    content.push_str("#   [inbound]  - Client filtering (evaluated at TLS handshake)\n");
+    content.push_str("#   [outbound] - Destination filtering (evaluated per request)\n");
     content.push_str("#\n");
-    content.push_str("# All fields except 'action' are optional - if specified, all conditions must match for the rule to apply.\n");
+    content.push_str("# Each section has its own default_action and rules list.\n");
+    content.push_str("# Rules are evaluated in order; first match wins.\n");
+    content.push_str("# If no rules match, default_action is used (\"allow\" if not set).\n");
     content.push_str("#\n");
-    content.push_str("# client_random_prefix formats:\n");
-    content.push_str("# 1. Simple prefix matching:\n");
-    content.push_str("#    client_random_prefix = \"aabbcc\"\n");
-    content.push_str("#    → matches client_random starting with 0xaabbcc\n");
+    content.push_str("# Inbound rule fields:\n");
+    content.push_str("#   cidr - IP address range in CIDR notation\n");
+    content.push_str("#   client_random_prefix - Hex-encoded TLS client random prefix\n");
+    content.push_str("#     Simple: \"aabbcc\" (prefix matching)\n");
+    content
+        .push_str("#     Masked: \"a0b0/f0f0\" (bitwise: client_random & mask == prefix & mask)\n");
+    content.push_str("#   action - \"allow\" or \"deny\"\n");
     content.push_str("#\n");
-    content.push_str("# 2. Bitwise matching with mask:\n");
-    content.push_str("#    client_random_prefix = \"a0b0/f0f0\"\n");
-    content.push_str("#    → prefix=a0b0, mask=f0f0\n");
-    content.push_str(
-        "#    → matches client_random where (client_random & 0xf0f0) == (0xa0b0 & 0xf0f0)\n",
-    );
-    content.push_str("#    → e.g., 0xa5b5, 0xa9bf match, but 0xb0b0, 0xa0c0 don't match\n\n");
+    content.push_str("# Outbound rule fields:\n");
+    content
+        .push_str("#   destination_port - Port or port range (e.g., \"6881\" or \"6881-6889\")\n");
+    content.push_str("#   destination_cidr - IP range in CIDR notation (e.g., \"10.0.0.0/8\")\n");
+    content.push_str("#   action - \"allow\" or \"deny\"\n\n");
 
-    // Serialize the actual rules (usually empty)
-    if !rules_config.rule.is_empty() {
-        content.push_str(&toml::ser::to_string(rules_config).unwrap());
-        content.push('\n');
+    // [inbound] section
+    content.push_str("[inbound]\n");
+    if let Some(ref action) = rules_config.inbound.default_action {
+        content.push_str(&format!(
+            "default_action = \"{}\"\n",
+            match action {
+                trusttunnel::rules::RuleAction::Allow => "allow",
+                trusttunnel::rules::RuleAction::Deny => "deny",
+            }
+        ));
+    } else {
+        content.push_str("# default_action = \"allow\"\n");
+    }
+    content.push('\n');
+
+    for rule in &rules_config.inbound.rule {
+        content.push_str("[[inbound.rule]]\n");
+        if let Some(ref cidr) = rule.cidr {
+            content.push_str(&format!("cidr = \"{}\"\n", cidr));
+        }
+        if let Some(ref prefix) = rule.client_random_prefix {
+            content.push_str(&format!("client_random_prefix = \"{}\"\n", prefix));
+        }
+        content.push_str(&format!(
+            "action = \"{}\"\n\n",
+            match rule.action {
+                trusttunnel::rules::RuleAction::Allow => "allow",
+                trusttunnel::rules::RuleAction::Deny => "deny",
+            }
+        ));
+    }
+
+    // [outbound] section
+    content.push_str("[outbound]\n");
+    if let Some(ref action) = rules_config.outbound.default_action {
+        content.push_str(&format!(
+            "default_action = \"{}\"\n",
+            match action {
+                trusttunnel::rules::RuleAction::Allow => "allow",
+                trusttunnel::rules::RuleAction::Deny => "deny",
+            }
+        ));
+    } else {
+        content.push_str("# default_action = \"allow\"\n");
+    }
+    content.push('\n');
+
+    for rule in &rules_config.outbound.rule {
+        content.push_str("[[outbound.rule]]\n");
+        if let Some(ref port) = rule.destination_port {
+            content.push_str(&format!("destination_port = \"{}\"\n", port));
+        }
+        if let Some(cidr) = rule.destination_cidr {
+            content.push_str(&format!("destination_cidr = \"{}\"\n", cidr));
+        }
+        content.push_str(&format!(
+            "action = \"{}\"\n\n",
+            match rule.action {
+                trusttunnel::rules::RuleAction::Allow => "allow",
+                trusttunnel::rules::RuleAction::Deny => "deny",
+            }
+        ));
     }
 
     content

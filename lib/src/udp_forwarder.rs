@@ -1,6 +1,6 @@
 use crate::forwarder::UdpMultiplexer;
 use crate::metrics::OutboundUdpSocketCounter;
-use crate::{core, datagram_pipe, downstream, forwarder, log_id, log_utils, net_utils};
+use crate::{core, datagram_pipe, downstream, forwarder, log_id, log_utils, net_utils, rules};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::hash_map::Entry;
@@ -188,6 +188,22 @@ impl forwarder::UdpDatagramPipeShared for MultiplexerShared {
         {
             Entry::Occupied(_) => Err(io::Error::new(ErrorKind::Other, "Already present")),
             Entry::Vacant(e) => {
+                // Evaluate destination filtering rules (port and/or IP)
+                if let Some(rules_engine) = &self.context.settings.rules_engine {
+                    let dest_ip = meta.destination.ip();
+                    let port = meta.destination.port();
+                    if rules_engine.evaluate_destination(Some(&dest_ip), port)
+                        == rules::RuleEvaluation::Deny
+                    {
+                        return Err(io::Error::new(
+                            ErrorKind::PermissionDenied,
+                            format!(
+                                "UDP destination {}:{} denied by filtering rules",
+                                dest_ip, port
+                            ),
+                        ));
+                    }
+                }
                 let metrics_guard = self.context.metrics.clone().outbound_udp_socket_counter();
                 e.insert(Connection {
                     socket: Arc::new(make_udp_socket(&meta.destination)?),

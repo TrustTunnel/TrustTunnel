@@ -25,22 +25,29 @@ credentials_file = "{}"
 # The path to a TOML file for connection filtering rules in the following format:
 #
 # ```
-# [[rule]]
+# [inbound]
+# default_action = "allow"
+#
+# [[inbound.rule]]
 # cidr = "192.168.0.0/16"
-# action = "allow"
+# action = "deny"
 #
-# [[rule]]
+# [[inbound.rule]]
 # client_random_prefix = "aabbcc"
-# action = "deny"
-#
-# [[rule]]
-# client_random_prefix = "a0b0/f0f0"  # Format: prefix[/mask] for bitwise matching
 # action = "allow"
 #
-# [[rule]]
+# [outbound]
+# default_action = "allow"
+#
+# [[outbound.rule]]
+# destination_port = "6881-6889"
 # action = "deny"
 #
-# If no rules in this file, all connections are allowed by default.
+# [[outbound.rule]]
+# destination_cidr = "10.0.0.0/8"
+# action = "deny"
+#
+# If no rules file, all connections are allowed by default.
 # ```
 rules_file = "{}"
 
