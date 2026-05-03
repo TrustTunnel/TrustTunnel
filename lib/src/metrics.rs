@@ -393,7 +393,7 @@ async fn handle_request(
         let result = match path {
             HEALTH_CHECK_PATH => handle_health_check(stream),
             METRICS_PATH => handle_metrics_collect(&context.metrics, stream).await,
-            CLIENTS_PATH => handle_clients_collect(&context.metrics, stream).await,
+            CLIENTS_PATH => handle_clients_collect(context.clone(), &context.metrics, stream).await,
             x => {
                 log_id!(debug, log_id, "Unexpected path: {}", x);
                 let respond = stream.split().1;
@@ -426,10 +426,46 @@ fn handle_health_check(stream: Box<dyn http_codec::Stream>) -> io::Result<()> {
 }
 
 async fn handle_clients_collect(
+    context: Arc<core::Context>,
     metrics: &Metrics,
     stream: Box<dyn http_codec::Stream>,
 ) -> io::Result<()> {
-    let content = metrics.clients_json();
+    // Build aggregated clients list including configured clients
+    let mut agg: HashMap<String, ClientSummary> = HashMap::new();
+
+    // Start with configured clients (from settings) — ensure they appear even if never connected
+    for c in &context.settings.clients {
+        let uname = c.username.clone();
+        agg.entry(uname.clone()).or_insert(ClientSummary {
+            username: uname,
+            ip: None,
+            sessions: 0,
+            inbound: 0,
+            outbound: 0,
+        });
+    }
+
+    // Merge runtime connection info
+    let clients_map = metrics.clients.lock().unwrap();
+    for (_id, info) in clients_map.iter() {
+        let uname = info.username.clone().unwrap_or_default();
+        let entry = agg.entry(uname.clone()).or_insert(ClientSummary {
+            username: uname.clone(),
+            ip: info.ip.map(|x| x.to_string()),
+            sessions: 0,
+            inbound: 0,
+            outbound: 0,
+        });
+        entry.sessions = entry.sessions.saturating_add(info.sessions);
+        entry.inbound = entry.inbound.saturating_add(info.inbound);
+        entry.outbound = entry.outbound.saturating_add(info.outbound);
+        if entry.ip.is_none() {
+            entry.ip = info.ip.map(|x| x.to_string());
+        }
+    }
+
+    let vec: Vec<ClientSummary> = agg.into_values().collect();
+    let content = serde_json::to_vec(&vec).unwrap_or_else(|_| b"[]".to_vec());
     let response = http::Response::builder()
         .version(stream.request().request().version)
         .status(http::status::StatusCode::OK)

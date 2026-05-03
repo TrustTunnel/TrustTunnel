@@ -134,11 +134,13 @@ impl Tunnel {
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
             let protocol = self.downstream.protocol();
+            let conn_id_for_metrics = self.id.clone();
             let update_metrics = {
                 let metrics = context.metrics.clone();
-                move |direction, n, id| match direction {
-                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, id, n),
-                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, id, n),
+                let conn_id = conn_id_for_metrics.clone();
+                move |direction, n, _id| match direction {
+                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, conn_id.clone(), n),
+                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, conn_id.clone(), n),
                 }
             };
 

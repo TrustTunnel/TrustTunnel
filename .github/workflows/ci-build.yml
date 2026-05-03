@@ -48,3 +48,34 @@ jobs:
           name: release-binaries
           path: target/release/trusttunnel_endpoint
           retention-days: 30
+
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: release-${{ github.run_id }}
+          release_name: Build ${{ github.run_number }} (run ${{ github.run_id }})
+          draft: false
+          prerelease: false
+
+      - name: Upload release binary (release)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: target/release/trusttunnel_endpoint
+          asset_name: trusttunnel_endpoint-release
+          asset_content_type: application/octet-stream
+
+      - name: Upload release binary (debug)
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: target/debug/trusttunnel_endpoint
+          asset_name: trusttunnel_endpoint-debug
+          asset_content_type: application/octet-stream
