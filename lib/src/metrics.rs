@@ -465,7 +465,8 @@ async fn handle_clients_collect(
     }
 
     let vec: Vec<ClientSummary> = agg.into_values().collect();
-    let content = serde_json::to_vec(&vec).unwrap_or_else(|_| b"[]".to_vec());
+    let content_vec = serde_json::to_vec(&vec).unwrap_or_else(|_| b"[]".to_vec());
+    let mut content = Bytes::from(content_vec);
     let response = http::Response::builder()
         .version(stream.request().request().version)
         .status(http::status::StatusCode::OK)
@@ -482,9 +483,8 @@ async fn handle_clients_collect(
         .send_response(response, false)?
         .into_pipe_sink();
 
-    let mut buf = content;
-    while !buf.is_empty() {
-        buf = sink.write(buf)?;
+    while !content.is_empty() {
+        content = sink.write(content)?;
         sink.wait_writable().await?;
     }
 
