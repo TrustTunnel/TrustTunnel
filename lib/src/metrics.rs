@@ -259,13 +259,15 @@ impl ClientSessionsCounter {
             .inc();
 
         // Ensure client entry exists and update
-        let mut clients = metrics.clients.lock().unwrap();
-        let entry = clients.entry(conn_id.clone()).or_default();
-        if let Some(u) = username.clone() {
-            entry.username = Some(u);
-        }
-        entry.sessions = entry.sessions.saturating_add(1);
-        entry.protocol_label = Some(protocol.as_str().to_string());
+        {
+            let mut clients = metrics.clients.lock().unwrap();
+            let entry = clients.entry(conn_id.clone()).or_default();
+            if let Some(u) = username.clone() {
+                entry.username = Some(u);
+            }
+            entry.sessions = entry.sessions.saturating_add(1);
+            entry.protocol_label = Some(protocol.as_str().to_string());
+        } // drop lock guard here
 
         Self { metrics, protocol }
     }

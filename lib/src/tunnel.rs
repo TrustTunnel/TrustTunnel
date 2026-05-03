@@ -202,11 +202,11 @@ impl Tunnel {
 
                 let request_id = request.id();
                 log_id!(trace, request_id, "Processing tunnel request");
-                let auth_info = request
+                let auth_info_result = request
                     .auth_info()
                     .map(|x| x.map(authentication::Source::into_owned));
                 let forwarder_auth = match (
-                    auth_info,
+                    auth_info_result.as_ref().cloned(),
                     authentication_policy,
                     context.authenticator.clone(),
                 ) {
@@ -236,9 +236,11 @@ impl Tunnel {
                         request.fail_request(err);
                         return;
                     }
-                    (Err(e), ..) => {
-                        log_id!(debug, request_id, "Failed to get auth info: {}", e);
-                        request.fail_request(ConnectionError::Io(e));
+                    (Err(_), ..) => {
+                        log_id!(debug, request_id, "Failed to get auth info");
+                        request.fail_request(ConnectionError::Authentication(
+                            "Failed to get auth info".to_string(),
+                        ));
                         return;
                     }
                 };
@@ -250,7 +252,7 @@ impl Tunnel {
                 );
 
                 // If we authenticated this request and can extract a username, transfer session label
-                if let Ok(Some(source)) = auth_info {
+                if let Ok(Some(source)) = auth_info_result {
                     let username_opt = match &source {
                         authentication::Source::ProxyBasic(s) => {
                             BASE64_ENGINE.decode(s.as_ref()).ok().and_then(|v| {

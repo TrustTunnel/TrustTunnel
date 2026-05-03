@@ -38,6 +38,7 @@ rustls = { version = "0.23.37", features = ["logging"] }
 rustls-native-certs = "0.7"
 rustls-pki-types = "1.13.2"
 serde = "1.0.164"
+serde_json = "1.0"
 smallvec = "1.10.0"
 socket2 = "0.5"
 tokio = { version = "1.42", features = ["net", "rt", "sync", "time", "macros", "rt-multi-thread"] }

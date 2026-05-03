@@ -488,7 +488,7 @@ impl Core {
                 let conn_key = tunnel_id.to_string();
                 context.metrics.register_connection(conn_key.clone(), client_ip);
                 let res = Self::on_tunnel_request(
-                    context,
+                    context.clone(),
                     tls_connection_meta.protocol,
                     match Self::make_tcp_http_codec(
                         tls_connection_meta.protocol,
@@ -615,7 +615,7 @@ impl Core {
                 let conn_key = tunnel_id.to_string();
                 if let Some(ip) = client_ip { context.metrics.register_connection(conn_key.clone(), ip); }
                 let res = Self::on_tunnel_request(
-                    context,
+                    context.clone(),
                     tls_connection_meta.protocol,
                     Box::new(Http3Codec::new(socket, tunnel_id.clone())),
                     sni,
