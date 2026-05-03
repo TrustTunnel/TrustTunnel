@@ -445,22 +445,24 @@ async fn handle_clients_collect(
         });
     }
 
-    // Merge runtime connection info
-    let clients_map = metrics.clients.lock().unwrap();
-    for (_id, info) in clients_map.iter() {
-        let uname = info.username.clone().unwrap_or_default();
-        let entry = agg.entry(uname.clone()).or_insert(ClientSummary {
-            username: uname.clone(),
-            ip: info.ip.map(|x| x.to_string()),
-            sessions: 0,
-            inbound: 0,
-            outbound: 0,
-        });
-        entry.sessions = entry.sessions.saturating_add(info.sessions);
-        entry.inbound = entry.inbound.saturating_add(info.inbound);
-        entry.outbound = entry.outbound.saturating_add(info.outbound);
-        if entry.ip.is_none() {
-            entry.ip = info.ip.map(|x| x.to_string());
+    // Merge runtime connection info (limit mutex scope so guard isn't held across awaits)
+    {
+        let clients_map = metrics.clients.lock().unwrap();
+        for (_id, info) in clients_map.iter() {
+            let uname = info.username.clone().unwrap_or_default();
+            let entry = agg.entry(uname.clone()).or_insert(ClientSummary {
+                username: uname.clone(),
+                ip: info.ip.map(|x| x.to_string()),
+                sessions: 0,
+                inbound: 0,
+                outbound: 0,
+            });
+            entry.sessions = entry.sessions.saturating_add(info.sessions);
+            entry.inbound = entry.inbound.saturating_add(info.inbound);
+            entry.outbound = entry.outbound.saturating_add(info.outbound);
+            if entry.ip.is_none() {
+                entry.ip = info.ip.map(|x| x.to_string());
+            }
         }
     }
 
