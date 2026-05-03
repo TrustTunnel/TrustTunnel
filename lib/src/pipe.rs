@@ -122,7 +122,7 @@ impl Display for SimplexDirection {
     }
 }
 
-impl<F: Fn(SimplexDirection, usize) + Send> SimplexPipe<F> {
+impl<F: Fn(SimplexDirection, usize, log_utils::IdChain<u64>) + Send> SimplexPipe<F> {
     pub fn new(
         source: Box<dyn Source>,
         sink: Box<dyn Sink>,
@@ -184,7 +184,7 @@ impl<F: Fn(SimplexDirection, usize) + Send> SimplexPipe<F> {
                         .write(bytes)
                         .map_err(|e| io_to_pipe_error(id, e))?;
                     let sent = data_len - unsent_data.len();
-                    (self.update_metrics)(self.direction, sent);
+                    (self.update_metrics)(self.direction, sent, self.source.id());
                     self.source
                         .consume(sent)
                         .map_err(|e| io_to_pipe_error(id, e))?;
@@ -218,7 +218,7 @@ pub(crate) struct DuplexPipe<F> {
     right_pipe: SimplexPipe<F>,
 }
 
-impl<F: Fn(SimplexDirection, usize) + Send + Clone> DuplexPipe<F> {
+impl<F: Fn(SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone> DuplexPipe<F> {
     pub fn new(
         (dir1, source1, sink1): (SimplexDirection, Box<dyn Source>, Box<dyn Sink>),
         (dir2, source2, sink2): (SimplexDirection, Box<dyn Source>, Box<dyn Sink>),

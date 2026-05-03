@@ -34,16 +34,16 @@ Returns all metrics in Prometheus text format.
 ```console
 # HELP client_sessions Number of active client sessions
 # TYPE client_sessions gauge
-client_sessions{protocol_type="http1"} 5
-client_sessions{protocol_type="http2"} 3
+client_sessions{protocol_type="http1",username=""} 5
+client_sessions{protocol_type="http2",username="alice"} 3
 
 # HELP inbound_traffic_bytes Total number of bytes uploaded by clients
 # TYPE inbound_traffic_bytes counter
-inbound_traffic_bytes{protocol_type="http1"} 1234567
+inbound_traffic_bytes{username=""} 1234567
 
 # HELP outbound_traffic_bytes Total number of bytes downloaded by clients
 # TYPE outbound_traffic_bytes counter
-outbound_traffic_bytes{protocol_type="http1"} 7654321
+outbound_traffic_bytes{username="alice"} 7654321
 
 # HELP outbound_tcp_sockets Number of active outbound TCP connections
 # TYPE outbound_tcp_sockets gauge
@@ -59,6 +59,28 @@ outbound_udp_sockets 8
 Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 
 ## Available Metrics
+
+### Per-client metrics and `/clients` endpoint
+
+The endpoint now exposes per-client metrics and a small JSON endpoint with per-user aggregates.
+
+- `/clients` — JSON endpoint that returns a list of configured clients and runtime aggregates for each user (current sessions, inbound bytes, outbound bytes). Example response:
+
+```json
+[{"username":"alice","ip":"1.2.3.4","sessions":3,"inbound":123456,"outbound":789012},
+ {"username":"bob","ip":null,"sessions":0,"inbound":0,"outbound":0}]
+```
+
+Per-client metrics exposed in Prometheus format:
+
+- `client_sessions{protocol_type,username}` — number of active sessions per protocol and username. Username will be the empty string for unauthenticated or not-yet-labeled sessions.
+- `inbound_traffic_bytes{username}` — total bytes uploaded by the client identified by `username`.
+- `outbound_traffic_bytes{username}` — total bytes downloaded by the client identified by `username`.
+
+Notes:
+- The `/clients` endpoint includes both configured clients (from settings) and active runtime connections. Configured clients with no active sessions will be present with zero counters.
+- A session's username label is applied after successful authentication; traffic that occurs before authentication is attributed to `username=""`.
+- To ensure Prometheus shows zero values for unused users, the `/clients` endpoint and metrics initialize entries for configured users so the monitoring system can observe them.
 
 ### Client Sessions
 

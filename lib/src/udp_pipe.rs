@@ -53,7 +53,7 @@ enum UdpConnectionStatus {
     Done,
 }
 
-impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
+impl<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Sync> LeftPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
             let datagram = self.source.read().await?;
@@ -73,7 +73,7 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
             let datagram_len = datagram.payload.len();
             match self.sink.write(datagram).await? {
                 datagram_pipe::SendStatus::Sent => {
-                    (self.shared.update_metrics)(self.direction, datagram_len);
+                    (self.shared.update_metrics)(self.direction, datagram_len, self.source.id());
                 }
                 datagram_pipe::SendStatus::Dropped => {
                     log_id!(trace, self.source.id(), "--> Datagram dropped")
@@ -125,7 +125,7 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> LeftPipe<F> {
     }
 }
 
-impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
+impl<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Sync> RightPipe<F> {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
             let datagram = match self.source.read().await? {
@@ -149,7 +149,7 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> RightPipe<F> {
             let datagram_len = datagram.payload.len();
             match self.sink.write(datagram).await? {
                 datagram_pipe::SendStatus::Sent => {
-                    (self.shared.update_metrics)(self.direction, datagram_len);
+                    (self.shared.update_metrics)(self.direction, datagram_len, self.source.id());
                 }
                 datagram_pipe::SendStatus::Dropped => {
                     log_id!(trace, self.source.id(), "<-- Datagram dropped")
@@ -207,7 +207,7 @@ impl UdpConnection {
     }
 }
 
-impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> DuplexPipe<F> {
+impl<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Sync> DuplexPipe<F> {
     #[allow(clippy::type_complexity)]
     pub fn new(
         (source1, sink1): (
@@ -279,8 +279,8 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> DuplexPipe<F> {
 }
 
 #[async_trait]
-impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> datagram_pipe::DuplexPipe
-    for DuplexPipe<F>
+impl<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Sync>
+    datagram_pipe::DuplexPipe for DuplexPipe<F>
 {
     async fn exchange(&mut self) -> io::Result<()> {
         loop {
