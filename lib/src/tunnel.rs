@@ -1,4 +1,6 @@
 use crate::authentication::Status;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
 use crate::connection_limiter::ConnectionGuard;
 use crate::downstream::{
     Downstream, PendingDatagramMultiplexerRequest, PendingDemultiplexedRequest,
@@ -131,12 +133,12 @@ impl Tunnel {
             let tls_domain = self.downstream.tls_domain().to_string();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
+            let protocol = self.downstream.protocol();
             let update_metrics = {
                 let metrics = context.metrics.clone();
-                let protocol = self.downstream.protocol();
-                move |direction, n| match direction {
-                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, n),
-                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, n),
+                move |direction, n, id| match direction {
+                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, id, n),
+                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, id, n),
                 }
             };
 
@@ -246,6 +248,21 @@ impl Tunnel {
                     request_id,
                     "Authentication complete, promoting request"
                 );
+
+                // If we authenticated this request and can extract a username, transfer session label
+                if let Ok(Some(source)) = auth_info {
+                    let username_opt = match &source {
+                        authentication::Source::ProxyBasic(s) => {
+                            BASE64_ENGINE.decode(s.as_ref()).ok().and_then(|v| {
+                                String::from_utf8(v).ok().and_then(|s| s.splitn(2, ':').next().map(|x| x.to_string()))
+                            })
+                        }
+                        authentication::Source::Sni(s) => Some(s.as_ref().to_string()),
+                    };
+                    if let Some(u) = username_opt {
+                        context.metrics.transfer_session_username(protocol, &log_id.to_string(), Some(u));
+                    }
+                }
                 match request.promote_to_next_state() {
                     Ok(None) => {
                         log_id!(trace, request_id, "Health check request completed");
@@ -296,7 +313,7 @@ impl Tunnel {
         }
     }
 
-    async fn on_tcp_connect_request<F: Fn(pipe::SimplexDirection, usize) + Send + Clone>(
+    async fn on_tcp_connect_request<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone>(
         context: Arc<core::Context>,
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingTcpConnectRequest>,
@@ -404,7 +421,7 @@ impl Tunnel {
         }
     }
 
-    async fn on_datagram_mux_request<F: Fn(pipe::SimplexDirection, usize) + Send + Clone + Sync>(
+    async fn on_datagram_mux_request<F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone + Sync>(
         context: Arc<core::Context>,
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingDatagramMultiplexerRequest>,

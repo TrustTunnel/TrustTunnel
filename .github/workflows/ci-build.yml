@@ -1,0 +1,34 @@
+name: CI Build
+
+on:
+  push:
+    branches:
+      - "*"
+  pull_request:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build workspace
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.85
+          components: rustfmt, clippy
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build debug binaries
+        run: |
+          cargo build --bins
+
+      - name: Build release binaries
+        run: |
+          cargo build --bins --release

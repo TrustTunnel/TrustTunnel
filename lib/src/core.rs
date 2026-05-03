@@ -485,7 +485,9 @@ impl Core {
                     context.next_tunnel_id.fetch_add(1, Ordering::Relaxed),
                 ));
                 log_id!(trace, tunnel_id, "Creating tunnel");
-                Self::on_tunnel_request(
+                let conn_key = tunnel_id.to_string();
+                context.metrics.register_connection(conn_key.clone(), client_ip);
+                let res = Self::on_tunnel_request(
                     context,
                     tls_connection_meta.protocol,
                     match Self::make_tcp_http_codec(
@@ -496,14 +498,17 @@ impl Core {
                     ) {
                         Ok(x) => x,
                         Err(e) => {
+                            context.metrics.unregister_connection(&conn_key);
                             return Err((client_id, format!("Failed to create HTTP codec: {}", e)))
                         }
                     },
                     tls_connection_meta.sni,
                     tls_connection_meta.sni_auth_creds,
-                    tunnel_id,
+                    tunnel_id.clone(),
                 )
-                .await
+                .await;
+                context.metrics.unregister_connection(&conn_key);
+                res
             }
             net_utils::Channel::Ping => {
                 http_ping_handler::listen(
@@ -607,16 +612,19 @@ impl Core {
 
                 let sni = tls_connection_meta.sni.clone();
                 let sni_auth_creds = tls_connection_meta.sni_auth_creds.clone();
-
-                Self::on_tunnel_request(
+                let conn_key = tunnel_id.to_string();
+                if let Some(ip) = client_ip { context.metrics.register_connection(conn_key.clone(), ip); }
+                let res = Self::on_tunnel_request(
                     context,
                     tls_connection_meta.protocol,
                     Box::new(Http3Codec::new(socket, tunnel_id.clone())),
                     sni,
                     sni_auth_creds,
-                    tunnel_id,
+                    tunnel_id.clone(),
                 )
-                .await
+                .await;
+                context.metrics.unregister_connection(&conn_key);
+                res
             }
             net_utils::Channel::Ping => {
                 http_ping_handler::listen(
@@ -694,7 +702,11 @@ impl Core {
         sni_auth_creds: Option<String>,
         tunnel_id: log_utils::IdChain<u64>,
     ) {
-        let _metrics_guard = Metrics::client_sessions_counter(context.metrics.clone(), protocol);
+        // create per-connection session counter (username may be set below)
+        let conn_key = tunnel_id.to_string();
+        let username_for_counter: Option<String> = None;
+        let _metrics_guard = Arc::clone(&context.metrics)
+            .client_sessions_counter(protocol, conn_key.clone(), username_for_counter);
 
         let (authentication_policy, sni_connection_guard) =
             match context.authenticator.as_ref().zip(sni_auth_creds) {
@@ -727,6 +739,15 @@ impl Core {
                     }
                 }
             };
+
+                // If SNI authentication provided explicit credentials, set username for the connection
+                if let tunnel::AuthenticationPolicy::Authenticated(auth) = &authentication_policy {
+                    let username = match auth {
+                        authentication::Source::Sni(s) => Some(s.as_ref().to_string()),
+                        authentication::Source::ProxyBasic(s) => Some(s.as_ref().to_string()),
+                    };
+                    context.metrics.transfer_session_username(protocol, &conn_key, username);
+                }
 
         log_id!(debug, tunnel_id, "New tunnel for client");
         let mut tunnel = Tunnel::new(
