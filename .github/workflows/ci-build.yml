@@ -32,3 +32,19 @@ jobs:
       - name: Build release binaries
         run: |
           cargo build --bins --release
+
+      - name: Upload debug artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: debug-binaries
+          path: target/debug/trusttunnel_endpoint
+          retention-days: 30
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-binaries
+          path: target/release/trusttunnel_endpoint
+          retention-days: 30
