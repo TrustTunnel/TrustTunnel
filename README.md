@@ -457,6 +457,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 #### GUI
 
+[Trusty](https://github.com/Meddelin/trusty) - A cross-platform GUI client built with Flutter (Windows stable, macOS alpha). Features include real-time logs, 1-click SSH server deployment, and split-tunneling domain groups auto-discovery.
+
 [TrustTunnel-GUI-Client](https://github.com/blazuryk/TrustTunnel-GUI-Client) — Windows GUI client, implemented as a Python wrapper for [TrustTunnel Client][trusttunnel-client]
 
 [Surge](https://nssurge.com) — (Commercial) macOS and iOS network toolbox with experimental TrustTunnel support
