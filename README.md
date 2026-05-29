@@ -461,6 +461,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 [Surge](https://nssurge.com) — (Commercial) macOS and iOS network toolbox with experimental TrustTunnel support
 
+[FireTunnel](https://github.com/pnsrc/firetunnel) - A cross-platform client written in QT used modified [TrustTunnel Client](https://github.com/pnsrc/TrustTunnelClient/)
+
 ## See Also
 
 - [CONFIGURATION.md](CONFIGURATION.md) - Configuration documentation
