@@ -465,6 +465,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 [FireTunnel](https://github.com/pnsrc/firetunnel) - A cross-platform client written in QT used modified [TrustTunnel Client](https://github.com/pnsrc/TrustTunnelClient/)
 
+[FreeTunnel](https://github.com/dimmmmmmmer/freetunnel) — A free, open-source desktop client for Windows, macOS, and Linux with a native Qt 6 interface, built on the official [TrustTunnel Client][trusttunnel-client]. One-click connect, split tunneling, kill switch, system tray, and signed auto-updates.
+
 ## See Also
 
 - [CONFIGURATION.md](CONFIGURATION.md) - Configuration documentation
