@@ -43,6 +43,7 @@ mod socks5_forwarder;
 mod tcp_forwarder;
 mod tls_demultiplexer;
 mod tls_listener;
+mod traffic_limiter;
 mod tunnel;
 mod udp_forwarder;
 mod udp_pipe;

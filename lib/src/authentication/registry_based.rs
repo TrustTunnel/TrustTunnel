@@ -21,6 +21,10 @@ pub struct Client {
     /// Overrides `default_max_http3_conns_per_client` from the main config.
     /// If absent, the global default applies (or unlimited if no default is set).
     pub max_http3_conns: Option<u32>,
+    /// Maximum total traffic (inbound + outbound bytes) for this client.
+    /// Overrides `default_max_traffic_bytes_per_client` from the main config.
+    /// If absent, the global default applies (or unlimited if no default is set).
+    pub max_traffic_bytes: Option<u64>,
 }
 
 /// The [`Authenticator`] implementation which checks presence of a client in the list.

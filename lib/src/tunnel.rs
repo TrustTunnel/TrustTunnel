@@ -131,12 +131,18 @@ impl Tunnel {
             let tls_domain = self.downstream.tls_domain().to_string();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
+            let protocol = self.downstream.protocol();
+            let conn_id_for_metrics = self.id.clone();
             let update_metrics = {
                 let metrics = context.metrics.clone();
-                let protocol = self.downstream.protocol();
-                move |direction, n| match direction {
-                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, n),
-                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, n),
+                let conn_id = conn_id_for_metrics.clone();
+                move |direction, n, _id| match direction {
+                    pipe::SimplexDirection::Incoming => {
+                        metrics.add_inbound_bytes(conn_id.clone(), n)
+                    }
+                    pipe::SimplexDirection::Outgoing => {
+                        metrics.add_outbound_bytes(conn_id.clone(), n)
+                    }
                 }
             };
 
@@ -158,6 +164,29 @@ impl Tunnel {
                             .map(|a| a.authenticate(&source, &self.id) == Status::Pass)
                             .unwrap_or(false);
                         if authenticated {
+                            if let Some(username) = authentication::username_from_source(&source) {
+                                if context.traffic_limiter.as_ref().is_some_and(|limiter| {
+                                    !limiter.is_allowed(&username)
+                                }) {
+                                    log_id!(
+                                        debug,
+                                        self.id,
+                                        "Traffic quota exceeded, closing tunnel"
+                                    );
+                                    request.fail_request(ConnectionError::Authentication(
+                                        "Traffic quota exceeded".to_string(),
+                                    ));
+                                    return Err(io::Error::new(
+                                        ErrorKind::PermissionDenied,
+                                        "Traffic quota exceeded",
+                                    ));
+                                }
+                                context.metrics.transfer_session_username(
+                                    self.downstream.protocol(),
+                                    &self.id.to_string(),
+                                    Some(username),
+                                );
+                            }
                             let creds = match &source {
                                 authentication::Source::ProxyBasic(s) => s.as_ref(),
                                 authentication::Source::Sni(s) => s.as_ref(),
@@ -200,11 +229,11 @@ impl Tunnel {
 
                 let request_id = request.id();
                 log_id!(trace, request_id, "Processing tunnel request");
-                let auth_info = request
+                let auth_info_result = request
                     .auth_info()
                     .map(|x| x.map(authentication::Source::into_owned));
                 let forwarder_auth = match (
-                    auth_info,
+                    auth_info_result.as_ref().cloned(),
                     authentication_policy,
                     context.authenticator.clone(),
                 ) {
@@ -234,12 +263,35 @@ impl Tunnel {
                         request.fail_request(err);
                         return;
                     }
-                    (Err(e), ..) => {
-                        log_id!(debug, request_id, "Failed to get auth info: {}", e);
-                        request.fail_request(ConnectionError::Io(e));
+                    (Err(_), ..) => {
+                        log_id!(debug, request_id, "Failed to get auth info");
+                        request.fail_request(ConnectionError::Authentication(
+                            "Failed to get auth info".to_string(),
+                        ));
                         return;
                     }
                 };
+
+                if let Some(username) =
+                    forwarder_auth.as_ref().and_then(authentication::username_from_source)
+                {
+                    if context
+                        .traffic_limiter
+                        .as_ref()
+                        .is_some_and(|limiter| !limiter.is_allowed(&username))
+                    {
+                        let err =
+                            ConnectionError::Authentication("Traffic quota exceeded".to_string());
+                        log_id!(debug, request_id, "{}", err);
+                        request.fail_request(err);
+                        return;
+                    }
+                    context.metrics.transfer_session_username(
+                        protocol,
+                        &log_id.to_string(),
+                        Some(username),
+                    );
+                }
 
                 log_id!(
                     trace,
@@ -296,7 +348,9 @@ impl Tunnel {
         }
     }
 
-    async fn on_tcp_connect_request<F: Fn(pipe::SimplexDirection, usize) + Send + Clone>(
+    async fn on_tcp_connect_request<
+        F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone,
+    >(
         context: Arc<core::Context>,
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingTcpConnectRequest>,
@@ -404,7 +458,9 @@ impl Tunnel {
         }
     }
 
-    async fn on_datagram_mux_request<F: Fn(pipe::SimplexDirection, usize) + Send + Clone + Sync>(
+    async fn on_datagram_mux_request<
+        F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone + Sync,
+    >(
         context: Arc<core::Context>,
         forwarder: Arc<Mutex<Box<dyn Forwarder>>>,
         request: Box<dyn PendingDatagramMultiplexerRequest>,

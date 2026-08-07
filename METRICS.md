@@ -34,16 +34,16 @@ Returns all metrics in Prometheus text format.
 ```console
 # HELP client_sessions Number of active client sessions
 # TYPE client_sessions gauge
-client_sessions{protocol_type="http1"} 5
-client_sessions{protocol_type="http2"} 3
+client_sessions{protocol_type="http1",username=""} 5
+client_sessions{protocol_type="http2",username="alice"} 3
 
 # HELP inbound_traffic_bytes Total number of bytes uploaded by clients
 # TYPE inbound_traffic_bytes counter
-inbound_traffic_bytes{protocol_type="http1"} 1234567
+inbound_traffic_bytes{username="alice"} 1234567
 
 # HELP outbound_traffic_bytes Total number of bytes downloaded by clients
 # TYPE outbound_traffic_bytes counter
-outbound_traffic_bytes{protocol_type="http1"} 7654321
+outbound_traffic_bytes{username="alice"} 7654321
 
 # HELP outbound_tcp_sockets Number of active outbound TCP connections
 # TYPE outbound_tcp_sockets gauge
@@ -58,7 +58,57 @@ outbound_udp_sockets 8
 
 Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 
+### `/clients`
+
+Returns per-client traffic and session aggregates as JSON. Includes all users from
+`credentials.toml`, even if they have never connected.
+
+**Example response:**
+
+```json
+[
+  {
+    "username": "alice",
+    "ip": "203.0.113.10",
+    "sessions": 2,
+    "inbound": 123456,
+    "outbound": 789012,
+    "total": 912468,
+    "limit": 10737418240,
+    "quota_exceeded": false
+  },
+  {
+    "username": "bob",
+    "ip": null,
+    "sessions": 0,
+    "inbound": 0,
+    "outbound": 0,
+    "total": 0,
+    "limit": 5368709120,
+    "quota_exceeded": false
+  }
+]
+```
+
+**Notes:**
+
+- `inbound` is upload (client → internet), `outbound` is download (internet → client).
+- `total` is `inbound + outbound` and is what traffic quotas compare against.
+- `limit` is the configured quota in bytes, or omitted/`null` when unlimited.
+- `quota_exceeded` is `true` when `total >= limit`.
+- Traffic before authentication is counted under `username=""` in Prometheus, not under a named user.
+
 ## Available Metrics
+
+### Per-client metrics
+
+When metrics are enabled, traffic and sessions can be filtered by VPN username:
+
+- `client_sessions{protocol_type,username}` — active sessions per protocol and user.
+- `inbound_traffic_bytes{username}` — total uploaded bytes per user.
+- `outbound_traffic_bytes{username}` — total downloaded bytes per user.
+
+Use `/clients` for a ready-made JSON view suitable for admin panels and bots.
 
 ### Client Sessions
 
@@ -67,12 +117,13 @@ Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 **Labels:**
 
 - `protocol_type`: Protocol type (`http1`, `http2`, `http3`)
+- `username`: VPN username, or empty string before/for unauthenticated traffic
 
-**Description:** Current number of active client sessions grouped by protocol type.
+**Description:** Current number of active client sessions grouped by protocol type and user.
 
 **Use cases:**
 
-- Monitor active connections
+- Monitor active connections per user
 - Detect protocol distribution
 - Identify connection leaks
 - Capacity planning
@@ -83,14 +134,13 @@ Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 **Type:** Counter
 **Labels:**
 
-- `protocol_type`: Protocol type (`http1`, `http2`, `http3`)
+- `username`: VPN username, or empty string for unauthenticated traffic
 
 **Description:** Total number of bytes uploaded by clients (client → endpoint → destination).
 
 **Use cases:**
 
-- Monitor upload bandwidth usage
-- Track traffic patterns by protocol
+- Monitor upload bandwidth usage per user
 - Billing and quota management
 - Anomaly detection
 
@@ -100,14 +150,13 @@ Health check endpoint that returns HTTP 200 OK if the endpoint is running.
 **Type:** Counter
 **Labels:**
 
-- `protocol_type`: Protocol type (`http1`, `http2`, `http3`)
+- `username`: VPN username, or empty string for unauthenticated traffic
 
 **Description:** Total number of bytes downloaded by clients (destination → endpoint → client).
 
 **Use cases:**
 
-- Monitor download bandwidth usage
-- Track traffic patterns by protocol
+- Monitor download bandwidth usage per user
 - Billing and quota management
 - Anomaly detection
 

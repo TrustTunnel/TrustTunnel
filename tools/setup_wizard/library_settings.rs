@@ -85,6 +85,7 @@ fn build_credentials() -> (String, Vec<Client>) {
             password,
             max_http2_conns: None,
             max_http3_conns: None,
+            max_traffic_bytes: None,
         })
         .collect();
 
@@ -110,6 +111,10 @@ fn read_credentials_file(path: &str) -> Option<Vec<Client>> {
                         .get("max_http3_conns")
                         .and_then(|v| v.as_integer())
                         .map(|v| v as u32),
+                    max_traffic_bytes: t
+                        .get("max_traffic_bytes")
+                        .and_then(|v| v.as_integer())
+                        .and_then(|v| u64::try_from(v).ok()),
                 })
             })
             .collect(),

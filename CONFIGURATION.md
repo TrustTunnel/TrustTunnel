@@ -187,6 +187,10 @@ direct = {}
 # [metrics]
 # address = "127.0.0.1:1987"
 # request_timeout_secs = 3
+
+# Traffic quotas (optional; requires traffic_usage_file when limits are set)
+# default_max_traffic_bytes_per_client = 10737418240
+# traffic_usage_file = "traffic_usage.toml"
 ```
 
 ### TLS Hosts Settings File (hosts.toml)
@@ -231,7 +235,20 @@ password = "secure_password_1"
 [[client]]
 username = "user2"
 password = "secure_password_2"
+max_traffic_bytes = 10737418240  # 10 GiB total (upload + download)
+
+# Optional per-client connection limits
+# max_http2_conns = 8
+# max_http3_conns = 1
 ```
+
+Per-client optional fields in `credentials.toml`:
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `max_traffic_bytes` | Integer | Maximum total traffic (inbound + outbound) in bytes |
+| `max_http2_conns` | Integer | Max simultaneous HTTP/1 and HTTP/2 tunnels |
+| `max_http3_conns` | Integer | Max simultaneous HTTP/3 (QUIC) tunnels |
 
 ### Rules File (rules.toml)
 
@@ -390,7 +407,7 @@ recv_message_queue_capacity = 256
 
 ### Metrics Settings
 
-Optional. Enables Prometheus-compatible metrics endpoint.
+Optional. Enables Prometheus-compatible metrics and a JSON `/clients` endpoint.
 
 ```toml
 [metrics]
@@ -402,6 +419,30 @@ request_timeout_secs = 3
 | ------- | ---- | ------- | ----------- |
 | `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+
+**Endpoints:** `/metrics` (Prometheus), `/clients` (per-user JSON), `/health-check`.
+
+See [METRICS.md](METRICS.md) for response formats.
+
+### Traffic Quotas
+
+Optional. Limits total traffic per VPN user (upload + download combined). Counters are
+persisted to `traffic_usage_file` and survive endpoint restarts.
+
+```toml
+default_max_traffic_bytes_per_client = 10737418240
+traffic_usage_file = "traffic_usage.toml"
+```
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `default_max_traffic_bytes_per_client` | Integer | unlimited | Default quota in bytes for all clients |
+| `traffic_usage_file` | String | - | **Required** when any traffic quota is configured |
+
+Per-client override: `max_traffic_bytes` in `credentials.toml`.
+
+When a user exceeds their quota, new VPN requests are rejected with an authentication error.
+Already-open tunnels may continue until disconnected; quota is enforced on the next connection.
 
 ---
 

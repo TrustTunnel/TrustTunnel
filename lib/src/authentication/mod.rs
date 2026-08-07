@@ -1,6 +1,8 @@
 pub mod registry_based;
 
 use crate::log_utils;
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
 use std::borrow::Cow;
 
 /// Authentication request source
@@ -46,6 +48,17 @@ impl Source<'_> {
     }
 }
 
+pub fn username_from_source(source: &Source<'_>) -> Option<String> {
+    let creds = match source {
+        Source::ProxyBasic(s) | Source::Sni(s) => s.as_ref(),
+    };
+    BASE64_ENGINE
+        .decode(creds)
+        .ok()
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|s| s.splitn(2, ':').next().map(str::to_string))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,5 +77,19 @@ mod tests {
         let debug_output = format!("{:?}", source);
         assert!(!debug_output.contains("dXNlcjpwYXNzd29yZA=="));
         assert!(debug_output.contains("__stripped__"));
+    }
+
+    #[test]
+    fn username_from_credentials_matches_proxy_basic_encoding() {
+        let encoded = BASE64_ENGINE.encode("alice:secret");
+        let source = Source::ProxyBasic(encoded.into());
+        assert_eq!(super::username_from_source(&source), Some("alice".into()));
+    }
+
+    #[test]
+    fn username_from_sni_credentials() {
+        let encoded = BASE64_ENGINE.encode("bob:secret");
+        let source = Source::Sni(encoded.into());
+        assert_eq!(super::username_from_source(&source), Some("bob".into()));
     }
 }

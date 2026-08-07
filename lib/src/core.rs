@@ -15,6 +15,7 @@ use crate::shutdown::Shutdown;
 use crate::socks5_forwarder::Socks5Forwarder;
 use crate::tls_demultiplexer::TlsDemux;
 use crate::tls_listener::{TlsAcceptor, TlsListener};
+use crate::traffic_limiter::TrafficLimiter;
 use crate::tunnel::Tunnel;
 use crate::{
     authentication, http_ping_handler, http_speedtest_handler, log_id, log_utils, metrics,
@@ -23,6 +24,8 @@ use crate::{
 use socket2::{Domain, Protocol as SockProtocol, SockRef, Socket, Type};
 use std::io;
 use std::io::ErrorKind;
+use std::net::IpAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -83,6 +86,7 @@ pub(crate) struct Context {
     next_client_id: Arc<AtomicU64>,
     next_tunnel_id: Arc<AtomicU64>,
     pub connection_limiter: Option<Arc<ConnectionLimiter>>,
+    pub traffic_limiter: Option<Arc<TrafficLimiter>>,
 }
 
 impl Context {
@@ -134,6 +138,28 @@ impl Core {
             None
         };
 
+        let traffic_limiter = if settings.default_max_traffic_bytes_per_client.is_some()
+            || settings.traffic_usage_file.is_some()
+            || settings
+                .clients
+                .iter()
+                .any(|c| c.max_traffic_bytes.is_some())
+        {
+            Some(TrafficLimiter::new(
+                &settings.clients,
+                settings.default_max_traffic_bytes_per_client,
+                settings
+                    .traffic_usage_file
+                    .as_ref()
+                    .map(PathBuf::from),
+            ))
+        } else {
+            None
+        };
+
+        let metrics = Metrics::new(traffic_limiter.clone())
+            .map_err(|e| Error::Metrics(e.to_string()))?;
+
         Ok(Self {
             context: Arc::new(Context {
                 settings: settings.clone(),
@@ -149,10 +175,11 @@ impl Core {
                 },
                 shutdown,
                 fatal_error,
-                metrics: Metrics::new().map_err(|e| Error::Metrics(e.to_string()))?,
+                metrics,
                 next_client_id: Default::default(),
                 next_tunnel_id: Default::default(),
                 connection_limiter,
+                traffic_limiter,
             }),
         })
     }
@@ -482,8 +509,12 @@ impl Core {
                     context.next_tunnel_id.fetch_add(1, Ordering::Relaxed),
                 ));
                 log_id!(trace, tunnel_id, "Creating tunnel");
-                Self::on_tunnel_request(
-                    context,
+                let conn_key = tunnel_id.to_string();
+                context
+                    .metrics
+                    .register_connection(conn_key.clone(), client_ip);
+                let res = Self::on_tunnel_request(
+                    context.clone(),
                     tls_connection_meta.protocol,
                     match Self::make_tcp_http_codec(
                         tls_connection_meta.protocol,
@@ -493,14 +524,18 @@ impl Core {
                     ) {
                         Ok(x) => x,
                         Err(e) => {
+                            context.metrics.unregister_connection(&conn_key);
                             return Err((client_id, format!("Failed to create HTTP codec: {}", e)))
                         }
                     },
                     tls_connection_meta.sni,
                     tls_connection_meta.sni_auth_creds,
                     tunnel_id,
+                    Some(client_ip),
                 )
-                .await
+                .await;
+                context.metrics.unregister_connection(&conn_key);
+                res
             }
             net_utils::Channel::Ping => {
                 http_ping_handler::listen(
@@ -604,16 +639,24 @@ impl Core {
 
                 let sni = tls_connection_meta.sni.clone();
                 let sni_auth_creds = tls_connection_meta.sni_auth_creds.clone();
-
-                Self::on_tunnel_request(
-                    context,
+                let conn_key = tunnel_id.to_string();
+                if let Some(ip) = client_ip {
+                    context
+                        .metrics
+                        .register_connection(conn_key.clone(), ip);
+                }
+                let res = Self::on_tunnel_request(
+                    context.clone(),
                     tls_connection_meta.protocol,
                     Box::new(Http3Codec::new(socket, tunnel_id.clone())),
                     sni,
                     sni_auth_creds,
                     tunnel_id,
+                    client_ip,
                 )
-                .await
+                .await;
+                context.metrics.unregister_connection(&conn_key);
+                res
             }
             net_utils::Channel::Ping => {
                 http_ping_handler::listen(
@@ -690,8 +733,15 @@ impl Core {
         server_name: String,
         sni_auth_creds: Option<String>,
         tunnel_id: log_utils::IdChain<u64>,
+        _client_ip: Option<IpAddr>,
     ) {
-        let _metrics_guard = Metrics::client_sessions_counter(context.metrics.clone(), protocol);
+        let conn_key = tunnel_id.to_string();
+
+        let _metrics_guard = context.metrics.clone().client_sessions_counter(
+            protocol,
+            conn_key.clone(),
+            None,
+        );
 
         let (authentication_policy, sni_connection_guard) =
             match context.authenticator.as_ref().zip(sni_auth_creds) {
@@ -700,6 +750,26 @@ impl Core {
                     let auth = authentication::Source::Sni(credentials.into());
                     match authenticator.authenticate(&auth, &tunnel_id) {
                         authentication::Status::Pass => {
+                            if let Some(username) = authentication::username_from_source(&auth) {
+                                if context
+                                    .traffic_limiter
+                                    .as_ref()
+                                    .is_some_and(|limiter| !limiter.is_allowed(&username))
+                                {
+                                    log_id!(
+                                        debug,
+                                        tunnel_id,
+                                        "Traffic quota exceeded for SNI-authenticated client"
+                                    );
+                                    context.metrics.unregister_connection(&conn_key);
+                                    return;
+                                }
+                                context.metrics.transfer_session_username(
+                                    protocol,
+                                    &conn_key,
+                                    Some(username),
+                                );
+                            }
                             let guard = context.connection_limiter.as_ref().and_then(|limiter| {
                                 let creds = match &auth {
                                     authentication::Source::Sni(s) => s.as_ref(),
@@ -713,12 +783,14 @@ impl Core {
                                     tunnel_id,
                                     "Connection limit exceeded for SNI-authenticated client"
                                 );
+                                context.metrics.unregister_connection(&conn_key);
                                 return;
                             }
                             (tunnel::AuthenticationPolicy::Authenticated(auth), guard)
                         }
                         authentication::Status::Reject => {
                             log_id!(debug, tunnel_id, "SNI authentication failed");
+                            context.metrics.unregister_connection(&conn_key);
                             return;
                         }
                     }
@@ -784,10 +856,11 @@ impl Default for Context {
             icmp_forwarder: None,
             shutdown: Shutdown::new(),
             fatal_error,
-            metrics: Metrics::new().unwrap(),
+            metrics: Metrics::new(None).unwrap(),
             next_client_id: Default::default(),
             next_tunnel_id: Default::default(),
             connection_limiter: None,
+            traffic_limiter: None,
         }
     }
 }

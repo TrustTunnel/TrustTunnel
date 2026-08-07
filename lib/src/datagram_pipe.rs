@@ -64,7 +64,7 @@ impl<D1, D2, F> GenericDuplexPipe<D1, D2, F>
 where
     D1: Datagram + Debug,
     D2: Datagram + Debug,
-    F: Fn(pipe::SimplexDirection, usize) + Send + Clone,
+    F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send + Clone,
 {
     pub fn new(
         (dir1, source1, sink1): (
@@ -91,7 +91,7 @@ impl<D1, D2, F> DuplexPipe for GenericDuplexPipe<D1, D2, F>
 where
     D1: Datagram + Send + Debug,
     D2: Datagram + Send + Debug,
-    F: Fn(pipe::SimplexDirection, usize) + Send,
+    F: Fn(pipe::SimplexDirection, usize, log_utils::IdChain<u64>) + Send,
 {
     async fn exchange(&mut self) -> io::Result<()> {
         let left = self.left_pipe.exchange();
@@ -134,7 +134,7 @@ impl<D: Datagram + Debug, F: Fn(pipe::SimplexDirection, usize) + Send> GenericSi
             let datagram_len = datagram.len();
             match self.sink.write(datagram).await? {
                 SendStatus::Sent => {
-                    (self.update_metrics)(self.direction, datagram_len);
+                    (self.update_metrics)(self.direction, datagram_len, self.source.id());
                 }
                 SendStatus::Dropped => log_id!(
                     trace,

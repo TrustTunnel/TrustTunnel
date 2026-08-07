@@ -409,7 +409,7 @@ async fn handle_stream(
             server_sink,
         ),
         (pipe::SimplexDirection::Incoming, server_source, client_sink),
-        |_, _| (),
+        |_, _, _| (),
     );
 
     match pipe
