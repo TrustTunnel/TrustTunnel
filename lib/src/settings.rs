@@ -84,7 +84,10 @@ pub struct Settings {
     /// Whether IPv6 connections can be routed or rejected with unreachable status
     #[serde(default = "Settings::default_ipv6_available")]
     pub(crate) ipv6_available: bool,
-    /// Whether connections to private network of the endpoint are allowed
+    /// Whether connections to private network of the endpoint are allowed.
+    /// Applies to the traffic tunneled by clients only: destinations taken from
+    /// the endpoint configuration, such as [`ReverseProxySettings::server_address`],
+    /// are always allowed.
     #[serde(default = "Settings::default_allow_private_network_connections")]
     pub(crate) allow_private_network_connections: bool,
     /// Timeout of an incoming TLS handshake
@@ -299,7 +302,8 @@ pub struct TlsHostsSettings {
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(feature = "rt_doc", derive(RuntimeDoc))]
 pub struct ReverseProxySettings {
-    /// The origin server address
+    /// The origin server address. It is reachable regardless of
+    /// [`Settings::allow_private_network_connections`].
     pub(crate) server_address: SocketAddr,
     /// Connections to [the main hosts](TlsHostsSettings.main_hosts) with
     /// paths starting with this mask are routed to the reverse proxy server.

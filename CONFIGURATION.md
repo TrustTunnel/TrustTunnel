@@ -115,7 +115,9 @@ listen_address = "0.0.0.0:443"
 # Whether IPv6 connections can be routed
 ipv6_available = true
 
-# Whether connections to private network of the endpoint are allowed
+# Whether connections to private network of the endpoint are allowed.
+# Applies to traffic tunneled by clients only, the reverse proxy
+# `server_address` is always reachable.
 allow_private_network_connections = false
 
 # Timeout of an incoming TLS handshake (seconds)
@@ -370,6 +372,8 @@ h3_backward_compatibility = false
 | `h3_backward_compatibility` | Boolean | `false` | Override HTTP method for H3→H1 translation |
 
 The reverse proxy translates HTTP/x traffic to HTTP/1.1 towards the origin server. Translated requests include the `X-Original-Protocol` header (`HTTP1` or `HTTP3`).
+
+`server_address` is configured by the endpoint operator and is therefore not affected by `allow_private_network_connections`: an origin server on a loopback or private address stays reachable even when tunneled client traffic to private networks is forbidden.
 
 ### ICMP Settings
 

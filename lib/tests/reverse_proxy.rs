@@ -35,7 +35,7 @@ macro_rules! reverse_proxy_tests {
                 assert_eq!(response.status, http::StatusCode::OK);
                 assert_body_matches(&body);
             };
-            let endpoint_task = run_endpoint(&endpoint_address, &proxy_address);
+            let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
 
             // Pin tasks so they can be polled across multiple select! invocations
             // without being dropped (dropping run_endpoint mid-transfer would tear
@@ -84,7 +84,7 @@ async fn path_h2_chunked() {
         assert_eq!(response.status, http::StatusCode::OK);
         assert_body_matches(&body);
     };
-    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address);
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
 
     tokio::pin!(client_task);
     tokio::pin!(proxy_task);
@@ -118,7 +118,44 @@ async fn path_h3_chunked() {
         assert_eq!(response.status, http::StatusCode::OK);
         assert_body_matches(&body);
     };
-    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address);
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
+
+    tokio::pin!(client_task);
+    tokio::pin!(proxy_task);
+    tokio::pin!(endpoint_task);
+
+    tokio::select! {
+        _ = &mut endpoint_task => unreachable!(),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+        _ = &mut client_task => (),
+        _ = &mut proxy_task => {
+            tokio::select! {
+                _ = client_task => (),
+                _ = &mut endpoint_task => unreachable!(),
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
+                }
+            }
+        },
+    }
+}
+
+// The reverse proxy server address comes from the endpoint configuration, so it must be
+// reachable even if it belongs to a private network and client connections to private
+// networks are forbidden.
+#[tokio::test]
+async fn path_h1_private_network_disallowed() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let (proxy_address, proxy_task) = run_proxy();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (response, body) = path_h1_client(&endpoint_address).await;
+        assert_eq!(response.status, http::StatusCode::OK);
+        assert_body_matches(&body);
+    };
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, false);
 
     tokio::pin!(client_task);
     tokio::pin!(proxy_task);
@@ -246,7 +283,11 @@ async fn path_h3_client(endpoint_address: &SocketAddr) -> (http::response::Parts
     .await
 }
 
-async fn run_endpoint(endpoint_address: &SocketAddr, proxy_address: &SocketAddr) {
+async fn run_endpoint(
+    endpoint_address: &SocketAddr,
+    proxy_address: &SocketAddr,
+    allow_private_network_connections: bool,
+) {
     let settings = Settings::builder()
         .listen_address(endpoint_address)
         .unwrap()
@@ -263,7 +304,7 @@ async fn run_endpoint(endpoint_address: &SocketAddr, proxy_address: &SocketAddr)
                 .build()
                 .unwrap(),
         )
-        .allow_private_network_connections(true)
+        .allow_private_network_connections(allow_private_network_connections)
         .build()
         .unwrap();
 

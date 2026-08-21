@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `allow_private_network_connections = false` no longer blocks the `[reverse_proxy]` `server_address`: the origin server address comes from the endpoint configuration, so a loopback or private address stays reachable while tunneled client traffic to private networks remains forbidden.
 - `is_global_ipv6` incorrectly classified global unicast IPv6 addresses (e.g. `2001:4860:4860::8888`) as non-global.
 
 ### Security

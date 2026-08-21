@@ -14,6 +14,9 @@ use tokio::net::TcpStream;
 
 pub(crate) struct TcpForwarder {
     context: Arc<core::Context>,
+    /// Whether the destination may belong to the endpoint's private network regardless
+    /// of [`crate::settings::Settings::allow_private_network_connections`]
+    allow_private_network: bool,
 }
 
 struct StreamRx {
@@ -34,7 +37,21 @@ struct StreamTx {
 
 impl TcpForwarder {
     pub fn new(context: Arc<core::Context>) -> Self {
-        Self { context }
+        Self {
+            context,
+            allow_private_network: false,
+        }
+    }
+
+    /// Creates a forwarder which is allowed to reach the endpoint's private network
+    /// regardless of [`crate::settings::Settings::allow_private_network_connections`].
+    /// Intended for destinations taken from the endpoint configuration (and thus trusted),
+    /// not from a client request.
+    pub(crate) fn new_for_configured_destination(context: Arc<core::Context>) -> Self {
+        Self {
+            context,
+            allow_private_network: true,
+        }
     }
 
     pub(crate) fn pipe_from_stream(
@@ -65,12 +82,12 @@ impl TcpConnector for TcpForwarder {
         id: log_utils::IdChain<u64>,
         meta: forwarder::TcpConnectionMeta,
     ) -> Result<(Box<dyn pipe::Source>, Box<dyn pipe::Sink>), tunnel::ConnectionError> {
+        let allow_private_network =
+            self.allow_private_network || self.context.settings.allow_private_network_connections;
         let peer = match meta.destination {
             TcpDestination::Address(peer) => {
                 let peer_ip = peer.ip();
-                if !self.context.settings.allow_private_network_connections
-                    && !net_utils::is_global_ip(&peer_ip)
-                {
+                if !allow_private_network && !net_utils::is_global_ip(&peer_ip) {
                     if peer_ip.is_loopback() {
                         return Err(tunnel::ConnectionError::DnsLoopback);
                     }
@@ -99,9 +116,7 @@ impl TcpConnector for TcpForwarder {
                         continue;
                     }
 
-                    if net_utils::is_global_ip(&ip)
-                        || self.context.settings.allow_private_network_connections
-                    {
+                    if net_utils::is_global_ip(&ip) || allow_private_network {
                         status = Some(SelectionStatus::Suitable(a));
                         break;
                     }
@@ -328,6 +343,32 @@ mod tests {
         };
 
         assert!(matches!(err, tunnel::ConnectionError::DnsNonroutable));
+    }
+
+    #[tokio::test]
+    async fn test_connect_allows_loopback_for_configured_destination() {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let listen_address = listener.local_addr().unwrap();
+
+        let context = make_test_context_disallow_private_network();
+        let connector: Box<dyn TcpConnector> =
+            Box::new(TcpForwarder::new_for_configured_destination(context));
+
+        let meta = forwarder::TcpConnectionMeta {
+            client_address: IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)),
+            destination: TcpDestination::Address(listen_address),
+            auth: None,
+            tls_domain: String::new(),
+            user_agent: None,
+        };
+
+        connector
+            .connect(log_utils::IdChain::empty(), meta)
+            .await
+            .map_err(|e| format!("{}", e))
+            .expect("Expected connection to be allowed");
     }
 
     #[tokio::test]

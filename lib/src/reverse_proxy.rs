@@ -111,7 +111,9 @@ async fn handle_stream(
     let (request, respond) = stream.split();
     log_id!(trace, log_id, "Received request: {:?}", request.request());
 
-    let forwarder = Box::new(TcpForwarder::new(context.clone()));
+    let forwarder = Box::new(TcpForwarder::new_for_configured_destination(
+        context.clone(),
+    ));
     let settings = context.settings.reverse_proxy.as_ref().unwrap();
     let (mut server_source, mut server_sink) = forwarder
         .connect(
