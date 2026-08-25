@@ -64,6 +64,11 @@ impl KeyType for Aes128KeyLen {
     }
 }
 
+/// Check if a string is valid even-length hex.
+pub fn is_valid_hex(s: &str) -> bool {
+    !s.is_empty() && s.len().is_multiple_of(2) && hex::decode(s).is_ok()
+}
+
 /// Validate a 32-byte `client_random` against `sni` using a PSK-derived key.
 ///
 /// The second 16 bytes of `client_random` must equal
@@ -148,7 +153,7 @@ impl Rule {
                     let psk_valid =
                         validate_client_random_psk(&psk_bytes, client_random_data, sni_str);
                     if !psk_valid {
-                        log::info!(
+                        log::debug!(
                             "PSK client_random validation failed for SNI: {}",
                             crate::net_utils::scrub_sni(sni_str.to_string())
                         );
@@ -246,8 +251,10 @@ impl RulesEngine {
             .iter()
             .any(|r| r.client_random_psk_key.is_some());
 
+        let sni_is_missing = sni.is_none_or(|s| s.is_empty());
+
         if (client_random.is_none() && (has_prefix_rule || has_psk_rule))
-            || (sni.is_none() && has_psk_rule)
+            || (sni_is_missing && has_psk_rule)
         {
             return RuleEvaluation::Deny;
         }
@@ -500,6 +507,30 @@ mod tests {
     }
 
     #[test]
+    fn test_psk_validation_hardcoded_vector_abcd() {
+        let psk = hex::decode("aabbccddeeff00112233445566778899").unwrap();
+        let client_random =
+            hex::decode("112233445566778899001122334455669591807266c901dfe8c73c3040b1bd82")
+                .unwrap();
+
+        assert!(validate_client_random_psk(&psk, &client_random, "abcd"));
+    }
+
+    #[test]
+    fn test_psk_validation_hardcoded_vector_word_tips() {
+        let psk = hex::decode("00112233445566778899aabbccddeeff").unwrap();
+        let client_random =
+            hex::decode("ffeeddccbbaa998877665544332211001fdc0ae97cd36d557dd426c34566e234")
+                .unwrap();
+
+        assert!(validate_client_random_psk(
+            &psk,
+            &client_random,
+            "word.tips"
+        ));
+    }
+
+    #[test]
     fn test_psk_validation_wrong_sni() {
         let psk = hex::decode("aabbccddeeff00112233445566778899").unwrap();
         let client_random = derive_client_random(&psk, "a.example.com");
@@ -622,5 +653,29 @@ mod tests {
         // CIDR and PSK are AND: the rule matches only when both are satisfied
         assert!(rule.matches(&ip_match, Some(&client_random), Some("test.example.com")));
         assert!(!rule.matches(&ip_no_match, Some(&client_random), Some("test.example.com")));
+    }
+
+    #[test]
+    fn test_engine_empty_sni_denied_for_psk_rules() {
+        let rules = RulesConfig {
+            rule: vec![Rule {
+                cidr: None,
+                client_random_prefix: None,
+                client_random_psk_key: Some("aabbccddeeff00112233445566778899".to_string()),
+                action: RuleAction::Allow,
+            }],
+        };
+        let engine = RulesEngine::from_config(rules);
+        let ip = IpAddr::from_str("127.0.0.1").unwrap();
+        let client_random = derive_client_random(
+            &hex::decode("aabbccddeeff00112233445566778899").unwrap(),
+            "test.example.com",
+        );
+
+        // Empty SNI (QUIC bootstrap case) → Deny
+        assert_eq!(
+            engine.evaluate(&ip, Some(&client_random), Some("")),
+            RuleEvaluation::Deny
+        );
     }
 }

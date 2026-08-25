@@ -446,7 +446,7 @@ fn main() {
             .map(|vals| vals.cloned().collect())
             .unwrap_or_default();
 
-        let client_random_psk_key = args
+        let mut client_random_psk_key = args
             .get_one::<String>(CLIENT_RANDOM_PSK_KEY_PARAM_NAME)
             .cloned();
 
@@ -467,6 +467,7 @@ fn main() {
                     None => {
                         // The PSK key is a secret, do not log its value
                         eprintln!("Warning: No rule found in rules.toml with matching client_random_psk_key. This field will be ignored.");
+                        client_random_psk_key = None;
                     }
                     Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
                         eprintln!("Warning: Matched rule in rules.toml for client_random_psk_key has action 'deny'.");

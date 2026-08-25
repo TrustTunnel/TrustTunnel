@@ -1681,6 +1681,16 @@ where
                         );
                     }
 
+                    if let Some(ref psk) = client_random_psk_key {
+                        if !rules::is_valid_hex(psk) {
+                            log::error!(
+                                "Rule has client_random_psk_key that is not valid hex; \
+                                 this rule will never match"
+                            );
+                            return None;
+                        }
+                    }
+
                     let action = rule_table
                         .get("action")
                         .and_then(Item::as_str)

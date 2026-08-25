@@ -44,7 +44,7 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
     println!();
     while ask_for_agreement("Add a custom rule?") {
         let rule_type = ask_for_input::<String>(
-            "Rule type (1=IP range, 2=client random prefix, 3=both)",
+            "Rule type (1=IP range, 2=client random prefix, 3=both, 4=PSK key)",
             Some("1".to_string()),
         );
 
@@ -52,6 +52,7 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
             "1" => add_ip_rule(rules),
             "2" => add_client_random_rule(rules),
             "3" => add_combined_rule(rules),
+            "4" => add_psk_rule(rules),
             _ => {
                 warn!("Invalid choice. Skipping rule.");
                 continue;
@@ -197,4 +198,27 @@ fn ask_for_rule_action() -> RuleAction {
         "deny" => RuleAction::Deny,
         _ => RuleAction::Allow,
     }
+}
+
+fn add_psk_rule(rules: &mut Vec<Rule>) {
+    let psk_key = ask_for_input::<String>(
+        "Enter client random PSK key (hex, e.g., aabbccddeeff00112233445566778899)",
+        None,
+    );
+
+    if !trusttunnel::rules::is_valid_hex(&psk_key) {
+        warn!("Invalid hex format for PSK key. Skipping rule.");
+        return;
+    }
+
+    let action = ask_for_rule_action();
+
+    rules.push(Rule {
+        cidr: None,
+        client_random_prefix: None,
+        client_random_psk_key: Some(psk_key),
+        action,
+    });
+
+    info!("Rule added successfully.");
 }
