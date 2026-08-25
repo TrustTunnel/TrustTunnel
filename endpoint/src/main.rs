@@ -24,6 +24,7 @@ const CLIENT_CONFIG_PARAM_NAME: &str = "client_config";
 const ADDRESS_PARAM_NAME: &str = "address";
 const CUSTOM_SNI_PARAM_NAME: &str = "custom_sni";
 const CLIENT_RANDOM_PREFIX_PARAM_NAME: &str = "client_random_prefix";
+const CLIENT_RANDOM_PSK_KEY_PARAM_NAME: &str = "client_random_psk_key";
 const GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME: &str = "generate_client_random_prefix";
 const PREFIX_LENGTH_PARAM_NAME: &str = "prefix_length";
 const PREFIX_PERCENT_PARAM_NAME: &str = "prefix_percent";
@@ -138,6 +139,13 @@ fn main() {
                 .short('r')
                 .long("client-random-prefix")
                 .help("TLS client random hex prefix for connection filtering. Must have a corresponding rule in rules.toml."),
+            clap::Arg::new(CLIENT_RANDOM_PSK_KEY_PARAM_NAME)
+                .action(clap::ArgAction::Set)
+                .requires(CLIENT_CONFIG_PARAM_NAME)
+                .long("client-random-psk-key")
+                .conflicts_with(CLIENT_RANDOM_PREFIX_PARAM_NAME)
+                .conflicts_with(GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME)
+                .help("TLS client random PSK key (hex). Derives full client_random via HKDF+AES. Must have a corresponding rule with client_random_psk_key in rules.toml."),
             clap::Arg::new(GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME)
                 .action(clap::ArgAction::SetTrue)
                 .requires(CLIENT_CONFIG_PARAM_NAME)
@@ -438,6 +446,36 @@ fn main() {
             .map(|vals| vals.cloned().collect())
             .unwrap_or_default();
 
+        let client_random_psk_key = args
+            .get_one::<String>(CLIENT_RANDOM_PSK_KEY_PARAM_NAME)
+            .cloned();
+
+        if let Some(ref psk_key) = client_random_psk_key {
+            if hex::decode(psk_key).is_err() {
+                // The PSK key is a secret, do not log its value
+                eprintln!("Error: client_random_psk_key is not valid hex");
+                std::process::exit(1);
+            }
+            // Validate against rules.toml
+            if let Some(rules_engine) = settings.get_rules_engine() {
+                let matching_rule = rules_engine
+                    .config()
+                    .rule
+                    .iter()
+                    .find(|r| r.client_random_psk_key.as_deref() == Some(psk_key.as_str()));
+                match matching_rule {
+                    None => {
+                        // The PSK key is a secret, do not log its value
+                        eprintln!("Warning: No rule found in rules.toml with matching client_random_psk_key. This field will be ignored.");
+                    }
+                    Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
+                        eprintln!("Warning: Matched rule in rules.toml for client_random_psk_key has action 'deny'.");
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
         let client_config = client_config::build(
             username,
             addresses,
@@ -445,6 +483,7 @@ fn main() {
             &tls_hosts_settings,
             custom_sni,
             client_random_prefix,
+            client_random_psk_key,
             name,
             dns_upstreams,
         );

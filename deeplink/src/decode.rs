@@ -120,6 +120,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
     let mut upstream_protocol: Protocol = Protocol::Http2; // default
     let mut anti_dpi: bool = false; // default
     let mut client_random_prefix: Option<String> = None;
+    let mut client_random_psk_key: Option<String> = None;
     let mut name: Option<String> = None;
     let mut dns_upstreams: Vec<String> = Vec::new();
 
@@ -190,6 +191,16 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
                 })?;
                 client_random_prefix = Some(prefix);
             }
+            TlvTag::ClientRandomPskKey => {
+                let psk = decode_string(&value)?;
+                hex::decode(&psk).map_err(|e| {
+                    DeepLinkError::InvalidAddress(format!(
+                        "client_random_psk_key must be valid hex: {}",
+                        e
+                    ))
+                })?;
+                client_random_psk_key = Some(psk);
+            }
             TlvTag::Name => {
                 name = Some(decode_string(&value)?);
             }
@@ -213,6 +224,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
         username,
         password,
         client_random_prefix,
+        client_random_psk_key,
         custom_sni,
         has_ipv6,
         skip_verification,
@@ -371,5 +383,45 @@ mod tests {
         let (tag, value) = parser.next_field().unwrap().unwrap();
         assert_eq!(tag, Some(TlvTag::ClientRandomPrefix));
         assert_eq!(value, b"5841/7a43");
+    }
+
+    #[test]
+    fn test_psk_key_roundtrip() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_psk_key(Some("aabbccdd".to_string()))
+            .build()
+            .unwrap();
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+        assert_eq!(decoded.client_random_psk_key, Some("aabbccdd".to_string()));
+    }
+
+    #[test]
+    fn test_psk_key_none_omitted() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+        assert_eq!(decoded.client_random_psk_key, None);
+    }
+
+    #[test]
+    fn test_psk_key_invalid_hex_decode() {
+        let mut parser = TlvParser::new(&[0x0E, 0x07, b'n', b'o', b't', b'h', b'e', b'x', b'x']);
+        let (tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag, Some(TlvTag::ClientRandomPskKey));
+        let result = hex::decode(String::from_utf8(value).unwrap());
+        assert!(result.is_err());
     }
 }

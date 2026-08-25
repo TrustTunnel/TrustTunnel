@@ -20,6 +20,7 @@ pub enum TlvTag {
     ClientRandomPrefix = 0x0B,
     Name = 0x0C,
     DnsUpstreams = 0x0D,
+    ClientRandomPskKey = 0x0E,
 }
 
 impl TlvTag {
@@ -43,6 +44,7 @@ impl TlvTag {
             0x0B => Some(TlvTag::ClientRandomPrefix),
             0x0C => Some(TlvTag::Name),
             0x0D => Some(TlvTag::DnsUpstreams),
+            0x0E => Some(TlvTag::ClientRandomPskKey),
             _ => None,
         }
     }
@@ -111,6 +113,7 @@ pub struct DeepLinkConfig {
     pub username: String,
     pub password: String,
     pub client_random_prefix: Option<String>,
+    pub client_random_psk_key: Option<String>,
     pub custom_sni: Option<String>,
     pub has_ipv6: bool,
     pub skip_verification: bool,
@@ -153,6 +156,7 @@ pub struct DeepLinkConfigBuilder {
     username: Option<String>,
     password: Option<String>,
     client_random_prefix: Option<String>,
+    client_random_psk_key: Option<String>,
     custom_sni: Option<String>,
     has_ipv6: Option<bool>,
     skip_verification: Option<bool>,
@@ -219,6 +223,11 @@ impl DeepLinkConfigBuilder {
         self
     }
 
+    pub fn client_random_psk_key(mut self, client_random_psk_key: Option<String>) -> Self {
+        self.client_random_psk_key = client_random_psk_key;
+        self
+    }
+
     pub fn name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
@@ -242,6 +251,18 @@ impl DeepLinkConfigBuilder {
             }
         }
 
+        // Validate client_random_psk_key is valid hex if provided
+        if let Some(ref psk) = self.client_random_psk_key {
+            if !psk.is_empty() {
+                hex::decode(psk).map_err(|e| {
+                    DeepLinkError::InvalidAddress(format!(
+                        "client_random_psk_key must be valid hex: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+
         let config = DeepLinkConfig {
             hostname: self
                 .hostname
@@ -256,6 +277,7 @@ impl DeepLinkConfigBuilder {
                 .password
                 .ok_or(DeepLinkError::MissingRequiredField("password"))?,
             client_random_prefix: self.client_random_prefix,
+            client_random_psk_key: self.client_random_psk_key,
             custom_sni: self.custom_sni,
             has_ipv6: self.has_ipv6.unwrap_or(true),
             skip_verification: self.skip_verification.unwrap_or(false),
@@ -342,6 +364,32 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_rejects_invalid_psk_hex() {
+        let result = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_psk_key(Some("not-hex".to_string()))
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_builder_psk_key_empty_is_allowed() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_psk_key(Some(String::new()))
+            .build()
+            .unwrap();
+        assert_eq!(config.client_random_psk_key, Some(String::new()));
+    }
+
+    #[test]
     fn test_validate_empty_hostname() {
         let config = DeepLinkConfig {
             hostname: String::new(),
@@ -355,6 +403,7 @@ mod tests {
             upstream_protocol: Protocol::Http2,
             anti_dpi: false,
             client_random_prefix: None,
+            client_random_psk_key: None,
             name: None,
             dns_upstreams: vec![],
         };

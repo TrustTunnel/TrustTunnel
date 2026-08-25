@@ -17,6 +17,10 @@ fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
     prop::option::of("([0-9a-f]{2}){0,16}")
 }
 
+fn arbitrary_nonempty_hex_string() -> impl Strategy<Value = Option<String>> {
+    prop::option::of("([0-9a-f]{2}){1,16}")
+}
+
 fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
     (
         (
@@ -25,6 +29,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
             "[a-z0-9_]{3,20}",
             "[a-zA-Z0-9!@#$%]{8,30}",
             arbitrary_hex_string(),
+            arbitrary_nonempty_hex_string(),
             prop::option::of("[a-z]{3,15}\\.[a-z]{2,10}\\.[a-z]{2,5}"),
             any::<bool>(),
             any::<bool>(),
@@ -43,6 +48,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     username,
                     password,
                     client_random_prefix,
+                    client_random_psk_key,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -59,6 +65,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     username,
                     password,
                     client_random_prefix,
+                    client_random_psk_key,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -82,6 +89,7 @@ proptest! {
         prop_assert_eq!(decoded.addresses, config.addresses);
         prop_assert_eq!(decoded.username, config.username);
         prop_assert_eq!(decoded.password, config.password);
+        prop_assert_eq!(decoded.client_random_psk_key, config.client_random_psk_key);
         prop_assert_eq!(decoded.custom_sni, config.custom_sni);
         prop_assert_eq!(decoded.has_ipv6, config.has_ipv6);
         prop_assert_eq!(decoded.skip_verification, config.skip_verification);

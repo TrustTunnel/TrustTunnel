@@ -404,6 +404,7 @@ impl Core {
             &context,
             Some(client_ip),
             acceptor.client_random().as_deref(),
+            Some(sni.as_str()),
             &client_id,
         ) {
             return Err((client_id, deny_reason));
@@ -576,18 +577,19 @@ impl Core {
             .ok()
             .map(|addr| net_utils::unmap_ipv6(addr.ip()));
         let client_random = Some(socket.client_random());
+        let tls_connection_meta = socket.tls_connection_meta();
 
         if let Err(deny_reason) = Self::evaluate_connection_rules(
             &context,
             client_ip,
             client_random.as_deref(),
+            Some(tls_connection_meta.sni.as_str()),
             &client_id,
         ) {
             log_id!(debug, client_id, "{}", deny_reason);
             return; // Drop the connection
         }
 
-        let tls_connection_meta = socket.tls_connection_meta();
         log_id!(
             debug,
             client_id,
@@ -653,11 +655,12 @@ impl Core {
         context: &Arc<Context>,
         client_ip: Option<std::net::IpAddr>,
         client_random: Option<&[u8]>,
+        sni: Option<&str>,
         log_id: &log_utils::IdChain<u64>,
     ) -> Result<(), String> {
         if let Some(rules_engine) = &context.settings.rules_engine {
             if let Some(ip) = client_ip {
-                let rule_result = rules_engine.evaluate(&ip, client_random);
+                let rule_result = rules_engine.evaluate(&ip, client_random, sni);
                 match rule_result {
                     rules::RuleEvaluation::Deny => {
                         log_id!(

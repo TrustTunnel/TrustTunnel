@@ -78,6 +78,7 @@ fn add_ip_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: Some(cidr),
         client_random_prefix: None,
+        client_random_psk_key: None,
         action,
     });
 
@@ -124,6 +125,7 @@ fn add_client_random_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: None,
         client_random_prefix: Some(client_random_value),
+        client_random_psk_key: None,
         action,
     });
 
@@ -181,6 +183,7 @@ fn add_combined_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: Some(cidr),
         client_random_prefix: Some(client_random_value),
+        client_random_psk_key: None,
         action,
     });
 

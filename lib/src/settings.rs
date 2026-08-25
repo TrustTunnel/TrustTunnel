@@ -1669,6 +1669,18 @@ where
                         .and_then(Item::as_str)
                         .map(|s| s.to_string());
 
+                    let client_random_psk_key = rule_table
+                        .get("client_random_psk_key")
+                        .and_then(Item::as_str)
+                        .map(|s| s.to_string());
+
+                    if client_random_psk_key.is_some() && client_random_prefix.is_some() {
+                        log::warn!(
+                            "Rule has both client_random_prefix and client_random_psk_key; \
+                             PSK key takes priority, prefix will be ignored"
+                        );
+                    }
+
                     let action = rule_table
                         .get("action")
                         .and_then(Item::as_str)
@@ -1681,6 +1693,7 @@ where
                     Some(rules::Rule {
                         cidr,
                         client_random_prefix,
+                        client_random_psk_key,
                         action,
                     })
                 })
