@@ -451,13 +451,15 @@ fn main() {
             .cloned();
 
         if let Some(ref psk_key) = client_random_psk_key {
-            if hex::decode(psk_key).is_err() {
+            if !trusttunnel::rules::is_valid_hex(psk_key) {
                 // The PSK key is a secret, do not log its value
                 eprintln!("Error: client_random_psk_key is not valid hex");
                 std::process::exit(1);
             }
             // Validate against rules.toml
             if let Some(rules_engine) = settings.get_rules_engine() {
+                // Both operands (CLI arg and rules.toml) are local, so timing is not
+                // attacker-controlled and a plain string comparison is acceptable here.
                 let matching_rule = rules_engine
                     .config()
                     .rule

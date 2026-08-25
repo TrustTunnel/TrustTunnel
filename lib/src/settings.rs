@@ -1685,7 +1685,28 @@ where
                         if !rules::is_valid_hex(psk) {
                             log::error!(
                                 "Rule has client_random_psk_key that is not valid hex; \
-                                 this rule will never match"
+                                 this rule has been dropped from the configuration"
+                            );
+                            return None;
+                        }
+                    }
+
+                    if let Some(ref prefix) = client_random_prefix {
+                        if let Some(slash_pos) = prefix.find('/') {
+                            let (prefix_part, mask_part) = prefix.split_at(slash_pos);
+                            let mask_part = &mask_part[1..];
+                            if !rules::is_valid_hex(prefix_part) || !rules::is_valid_hex(mask_part)
+                            {
+                                log::error!(
+                                    "Rule has client_random_prefix with invalid hex; \
+                                     this rule has been dropped from the configuration"
+                                );
+                                return None;
+                            }
+                        } else if !rules::is_valid_hex(prefix) {
+                            log::error!(
+                                "Rule has client_random_prefix that is not valid hex; \
+                                 this rule has been dropped from the configuration"
                             );
                             return None;
                         }

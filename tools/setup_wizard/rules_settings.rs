@@ -44,7 +44,7 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
     println!();
     while ask_for_agreement("Add a custom rule?") {
         let rule_type = ask_for_input::<String>(
-            "Rule type (1=IP range, 2=client random prefix, 3=both, 4=PSK key)",
+            "Rule type (1=IP range, 2=client random prefix, 3=CIDR+prefix, 4=PSK key, 5=CIDR+PSK key)",
             Some("1".to_string()),
         );
 
@@ -53,6 +53,7 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
             "2" => add_client_random_rule(rules),
             "3" => add_combined_rule(rules),
             "4" => add_psk_rule(rules),
+            "5" => add_combined_psk_rule(rules),
             _ => {
                 warn!("Invalid choice. Skipping rule.");
                 continue;
@@ -202,12 +203,11 @@ fn ask_for_rule_action() -> RuleAction {
 
 fn add_psk_rule(rules: &mut Vec<Rule>) {
     let psk_key = ask_for_input::<String>(
-        "Enter client random PSK key (hex, e.g., aabbccddeeff00112233445566778899)",
+        "Enter client random PSK key (hex, 32+ chars recommended, e.g., aabbccddeeff00112233445566778899)",
         None,
     );
 
-    if !trusttunnel::rules::is_valid_hex(&psk_key) {
-        warn!("Invalid hex format for PSK key. Skipping rule.");
+    if !validate_psk(&psk_key) {
         return;
     }
 
@@ -221,4 +221,51 @@ fn add_psk_rule(rules: &mut Vec<Rule>) {
     });
 
     info!("Rule added successfully.");
+}
+
+fn add_combined_psk_rule(rules: &mut Vec<Rule>) {
+    let cidr = ask_for_input::<String>(
+        "Enter IP range in CIDR notation (e.g., 172.16.0.0/12)",
+        None,
+    );
+
+    if cidr.parse::<ipnet::IpNet>().is_err() {
+        warn!("Invalid CIDR format. Skipping rule.");
+        return;
+    }
+
+    let psk_key = ask_for_input::<String>(
+        "Enter client random PSK key (hex, 32+ chars recommended, e.g., aabbccddeeff00112233445566778899)",
+        None,
+    );
+
+    if !validate_psk(&psk_key) {
+        return;
+    }
+
+    let action = ask_for_rule_action();
+
+    rules.push(Rule {
+        cidr: Some(cidr),
+        client_random_prefix: None,
+        client_random_psk_key: Some(psk_key),
+        action,
+    });
+
+    info!("Rule added successfully.");
+}
+
+fn validate_psk(psk: &str) -> bool {
+    if !trusttunnel::rules::is_valid_hex(psk) {
+        warn!("Invalid hex format for PSK key. Skipping rule.");
+        return false;
+    }
+    if psk.len() < 32 {
+        warn!(
+            "PSK key is shorter than 16 bytes (32 hex chars); \
+             a short PSK weakens authentication. Skipping rule."
+        );
+        return false;
+    }
+    true
 }
