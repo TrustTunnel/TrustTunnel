@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `allow_private_network_connections = false` no longer blocks the `[reverse_proxy]` `server_address`: the origin server address comes from the endpoint configuration, so a loopback or private address stays reachable while tunneled client traffic to private networks remains forbidden.
 - `is_global_ipv6` incorrectly classified global unicast IPv6 addresses (e.g. `2001:4860:4860::8888`) as non-global.
+- UDP timeout cleanup no longer leaks outbound sockets: the expired-connection path now passes the reverse-oriented meta to `on_connection_closed`, matching the direct forwarder's orientation contract so the kernel UDP socket and its `outbound_udp_sockets` metric are actually released after `udp_connections_timeout_secs` of inactivity.
 
 ### Security
 
