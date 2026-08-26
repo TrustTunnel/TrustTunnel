@@ -1,7 +1,0 @@
-# Seeds for failure cases proptest has generated in the past. It is
-# automatically read and these particular cases re-run before any
-# novel cases are generated.
-#
-# It is recommended to check this file in to source control so that
-# everyone who runs the test benefits from these saved cases.
-cc 3d8a2a1271ba0995feb5e9c67053b87a69834eda761a34c0b945dbfdd724278f # shrinks to config = DeepLinkConfig { hostname: "aaa.aaa.aa", addresses: ["0.0.0.0:1"], username: "_0a", password: "0#AA0a#a", client_random_prefix: Some(""), client_random_psk_key: None, custom_sni: None, has_ipv6: false, skip_verification: false, certificate: None, upstream_protocol: Http2, anti_dpi: false, name: None, dns_upstreams: [] }

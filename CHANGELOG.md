@@ -8,11 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- [Feature] Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates the full 32-byte TLS `client_random` against the SNI using the HKDF-SHA256 + AES-128 algorithm (matching AdGuard VPN's `ag_secret` mechanism), instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
+- Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the PSK key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
 
 ### Changed
 
-- [Breaking] `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter. This is an API-breaking change for downstream consumers of the `trusttunnel` library crate; the crate version should be bumped accordingly.
+- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for PSK validation.
 
 ### Deprecated
 
