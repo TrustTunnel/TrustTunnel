@@ -14,10 +14,8 @@ fn arbitrary_protocol() -> impl Strategy<Value = Protocol> {
 }
 
 fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
-    prop::option::of("([0-9a-f]{2}){0,16}")
-}
-
-fn arbitrary_nonempty_hex_string() -> impl Strategy<Value = Option<String>> {
+    // {1,16} not {0,16}: empty string roundtrips as None (encode skips empty,
+    // decode returns None), so Some("") is not a valid roundtrip input.
     prop::option::of("([0-9a-f]{2}){1,16}")
 }
 
@@ -29,7 +27,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
             "[a-z0-9_]{3,20}",
             "[a-zA-Z0-9!@#$%]{8,30}",
             arbitrary_hex_string(),
-            arbitrary_nonempty_hex_string(),
+            arbitrary_hex_string(),
             prop::option::of("[a-z]{3,15}\\.[a-z]{2,10}\\.[a-z]{2,5}"),
             any::<bool>(),
             any::<bool>(),

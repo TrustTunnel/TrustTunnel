@@ -424,4 +424,32 @@ mod tests {
         let result = hex::decode(String::from_utf8(value).unwrap());
         assert!(result.is_err());
     }
+
+    #[test]
+    fn test_empty_string_fields_roundtrip() {
+        let config = DeepLinkConfig {
+            hostname: "vpn.example.com".to_string(),
+            addresses: vec!["1.2.3.4:443".to_string()],
+            username: "alice".to_string(),
+            password: "secret".to_string(),
+            client_random_prefix: Some(String::new()),
+            client_random_psk_key: Some(String::new()),
+            custom_sni: Some(String::new()),
+            has_ipv6: true,
+            skip_verification: false,
+            certificate: None,
+            upstream_protocol: Protocol::Http2,
+            anti_dpi: false,
+            name: Some(String::new()),
+            dns_upstreams: vec![],
+        };
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+
+        // Some("") encodes as "field omitted" (empty strings are skipped for
+        // prefix and PSK), so decode returns None. This documents that behavior.
+        assert_eq!(decoded.client_random_prefix, None);
+        assert_eq!(decoded.client_random_psk_key, None);
+    }
 }
