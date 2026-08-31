@@ -398,6 +398,14 @@ pub struct MetricsSettings {
         serialize_with = "serialize_duration_secs"
     )]
     pub(crate) request_timeout: Duration,
+    /// Whether to expose per-client metrics labelled with the client username.
+    ///
+    /// When disabled (the default), only aggregate metrics are exported. When enabled,
+    /// additional `*_per_user` series labelled with the authenticated `username` and the
+    /// `/clients` endpoint are exposed. Enabling this exposes usernames and client IPs,
+    /// so it should only be turned on when the metrics endpoint is adequately protected.
+    #[serde(default = "MetricsSettings::default_per_client_metrics")]
+    pub(crate) per_client_metrics: bool,
 }
 
 /// The set of HTTP/1.1 listener codec settings
@@ -901,6 +909,10 @@ impl MetricsSettings {
     pub fn default_request_timeout() -> Duration {
         Duration::from_secs(3)
     }
+
+    pub fn default_per_client_metrics() -> bool {
+        false
+    }
 }
 
 impl Default for MetricsSettings {
@@ -908,6 +920,7 @@ impl Default for MetricsSettings {
         Self {
             address: MetricsSettings::default_listen_address(),
             request_timeout: MetricsSettings::default_request_timeout(),
+            per_client_metrics: MetricsSettings::default_per_client_metrics(),
         }
     }
 }
@@ -1466,6 +1479,12 @@ impl MetricsSettingsBuilder {
     /// Set the metrics request timeout
     pub fn request_timeout(mut self, v: Duration) -> Self {
         self.settings.request_timeout = v;
+        self
+    }
+
+    /// Enable or disable per-client metrics labeled with the client username
+    pub fn per_client_metrics(mut self, v: bool) -> Self {
+        self.settings.per_client_metrics = v;
         self
     }
 

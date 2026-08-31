@@ -9,10 +9,21 @@ use crate::pipe::DuplexPipe;
 use crate::{
     authentication, core, datagram_pipe, downstream, forwarder, log_id, log_utils, pipe, udp_pipe,
 };
+use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
+use base64::Engine;
 use std::fmt::{Display, Formatter};
 use std::io;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
+
+/// Extract the username from base64-encoded `username:password` credentials.
+fn decode_username(creds: &str) -> Option<String> {
+    BASE64_ENGINE
+        .decode(creds)
+        .ok()
+        .and_then(|v| String::from_utf8(v).ok())
+        .and_then(|s| s.split(':').next().map(|x| x.to_string()))
+}
 
 #[derive(Clone)]
 pub(crate) enum AuthenticationPolicy<'this> {
@@ -95,6 +106,24 @@ impl Tunnel {
         }
     }
 
+    fn resolve_username(
+        &self,
+        request: &dyn downstream::PendingMultiplexedRequest,
+    ) -> Option<String> {
+        match &self.authentication_policy {
+            AuthenticationPolicy::Authenticated(source) => {
+                self.context.authenticator.as_ref()?.username(source)
+            }
+            AuthenticationPolicy::Default => match request.auth_info() {
+                Ok(Some(source)) => match &source {
+                    authentication::Source::ProxyBasic(s) => decode_username(s.as_ref()),
+                    authentication::Source::Sni(s) => decode_username(s.as_ref()),
+                },
+                _ => None,
+            },
+        }
+    }
+
     async fn listen_inner(&mut self) -> io::Result<()> {
         loop {
             log_id!(trace, self.id, "Tunnel waiting for request");
@@ -131,12 +160,21 @@ impl Tunnel {
             let tls_domain = self.downstream.tls_domain().to_string();
             let authentication_policy = self.authentication_policy.clone();
             let log_id = self.id.clone();
+            let protocol = self.downstream.protocol();
+            let username = if context.metrics.per_client() {
+                self.resolve_username(request.as_ref())
+            } else {
+                None
+            };
             let update_metrics = {
                 let metrics = context.metrics.clone();
-                let protocol = self.downstream.protocol();
                 move |direction, n| match direction {
-                    pipe::SimplexDirection::Incoming => metrics.add_inbound_bytes(protocol, n),
-                    pipe::SimplexDirection::Outgoing => metrics.add_outbound_bytes(protocol, n),
+                    pipe::SimplexDirection::Incoming => {
+                        metrics.add_inbound_bytes(protocol, username.as_deref(), n)
+                    }
+                    pipe::SimplexDirection::Outgoing => {
+                        metrics.add_outbound_bytes(protocol, username.as_deref(), n)
+                    }
                 }
             };
 
@@ -200,11 +238,11 @@ impl Tunnel {
 
                 let request_id = request.id();
                 log_id!(trace, request_id, "Processing tunnel request");
-                let auth_info = request
+                let auth_info_result = request
                     .auth_info()
                     .map(|x| x.map(authentication::Source::into_owned));
                 let forwarder_auth = match (
-                    auth_info,
+                    auth_info_result.as_ref().cloned(),
                     authentication_policy,
                     context.authenticator.clone(),
                 ) {
@@ -236,7 +274,10 @@ impl Tunnel {
                     }
                     (Err(e), ..) => {
                         log_id!(debug, request_id, "Failed to get auth info: {}", e);
-                        request.fail_request(ConnectionError::Io(e));
+                        request.fail_request(ConnectionError::Io(io::Error::new(
+                            e.kind(),
+                            e.to_string(),
+                        )));
                         return;
                     }
                 };
@@ -246,6 +287,22 @@ impl Tunnel {
                     request_id,
                     "Authentication complete, promoting request"
                 );
+
+                // If this request carried credentials, relabel the session
+                // with the authenticated username (no-op if it's already labelled).
+                if let Ok(Some(source)) = auth_info_result {
+                    let username_opt = match &source {
+                        authentication::Source::ProxyBasic(s) => decode_username(s.as_ref()),
+                        authentication::Source::Sni(s) => decode_username(s.as_ref()),
+                    };
+                    if let Some(u) = username_opt {
+                        context.metrics.transfer_session_username(
+                            protocol,
+                            &log_id.to_string(),
+                            Some(u),
+                        );
+                    }
+                }
                 match request.promote_to_next_state() {
                     Ok(None) => {
                         log_id!(trace, request_id, "Health check request completed");

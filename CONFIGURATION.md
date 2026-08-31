@@ -189,6 +189,7 @@ direct = {}
 # [metrics]
 # address = "127.0.0.1:1987"
 # request_timeout_secs = 3
+# per_client_metrics = false
 ```
 
 ### TLS Hosts Settings File (hosts.toml)
@@ -400,12 +401,14 @@ Optional. Enables Prometheus-compatible metrics endpoint.
 [metrics]
 address = "127.0.0.1:1987"
 request_timeout_secs = 3
+per_client_metrics = false
 ```
 
 | Setting | Type | Default | Description |
 | ------- | ---- | ------- | ----------- |
 | `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+| `per_client_metrics` | Boolean | `false` | Expose per-user metric series and the `/clients` endpoint labelled with the authenticated username. Exposes usernames and client IPs on the metrics listener. |
 
 ---
 

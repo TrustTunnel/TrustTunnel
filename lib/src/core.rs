@@ -134,6 +134,12 @@ impl Core {
             None
         };
 
+        let per_client_metrics = settings
+            .metrics
+            .as_ref()
+            .map(|m| m.per_client_metrics)
+            .unwrap_or(false);
+
         Ok(Self {
             context: Arc::new(Context {
                 settings: settings.clone(),
@@ -149,7 +155,8 @@ impl Core {
                 },
                 shutdown,
                 fatal_error,
-                metrics: Metrics::new().map_err(|e| Error::Metrics(e.to_string()))?,
+                metrics: Metrics::new(per_client_metrics)
+                    .map_err(|e| Error::Metrics(e.to_string()))?,
                 next_client_id: Default::default(),
                 next_tunnel_id: Default::default(),
                 connection_limiter,
@@ -483,8 +490,12 @@ impl Core {
                     context.next_tunnel_id.fetch_add(1, Ordering::Relaxed),
                 ));
                 log_id!(trace, tunnel_id, "Creating tunnel");
+                let conn_key = tunnel_id.to_string();
+                context
+                    .metrics
+                    .register_connection(conn_key.clone(), Some(client_ip));
                 Self::on_tunnel_request(
-                    context,
+                    context.clone(),
                     tls_connection_meta.protocol,
                     match Self::make_tcp_http_codec(
                         tls_connection_meta.protocol,
@@ -494,7 +505,8 @@ impl Core {
                     ) {
                         Ok(x) => x,
                         Err(e) => {
-                            return Err((client_id, format!("Failed to create HTTP codec: {}", e)))
+                            context.metrics.unregister_connection(&conn_key);
+                            return Err((client_id, format!("Failed to create HTTP codec: {}", e)));
                         }
                     },
                     tls_connection_meta.sni,
@@ -606,7 +618,8 @@ impl Core {
 
                 let sni = tls_connection_meta.sni.clone();
                 let sni_auth_creds = tls_connection_meta.sni_auth_creds.clone();
-
+                let conn_key = tunnel_id.to_string();
+                context.metrics.register_connection(conn_key, client_ip);
                 Self::on_tunnel_request(
                     context,
                     tls_connection_meta.protocol,
@@ -694,7 +707,20 @@ impl Core {
         sni_auth_creds: Option<String>,
         tunnel_id: log_utils::IdChain<u64>,
     ) {
-        let _metrics_guard = Metrics::client_sessions_counter(context.metrics.clone(), protocol);
+        // Resolve the username for SNI credentials (if any) so the session counter
+        // is labelled correctly from the start.
+        let username_for_counter = match (context.authenticator.as_ref(), sni_auth_creds.as_ref()) {
+            (Some(authenticator), Some(creds)) => {
+                authenticator.username(&authentication::Source::Sni(creds.clone().into()))
+            }
+            _ => None,
+        };
+        let conn_key = tunnel_id.to_string();
+        let _metrics_guard = Arc::clone(&context.metrics).client_sessions_counter(
+            protocol,
+            conn_key,
+            username_for_counter,
+        );
 
         let (authentication_policy, sni_connection_guard) =
             match context.authenticator.as_ref().zip(sni_auth_creds) {
@@ -787,7 +813,7 @@ impl Default for Context {
             icmp_forwarder: None,
             shutdown: Shutdown::new(),
             fatal_error,
-            metrics: Metrics::new().unwrap(),
+            metrics: Metrics::new(false).unwrap(),
             next_client_id: Default::default(),
             next_tunnel_id: Default::default(),
             connection_limiter: None,
