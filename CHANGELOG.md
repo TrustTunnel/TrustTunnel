@@ -34,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   traffic, IP). Aggregate metrics are unchanged. Exposes usernames and client
   IPs, so only enable it on a protected metrics listener.
 
-### Removed
+### Changed
 
 - The released version is now derived from the git tag instead of a hardcoded value; `trusttunnel_endpoint --version` reports the version of the tag it was built from.
 
