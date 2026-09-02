@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the PSK key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
+
 ### Changed
+
+- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for PSK validation.
 
 ### Deprecated
 
@@ -29,13 +33,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and a new `/clients` JSON endpoint reports per-user aggregates (sessions,
   traffic, IP). Aggregate metrics are unchanged. Exposes usernames and client
   IPs, so only enable it on a protected metrics listener.
-- Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the PSK key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
-
-### Changed
-
-- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for PSK validation.
-
-### Deprecated
 
 ### Removed
 
