@@ -1,0 +1,31 @@
+name: Prepare release
+
+# Delegates to the shared prepare-release workflow in native-libs-common, which
+# resolves the version (explicit `version` input, or auto-increment of the last
+# released version in CHANGELOG.md), rolls the changelog, and opens a
+# release-bump PR (via Octopass). Merging that PR triggers tag-on-merge.yml.
+#
+# Source files are NOT version-bumped: the released version comes from the git
+# tag and is injected into the binary at build time via build.rs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Proposed version (without leading v). Leave empty to increment the last component of the latest version (1.2.9 -> 1.2.10, 1.2.0-beta.9 -> 1.2.0-beta.10).'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-release:
+    if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
+    uses: AdGuardSoftwareLimited/native-libs-common/.github/workflows/prepare-release.yml@master
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    with:
+      version: ${{ inputs.version }}

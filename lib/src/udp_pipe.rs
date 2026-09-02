@@ -272,7 +272,7 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> DuplexPipe<F> {
             self.right_pipe
                 .shared
                 .forwarder_shared
-                .on_connection_closed(&meta);
+                .on_connection_closed(&meta.reversed());
             log_id!(debug, id, "Connection expired: {:?}", meta);
         }
     }
@@ -289,5 +289,168 @@ impl<F: Fn(pipe::SimplexDirection, usize) + Send + Sync> datagram_pipe::DuplexPi
                 Err(_) => self.on_timer_tick(),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::datagram_pipe;
+    use crate::downstream;
+    use crate::forwarder;
+    use crate::log_utils::IdChain;
+    use async_trait::async_trait;
+    use std::marker::PhantomData;
+    use std::net::SocketAddr;
+    use std::sync::Mutex;
+
+    // Records the meta passed to `on_connection_closed`. The real direct
+    // forwarder removes `meta.reversed()` from its connections map, so by
+    // observing the argument we can verify the timeout path honors the same
+    // orientation contract as the working close path.
+    struct RecordingForwarderShared {
+        closed: Mutex<Vec<forwarder::UdpDatagramMeta>>,
+    }
+
+    #[async_trait]
+    impl forwarder::UdpDatagramPipeShared for RecordingForwarderShared {
+        async fn on_new_udp_connection(
+            &self,
+            _meta: &downstream::UdpDatagramMeta,
+        ) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn on_connection_closed(&self, meta: &forwarder::UdpDatagramMeta) {
+            self.closed.lock().unwrap().push(*meta);
+        }
+    }
+
+    struct NullSource<T>(PhantomData<T>);
+
+    #[async_trait]
+    impl<T: Send + 'static> datagram_pipe::Source for NullSource<T> {
+        type Output = T;
+
+        fn id(&self) -> IdChain<u64> {
+            IdChain::empty()
+        }
+
+        async fn read(&mut self) -> io::Result<T> {
+            Err(io::Error::other("not used"))
+        }
+    }
+
+    struct NullSink<T>(PhantomData<T>);
+
+    #[async_trait]
+    impl<T: Send + 'static> datagram_pipe::Sink for NullSink<T> {
+        type Input = T;
+
+        async fn write(&mut self, _data: T) -> io::Result<datagram_pipe::SendStatus> {
+            Ok(datagram_pipe::SendStatus::Dropped)
+        }
+    }
+
+    fn make_pipe(
+        forwarder_shared: Arc<RecordingForwarderShared>,
+        timeout: Duration,
+    ) -> DuplexPipe<impl Fn(pipe::SimplexDirection, usize)> {
+        DuplexPipe::new(
+            (
+                Box::new(NullSource::<downstream::UdpDatagram>(PhantomData)),
+                Box::new(NullSink::<forwarder::UdpDatagram>(PhantomData)),
+            ),
+            (
+                forwarder_shared as Arc<dyn forwarder::UdpDatagramPipeShared>,
+                Box::new(NullSource::<forwarder::UdpDatagramReadStatus>(PhantomData)),
+                Box::new(NullSink::<downstream::UdpDatagram>(PhantomData)),
+            ),
+            |_, _| {},
+            timeout,
+        )
+    }
+
+    fn forward_meta() -> forwarder::UdpDatagramMeta {
+        forwarder::UdpDatagramMeta {
+            source: "127.0.0.1:5000".parse::<SocketAddr>().unwrap(),
+            destination: "9.9.9.9:443".parse::<SocketAddr>().unwrap(),
+        }
+    }
+
+    #[test]
+    fn timeout_close_passes_reverse_oriented_meta() {
+        let forwarder_shared = Arc::new(RecordingForwarderShared {
+            closed: Mutex::new(Vec::new()),
+        });
+        // A timeout short enough that an already-old connection is expired.
+        let timeout = Duration::from_secs(1);
+        let mut pipe = make_pipe(forwarder_shared.clone(), timeout);
+
+        // The udp_connections map stores forward-oriented keys (client -> target).
+        let meta = forward_meta();
+        pipe.left_pipe
+            .shared
+            .udp_connections
+            .lock()
+            .unwrap()
+            .insert(
+                meta,
+                UdpConnection {
+                    last_activity: Instant::now() - Duration::from_secs(2),
+                    plain_dns_info: None,
+                    log_id: IdChain::empty(),
+                },
+            );
+
+        pipe.on_timer_tick();
+
+        let closed = forwarder_shared.closed.lock().unwrap();
+        assert_eq!(closed.len(), 1);
+        // `on_connection_closed` must receive the reverse-oriented meta so that
+        // the direct forwarder's internal `.reversed()` matches the
+        // forward-oriented key it stores. Passing the forward-oriented meta
+        // (the regression) would make the forwarder remove the wrong key and
+        // leak the outbound socket.
+        assert_eq!(closed[0], meta.reversed());
+        assert!(pipe
+            .left_pipe
+            .shared
+            .udp_connections
+            .lock()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn active_connection_is_not_expired() {
+        let forwarder_shared = Arc::new(RecordingForwarderShared {
+            closed: Mutex::new(Vec::new()),
+        });
+        let timeout = Duration::from_secs(60);
+        let mut pipe = make_pipe(forwarder_shared.clone(), timeout);
+
+        let meta = forward_meta();
+        pipe.left_pipe
+            .shared
+            .udp_connections
+            .lock()
+            .unwrap()
+            .insert(
+                meta,
+                UdpConnection {
+                    last_activity: Instant::now(),
+                    plain_dns_info: None,
+                    log_id: IdChain::empty(),
+                },
+            );
+
+        pipe.on_timer_tick();
+
+        assert!(forwarder_shared.closed.lock().unwrap().is_empty());
+        assert_eq!(
+            pipe.left_pipe.shared.udp_connections.lock().unwrap().len(),
+            1
+        );
     }
 }

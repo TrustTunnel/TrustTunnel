@@ -1,12 +1,50 @@
-name: Build and deploy release
+name: Publish release
+
+# Publishes a release end to end. It runs once a release-bump PR (opened by
+# prepare-release.yml) is merged, or on manual dispatch.
+#
+#   1. Reads the released version from CHANGELOG.md and creates the v{version}
+#      tag (tag-from-changelog.yml). That workflow only proceeds for a merged
+#      release-bump PR (or manual dispatch), so it gates every downstream job --
+#      no extra `if` is needed here.
+#   2. Builds the Linux (musl) and macOS binaries from the tagged commit, with
+#      the released version injected via TRUSTTUNNEL_VERSION (see build.rs).
+#   3. Publishes the GitHub Release on the public mirror (TrustTunnel/TrustTunnel)
+#      with the changelog notes and the signed archives attached.
 
 on:
+  pull_request_target:
+    types: [closed]
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Ref to publish manually (SHA or branch)'
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+  id-token: write
+  pull-requests: read
 
 jobs:
-  build:
-    name: Build release artifacts
+  # 1. Read the released version from CHANGELOG.md and create the v{version} tag.
+  # tag-from-changelog only proceeds for a merged release-bump/* PR (or manual
+  # dispatch), so every downstream job is gated by `needs: tag`.
+  tag:
+    name: Tag from changelog
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
+    uses: AdGuardSoftwareLimited/actions/.github/workflows/tag-from-changelog.yml@master
+    with:
+      team: corelibs
+      ref: ${{ inputs.ref || github.event.pull_request.merge_commit_sha || '' }}
+    secrets: inherit
+
+  # 2a. Build the Linux (musl x86_64 + aarch64) binaries.
+  build:
+    name: Build Linux artifacts
+    needs: tag
     runs-on:
       - ephemeral
       - ephemeral-linux
@@ -21,6 +59,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
 
       - name: Retrieve GPG signing secrets
         uses: hashicorp/vault-action@v4
@@ -32,13 +72,9 @@ jobs:
             secret/data/ci-secrets/gpg-signing gpgSecretKey | GPG_SECRET_KEY ;
             secret/data/ci-secrets/gpg-signing gpgPassword | GPG_PASSWORD
 
-      - name: Detect version
-        id: version
-        run: |
-          VERSION=$(grep '^version = ' endpoint/Cargo.toml | head -1 | sed -e 's/version = "\(.*\)"/\1/')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Build and package
+        env:
+          TRUSTTUNNEL_VERSION: ${{ needs.tag.outputs.version }}
         run: |
           set -e -x
 
@@ -62,12 +98,13 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: release-artifacts
+          name: release-linux
           path: artifacts/*.tar.gz
 
+  # 2b. Build the macOS (universal) binaries.
   build-macos:
     name: Build macOS artifacts
-    if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
+    needs: tag
     runs-on:
       - ephemeral
       - ephemeral-mac
@@ -78,6 +115,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
 
       - name: Retrieve GPG signing secrets
         uses: hashicorp/vault-action@v4
@@ -89,15 +128,10 @@ jobs:
             secret/data/ci-secrets/gpg-signing gpgSecretKey | GPG_SECRET_KEY ;
             secret/data/ci-secrets/gpg-signing gpgPassword | GPG_PASSWORD
 
-      - name: Detect version
-        id: version
-        run: |
-          VERSION=$(grep '^version = ' endpoint/Cargo.toml | head -1 | sed -e 's/version = "\(.*\)"/\1/')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
       - name: Build and package
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.tag.outputs.version }}
+          TRUSTTUNNEL_VERSION: ${{ needs.tag.outputs.version }}
           GPG_KEY: devteam@adguard.com
         run: |
           set -e -x
@@ -133,7 +167,6 @@ jobs:
               --passphrase "${GPG_PASSWORD}" --pinentry-mode loopback \
               setup_wizard
 
-          cp LICENSE .
           tar zcf "${NAME}.tar.gz" -s ",^,${NAME}/," \
             trusttunnel_endpoint trusttunnel_endpoint.sig \
             setup_wizard setup_wizard.sig LICENSE
@@ -150,48 +183,45 @@ jobs:
           name: release-macos
           path: artifacts/trusttunnel-*.tar.gz
 
-  deploy:
-    name: Deploy release
+  # 3. Publish the GitHub Release on the public mirror, attaching the Linux and
+  # macOS archives collected above. Pre-release tags (v...-beta.N, -rc.N) are
+  # marked as pre-releases.
+  # 3. Collect the Linux and macOS archives into a single `release-artifacts`
+  # artifact (create-gh-release.yml downloads a single named artifact), then
+  # publish the GitHub Release on the public mirror with the changelog notes.
+  collect:
+    name: Collect release artifacts
     needs: [build, build-macos]
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    environment: release-github
     runs-on: [team-corelibs]
     permissions:
-      contents: write
+      contents: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - name: Detect version
-        id: version
-        run: |
-          VERSION=$(grep '^version = ' endpoint/Cargo.toml | head -1 | sed -e 's/version = "\(.*\)"/\1/')
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Download artifacts
+      - name: Download all platform archives
         uses: actions/download-artifact@v8
         with:
           path: artifacts
           pattern: release-*
           merge-multiple: true
 
-      - name: Create GitHub Release on public repo
-        env:
-          GH_TOKEN: ${{ secrets.PUBLIC_REPO_GPR_KEY }}
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          set -e -x
-          TAG=v${VERSION}
-          CHANGELOG_URL="https://github.com/TrustTunnel/TrustTunnel/blob/${TAG}/CHANGELOG.md"
+      - name: Upload combined release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-artifacts
+          path: artifacts/trusttunnel-*.tar.gz
+          if-no-files-found: error
 
-          gh release delete -y ${TAG} -R TrustTunnel/TrustTunnel || true
-          gh release create ${TAG} \
-            -R TrustTunnel/TrustTunnel \
-            -t "${TAG}" \
-            -n "See [CHANGELOG.md](${CHANGELOG_URL}) for the list of changes."
-
-          for f in artifacts/*.tar.gz; do
-            gh release upload ${TAG} "$f" -R TrustTunnel/TrustTunnel
-          done
+  create-release:
+    name: Create GitHub Release
+    needs: [tag, collect]
+    if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
+    uses: AdGuardSoftwareLimited/actions/.github/workflows/create-gh-release.yml@master
+    with:
+      team: corelibs
+      target_repo: TrustTunnel/TrustTunnel
+      tag_name: ${{ needs.tag.outputs.tag }}
+      body: ${{ needs.tag.outputs.changelog }}
+      artifact_name: release-artifacts
+      prerelease: ${{ contains(needs.tag.outputs.tag, '-') }}
+      environment: release-github
+    secrets: inherit
