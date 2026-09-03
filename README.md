@@ -458,6 +458,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 #### GUI
 
+[TrustTunnelOpenWRT](https://github.com/NooBiToo/TrustTunnelOpenWrt) - A TrustTunnel client for OpenWrt 25.12+ with selective bypass by domain lists, configuration and diagnostics in the LuCI web interface.
+
 [Trusty](https://github.com/Meddelin/trusty) - A cross-platform GUI client built with Flutter (Windows stable, macOS alpha). Features include real-time logs, 1-click SSH server deployment, and split-tunneling domain groups auto-discovery.
 
 [TrustTunnel-GUI-Client](https://github.com/blazuryk/TrustTunnel-GUI-Client) — Windows GUI client, implemented as a Python wrapper for [TrustTunnel Client][trusttunnel-client]
