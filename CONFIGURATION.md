@@ -522,7 +522,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now trusttunnel
 
 # Reload TLS settings
-sudo systemctl reload trusttunnel
+sudo systemctl restart trusttunnel
 
 # View logs
 sudo journalctl -u trusttunnel -f
