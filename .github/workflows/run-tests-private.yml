@@ -63,18 +63,17 @@ jobs:
           # The store was restored into .sccache and copied here by COPY . .;
           # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
           # Lints run without the wrapper (clippy is analysis, not cached
-          # object code), so it is exported only for the test/build steps.
+          # object code), so it is applied only to the test/build steps.
           # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
           # compilation (it would bypass the cache).
           export SCCACHE_DIR=/src/.sccache
           export CARGO_INCREMENTAL=0
 
           mkdir -p /src/results
-          (rustup component add rustfmt clippy \
-              && make lint-rust \
-              && export RUSTC_WRAPPER=sccache \
-              && cargo test --workspace \
-              && cargo build --bins) || test_status=$?
+          (RUSTC_WRAPPER=sccache cargo test --workspace \
+              && RUSTC_WRAPPER=sccache cargo build --bins \
+              && rustup component add rustfmt clippy \
+              && make lint-rust) || test_status=$?
 
           echo "${test_status:-0}" > /src/results/test-status
 
