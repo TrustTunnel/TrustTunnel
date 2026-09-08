@@ -1,3 +1,7 @@
 **/target/
 lib/Cargo.lock
 macros/Cargo.lock
+build
+.DS_Store
+__pycache__
+*.pyc
