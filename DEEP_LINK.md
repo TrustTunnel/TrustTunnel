@@ -93,6 +93,7 @@ in one or two bytes.
 | `0x0B` | `client_random_prefix` | String | UTF-8 hex-encoded string in the following format: `prefix[/mask]` | no |
 | `0x0C` | `name` | String | Human-readable server name for display in the client UI | no |
 | `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
+| `0x0E` | `client_random_psk_key` | String | UTF-8 hex-encoded PSK key; the client derives its TLS `client_random` from it and the SNI | no |
 
 ### Encoding Rules
 

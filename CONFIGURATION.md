@@ -58,6 +58,7 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-length` | - | Length in bytes for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). | `4` |
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
+| `--client-random-psk-key` | - | Use an explicit hex PSK key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. Must have a matching `client_random_psk_key` rule in `rules.toml`. | - |
 
 ### Examples
 
@@ -94,6 +95,11 @@ The endpoint binary accepts the following command line arguments:
 # Generate a new client_random_prefix with a custom mask
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --generate-client-random-prefix --prefix-mask aaaa7777
+
+# Export client configuration with a PSK key for SNI-derived client random
+# (a matching [[rule]] with client_random_psk_key must exist in rules.toml)
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --client-random-psk-key 00112233445566778899aabbccddeeff
 ```
 
 ---
@@ -443,6 +449,7 @@ Rules filter incoming connections based on client IP and/or TLS client random da
 [[rule]]
 cidr = "192.168.0.0/16"           # Optional: IP range in CIDR notation
 client_random_prefix = "aabbcc"   # Optional: Hex-encoded prefix or prefix/mask
+client_random_psk_key = "0011..." # Optional: Hex PSK key for derived client random
 action = "allow"                  # Required: "allow" or "deny"
 ```
 
@@ -451,11 +458,12 @@ action = "allow"                  # Required: "allow" or "deny"
 1. Rules are evaluated in order
 2. First matching rule's action is applied
 3. If no rules match, connection is **allowed** by default
-4. If both `cidr` and `client_random_prefix` are specified, both must match
+4. If both `cidr` and a client random condition (`client_random_prefix` or `client_random_psk_key`) are specified, both must match
+5. `client_random_prefix` and `client_random_psk_key` are mutually exclusive; if both are set, only the PSK key is enforced and the prefix is ignored
 
 ### Client Random Matching
 
-Two formats are supported:
+Three formats are supported:
 
 **Simple prefix matching:**
 
@@ -472,6 +480,28 @@ client_random_prefix = "a0b0/f0f0"
 ```
 
 Matches if `(client_random & 0xf0f0) == (0xa0b0 & 0xf0f0)`.
+
+**Key-derived client random (PSK):**
+
+```toml
+client_random_psk_key = "00112233445566778899aabbccddeeff"
+```
+
+Matches if the client proves possession of a shared key inside the handshake: the last 16 bytes of the 32-byte `client_random` must equal
+
+```text
+AES-128-ECB(SHA256(SNI)[0:16], HKDF-SHA256(secret = client_random_psk_key, salt = client_random[0:16]))
+```
+
+The first 16 bytes are random per connection, so the resulting `client_random` differs every handshake while the check stays deterministic, and the ClientHello remains indistinguishable from a normal one.
+
+Format and matching constraints:
+
+- The key must be a valid hex string of any even length; 16 bytes or more is recommended.
+- The check depends on the SNI and the client random sent in the handshake: if the rules file contains at least one PSK rule, connections evaluated without a client random or with an empty SNI are denied outright.
+- The derivation uses the SNI as it appears in the ClientHello. If the client config sets `custom_sni`, that value is what gets validated.
+- The key is a credential: whoever knows it can authorize. It is embedded into exported client configs and deep-links, so handle it like a password.
+- Clients must support the `client_random_psk_key` config field to connect under a PSK rule.
 
 ### Examples
 
@@ -491,6 +521,11 @@ action = "allow"
 cidr = "10.0.0.0/8"
 client_random_prefix = "bad0/ff00"
 action = "deny"
+
+# Allow only clients that prove a PSK key bound to the SNI
+[[rule]]
+client_random_psk_key = "00112233445566778899aabbccddeeff"
+action = "allow"
 
 # Catch-all deny (place last)
 [[rule]]
