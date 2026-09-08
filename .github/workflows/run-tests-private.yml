@@ -10,13 +10,100 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux-build:
-    name: Linux build
+  build:
+    name: ${{ matrix.name }} build
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on: [team-corelibs]
+    runs-on: ${{ matrix.runs-on }}
     permissions:
       contents: read
       id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux runs inside a docker build (see the test-command); the
+          # restored store lands in $SCCACHE_DIR, which is part of the build
+          # context via COPY . ., and the build exports it back to build/sccache.
+          - name: Linux
+            runs-on: [team-corelibs]
+            sccache-key: sccache-linux
+            # Path the stats/save steps read the store from after the build.
+            sccache-path: build/sccache
+            test-command: |
+              set -euxo pipefail
+
+              rm -rf build
+              cat > Dockerfile <<'EOF'
+              # syntax=docker/dockerfile:1
+              FROM adguard/core-libs:2.10 AS build
+
+              # sccache caches the Rust compilations. The pinned binary is
+              # installed once: this layer depends only on the base image, so it
+              # stays cached across runs (the native-tests stage is rebuilt by
+              # --no-cache-filter, this one is not).
+              RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz \
+                  | tar -xz -C /usr/local/bin --strip-components=1
+
+              WORKDIR /src
+              COPY . .
+
+              FROM build AS native-tests
+
+              RUN <<END
+              set -eux
+
+              # The store was restored into .sccache and copied here by COPY . .;
+              # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
+              # Lints run without the wrapper (clippy is analysis, not cached
+              # object code), so it is applied only to the test/build steps.
+              # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
+              # compilation (it would bypass the cache).
+              export SCCACHE_DIR=/src/.sccache
+              export CARGO_INCREMENTAL=0
+
+              mkdir -p /src/results
+              (RUSTC_WRAPPER=sccache cargo test --workspace \
+                  && RUSTC_WRAPPER=sccache cargo build --bins \
+                  && rustup component add rustfmt clippy \
+                  && make lint-rust) || test_status=$?
+
+              echo "${test_status:-0}" > /src/results/test-status
+
+              exit 0
+              END
+
+              FROM scratch AS native-tests-output
+
+              COPY --from=native-tests /src/results/test-status /test-status
+              COPY --from=native-tests /src/.sccache /sccache
+              EOF
+              DOCKER_BUILDKIT=1 docker build --progress=plain \
+                --no-cache-filter native-tests \
+                --target native-tests-output \
+                --output type=local,dest=build \
+                -f Dockerfile .
+
+              test "$(cat build/test-status)" -eq 0
+          # Mac runs cargo directly on the runner; the store stays in
+          # $SCCACHE_DIR (= .sccache relative to the workspace) all along.
+          - name: Mac
+            runs-on:
+              - ephemeral
+              - ephemeral-mac
+              - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
+            sccache-key: sccache-mac
+            sccache-path: .sccache
+            test-command: |
+              set -eux
+
+              # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
+              # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
+              # compilation (it would bypass the cache).
+              export RUSTC_WRAPPER=sccache
+              export CARGO_INCREMENTAL=0
+
+              cargo test --workspace
+              cargo build --bins
     env:
       # sccache local-disk store, restored/saved across runs by the
       # registry-cache action as an OCI registry blob.
@@ -33,135 +120,18 @@ jobs:
         uses: AdGuardSoftwareLimited/actions/actions/registry-cache/restore@master
         with:
           config: ${{ secrets.REGISTRY_CACHE_AUTH }}
-          key: sccache-linux
-          path: ${{ env.SCCACHE_DIR }}
-
-      - name: Run tests in Docker
-        run: |
-          set -euxo pipefail
-
-          rm -rf build
-          cat > Dockerfile <<'EOF'
-          # syntax=docker/dockerfile:1
-          FROM adguard/core-libs:2.10 AS build
-
-          # sccache caches the Rust compilations. The pinned binary is
-          # installed once: this layer depends only on the base image, so it
-          # stays cached across runs (the native-tests stage is rebuilt by
-          # --no-cache-filter, this one is not).
-          RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz \
-              | tar -xz -C /usr/local/bin --strip-components=1
-
-          WORKDIR /src
-          COPY . .
-
-          FROM build AS native-tests
-
-          RUN <<END
-          set -eux
-
-          # The store was restored into .sccache and copied here by COPY . .;
-          # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
-          # Lints run without the wrapper (clippy is analysis, not cached
-          # object code), so it is applied only to the test/build steps.
-          # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
-          # compilation (it would bypass the cache).
-          export SCCACHE_DIR=/src/.sccache
-          export CARGO_INCREMENTAL=0
-
-          mkdir -p /src/results
-          (RUSTC_WRAPPER=sccache cargo test --workspace \
-              && RUSTC_WRAPPER=sccache cargo build --bins \
-              && rustup component add rustfmt clippy \
-              && make lint-rust) || test_status=$?
-
-          echo "${test_status:-0}" > /src/results/test-status
-
-          exit 0
-          END
-
-          FROM scratch AS native-tests-output
-
-          COPY --from=native-tests /src/results/test-status /test-status
-          COPY --from=native-tests /src/.sccache /sccache
-          EOF
-          DOCKER_BUILDKIT=1 docker build --progress=plain \
-            --no-cache-filter native-tests \
-            --target native-tests-output \
-            --output type=local,dest=build \
-            -f Dockerfile .
-
-          test "$(cat build/test-status)" -eq 0
-
-      - name: sccache stats
-        id: sccache-stats
-        if: always()
-        run: |
-          SCCACHE_DIR=build/sccache sccache --show-stats || true
-          cache_writes=$(SCCACHE_DIR=build/sccache sccache --show-stats --stats-format=json 2>/dev/null \
-            | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
-          if [ "$cache_writes" -gt 0 ] 2>/dev/null; then
-            echo "force=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "force=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Save sccache store
-        if: always()
-        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/save@master
-        with:
-          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
-          key: sccache-linux
-          path: build/sccache
-          force: ${{ steps.sccache-stats.outputs.force }}
-
-  mac-build:
-    name: Mac build
-    if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on:
-      - ephemeral
-      - ephemeral-mac
-      - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
-    env:
-      # sccache local-disk store, restored/saved across runs by the
-      # registry-cache action as an OCI registry blob.
-      SCCACHE_DIR: ${{ github.workspace }}/.sccache
-      SCCACHE_CACHE_SIZE: 512M
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
-      - name: Configure sccache
-        uses: AdguardTeam/sccache-action@main
-
-      - name: Restore sccache store
-        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/restore@master
-        with:
-          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
-          key: sccache-mac
+          key: ${{ matrix.sccache-key }}
           path: ${{ env.SCCACHE_DIR }}
 
       - name: Run tests
-        env:
-          # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
-          # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
-          # compilation (it would bypass the cache).
-          RUSTC_WRAPPER: sccache
-          CARGO_INCREMENTAL: "0"
-        run: cargo test --workspace
-
-      - name: Build binaries
-        env:
-          RUSTC_WRAPPER: sccache
-          CARGO_INCREMENTAL: "0"
-        run: cargo build --bins
+        run: ${{ matrix.test-command }}
 
       - name: sccache stats
         id: sccache-stats
         if: always()
         run: |
-          sccache --show-stats || true
-          cache_writes=$(sccache --show-stats --stats-format=json 2>/dev/null \
+          SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats || true
+          cache_writes=$(SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats --stats-format=json 2>/dev/null \
             | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
           if [ "$cache_writes" -gt 0 ] 2>/dev/null; then
             echo "force=true" >> "$GITHUB_OUTPUT"
@@ -174,6 +144,6 @@ jobs:
         uses: AdGuardSoftwareLimited/actions/actions/registry-cache/save@master
         with:
           config: ${{ secrets.REGISTRY_CACHE_AUTH }}
-          key: sccache-mac
-          path: ${{ env.SCCACHE_DIR }}
+          key: ${{ matrix.sccache-key }}
+          path: ${{ matrix.sccache-path }}
           force: ${{ steps.sccache-stats.outputs.force }}
