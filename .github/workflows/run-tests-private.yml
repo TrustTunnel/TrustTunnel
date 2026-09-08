@@ -123,10 +123,58 @@ jobs:
       - ephemeral
       - ephemeral-mac
       - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
+    env:
+      # sccache local-disk store, restored/saved across runs by the
+      # registry-cache action as an OCI registry blob.
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 512M
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Configure sccache
+        uses: AdguardTeam/sccache-action@main
+
+      - name: Restore sccache store
+        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/restore@master
+        with:
+          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
+          key: sccache-mac
+          path: ${{ env.SCCACHE_DIR }}
+
       - name: Run tests
+        env:
+          # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
+          # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
+          # compilation (it would bypass the cache).
+          RUSTC_WRAPPER: sccache
+          CARGO_INCREMENTAL: "0"
         run: cargo test --workspace
+
       - name: Build binaries
+        env:
+          RUSTC_WRAPPER: sccache
+          CARGO_INCREMENTAL: "0"
         run: cargo build --bins
+
+      - name: sccache stats
+        id: sccache-stats
+        if: always()
+        run: |
+          sccache --show-stats || true
+          cache_writes=$(sccache --show-stats --stats-format=json 2>/dev/null \
+            | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
+          if [ "$cache_writes" -gt 0 ] 2>/dev/null; then
+            echo "force=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save sccache store
+        if: always()
+        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/save@master
+        with:
+          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
+          key: sccache-mac
+          path: ${{ env.SCCACHE_DIR }}
+          force: ${{ steps.sccache-stats.outputs.force }}
