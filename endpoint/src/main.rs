@@ -446,7 +446,7 @@ fn main() {
             .map(|vals| vals.cloned().collect())
             .unwrap_or_default();
 
-        let mut client_random_psk_key = args
+        let client_random_psk_key = args
             .get_one::<String>(CLIENT_RANDOM_PSK_KEY_PARAM_NAME)
             .cloned();
 
@@ -458,18 +458,23 @@ fn main() {
             }
             // Validate against rules.toml
             if let Some(rules_engine) = settings.get_rules_engine() {
-                // Both operands (CLI arg and rules.toml) are local, so timing is not
-                // attacker-controlled and a plain string comparison is acceptable here.
-                let matching_rule = rules_engine
-                    .config()
-                    .rule
-                    .iter()
-                    .find(|r| r.client_random_psk_key.as_deref() == Some(psk_key.as_str()));
+                // Hex case is irrelevant: the rules engine matches on decoded bytes
+                let psk_key_lower = psk_key.to_lowercase();
+                let matching_rule = rules_engine.config().rule.iter().find(|r| {
+                    r.client_random_psk_key
+                        .as_deref()
+                        .map(|s| s.to_lowercase())
+                        .as_deref()
+                        == Some(psk_key_lower.as_str())
+                });
                 match matching_rule {
                     None => {
                         // The PSK key is a secret, do not log its value
-                        eprintln!("Warning: No rule found in rules.toml with matching client_random_psk_key. This field will be ignored.");
-                        client_random_psk_key = None;
+                        eprintln!(
+                            "Error: No rule found in rules.toml with matching client_random_psk_key. \
+                             Add the rule first or omit --client-random-psk-key."
+                        );
+                        std::process::exit(1);
                     }
                     Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
                         eprintln!("Warning: Matched rule in rules.toml for client_random_psk_key has action 'deny'.");
