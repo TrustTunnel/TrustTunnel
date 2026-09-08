@@ -497,7 +497,7 @@ The first 16 bytes are random per connection, so the resulting `client_random` d
 
 Format and matching constraints:
 
-- The key must be a valid hex string of any even length; 16 bytes or more is recommended.
+- The key must be a non-empty valid hex string. Keys of 16 bytes (32 hex chars) or more are recommended; shorter keys are rejected when the rule is created by the setup wizard.
 - The check depends on the SNI and the client random sent in the handshake: if the rules file contains at least one PSK rule, connections evaluated without a client random or with an empty SNI are denied outright.
 - The derivation uses the SNI as it appears in the ClientHello. If the client config sets `custom_sni`, that value is what gets validated.
 - The key is a credential: whoever knows it can authorize. It is embedded into exported client configs and deep-links, so handle it like a password.

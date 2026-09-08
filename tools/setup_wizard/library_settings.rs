@@ -198,7 +198,9 @@ fn generate_rules_toml_content(rules_config: &trusttunnel::rules::RulesConfig) -
     content.push_str(
         "#   Can optionally include a mask in format \"prefix[/mask]\" for bitwise matching\n",
     );
-    content.push_str("# - client_random_psk_key: Hex-encoded PSK key (any even length)\n");
+    content.push_str(
+        "# - client_random_psk_key: Hex-encoded PSK key, 16 bytes (32 hex chars) or longer\n",
+    );
     content.push_str(
         "#   Matches clients whose TLS client random is derived from this key and the SNI\n",
     );
