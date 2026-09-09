@@ -348,7 +348,7 @@ fn main() {
         };
 
         let is_generated = generated_client_random_prefix.is_some();
-        let mut client_random_prefix = generated_client_random_prefix.or_else(|| {
+        let client_random_prefix = generated_client_random_prefix.or_else(|| {
             args.get_one::<String>(CLIENT_RANDOM_PREFIX_PARAM_NAME)
                 .cloned()
         });
@@ -419,20 +419,20 @@ fn main() {
                             .unwrap_or(false)
                     });
 
-                    // Print warning and continue, do not panic because it's optional field
                     match matching_rule {
                         None => {
                             eprintln!(
-                            "Warning: No rule found in rules.toml matching client_random_prefix '{}'. This field will be ignored.",
-                            prefix
-                        );
-                            client_random_prefix = None;
+                                "Error: No rule found in rules.toml matching client_random_prefix '{}'. Add the rule first or omit --client-random-prefix.",
+                                prefix
+                            );
+                            std::process::exit(1);
                         }
                         Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
                             eprintln!(
-                            "Warning: Matched rule in rules.toml for client_random_prefix '{}' has action 'deny'.",
-                            prefix
-                        );
+                                "Error: Matched rule in rules.toml for client_random_prefix '{}' has action 'deny'.",
+                                prefix
+                            );
+                            std::process::exit(1);
                         }
                         Some(_) => {}
                     }
@@ -458,14 +458,12 @@ fn main() {
             }
             // Validate against rules.toml
             if let Some(rules_engine) = settings.get_rules_engine() {
-                // Hex case is irrelevant: the rules engine matches on decoded bytes
-                let psk_key_lower = psk_key.to_lowercase();
                 let matching_rule = rules_engine.config().rule.iter().find(|r| {
                     r.client_random_psk_key
-                        .as_deref()
+                        .as_ref()
                         .map(|s| s.to_lowercase())
                         .as_deref()
-                        == Some(psk_key_lower.as_str())
+                        == Some(psk_key.to_lowercase().as_str())
                 });
                 match matching_rule {
                     None => {
@@ -477,7 +475,8 @@ fn main() {
                         std::process::exit(1);
                     }
                     Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
-                        eprintln!("Warning: Matched rule in rules.toml for client_random_psk_key has action 'deny'.");
+                        eprintln!("Error: Matched rule in rules.toml for client_random_psk_key has action 'deny'.");
+                        std::process::exit(1);
                     }
                     Some(_) => {}
                 }

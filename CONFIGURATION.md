@@ -58,7 +58,7 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-length` | - | Length in bytes for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). | `4` |
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
-| `--client-random-psk-key` | - | Use an explicit hex PSK key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. Must have a matching `client_random_psk_key` rule in `rules.toml`. | - |
+| `--client-random-psk-key` | - | Use an explicit hex PSK key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
 
 ### Examples
 
@@ -97,7 +97,6 @@ The endpoint binary accepts the following command line arguments:
     --generate-client-random-prefix --prefix-mask aaaa7777
 
 # Export client configuration with a PSK key for SNI-derived client random
-# (a matching [[rule]] with client_random_psk_key must exist in rules.toml)
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --client-random-psk-key 00112233445566778899aabbccddeeff
 ```

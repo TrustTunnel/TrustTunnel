@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `gen_client_config` now fails with an error instead of warning and silently dropping the value when the explicit `--client-random-prefix` or `--client-random-psk-key` has no matching allow rule in `rules.toml`.
 - `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for PSK validation.
 
 ### Deprecated
