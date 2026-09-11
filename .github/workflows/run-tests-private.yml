@@ -77,13 +77,18 @@ jobs:
                   && make lint-rust) || test_status=$?
 
               echo "${test_status:-0}" > /src/results/test-status
+              # Capture the sccache counters where the compilations happened:
+              # the runner-side daemon never sees them (all zeros otherwise).
+              # The .txt is for the job log, the .json drives force-save.
+              sccache --show-stats > /src/results/sccache-stats.txt 2>&1 || true
+              sccache --show-stats --stats-format=json > /src/results/sccache-stats.json 2>/dev/null || true
 
               exit 0
               END
 
               FROM scratch AS native-tests-output
 
-              COPY --from=native-tests /src/results/test-status /test-status
+              COPY --from=native-tests /src/results/ /
               COPY --from=native-tests /src/.sccache /sccache
               EOF
               DOCKER_BUILDKIT=1 docker build --progress=plain \
@@ -139,9 +144,19 @@ jobs:
         id: sccache-stats
         if: always()
         run: |
-          SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats || true
-          cache_writes=$(SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats --stats-format=json 2>/dev/null \
-            | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
+          # Linux runs the compilations inside a docker build, which exports
+          # the counters it captured (the runner-side daemon never sees them
+          # and would report all zeros); Mac compiles on the runner itself,
+          # so there is no file and its daemon is queried directly.
+          if [ -f build/sccache-stats.json ]; then
+            cat build/sccache-stats.txt 2>/dev/null || true
+            cache_writes=$(grep -o '"cache_writes":[0-9]*' build/sccache-stats.json 2>/dev/null \
+              | grep -o '[0-9]*' || echo 0)
+          else
+            SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats || true
+            cache_writes=$(SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats --stats-format=json 2>/dev/null \
+              | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
+          fi
           if [ "$cache_writes" -gt 0 ] 2>/dev/null; then
             echo "force=true" >> "$GITHUB_OUTPUT"
           else
