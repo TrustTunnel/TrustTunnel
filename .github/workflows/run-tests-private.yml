@@ -69,6 +69,15 @@ jobs:
               export SCCACHE_DIR=/src/.sccache
               export SCCACHE_CACHE_SIZE=512M
               export CARGO_INCREMENTAL=0
+              # Isolate the daemon from every other build on the shared
+              # builder: by default sccache listens on 127.0.0.1:4226 and
+              # containers on the same host can reach each other's daemons
+              # (a compile request served by a daemon from another container
+              # fails with a bogus "failed to spawn ... No such file or
+              # directory", since the compiler path of this image is not
+              # present in that container). A unix socket lives in this
+              # container's filesystem, so it cannot be hijacked.
+              export SCCACHE_SERVER_UDS=/tmp/sccache.sock
 
               mkdir -p /src/results
               (RUSTC_WRAPPER=sccache cargo test --workspace \
