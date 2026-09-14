@@ -21,9 +21,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux runs inside a docker build (see the test-command); the
-          # restored store lands in $SCCACHE_DIR, which is part of the build
-          # context via COPY . ., and the build exports it back to build/sccache.
+          # Linux runs inside a docker build (see the test-command): the store
+          # goes in via COPY . . and comes back out at build/sccache.
           - name: Linux
             runs-on: [team-corelibs]
             sccache-key: sccache-linux
@@ -37,10 +36,8 @@ jobs:
               # syntax=docker/dockerfile:1
               FROM adguard/core-libs:2.10 AS build
 
-              # sccache caches the Rust compilations. The pinned binary is
-              # installed once: this layer depends only on the base image, so it
-              # stays cached across runs (the native-tests stage is rebuilt by
-              # --no-cache-filter, this one is not).
+              # sccache caches the Rust compilations; installing the pinned
+              # binary before COPY . . keeps this layer cached across runs.
               RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz \
                   | tar -xz -C /usr/local/bin --strip-components=1
 
@@ -49,34 +46,20 @@ jobs:
 
               FROM build AS native-tests
 
-              # target/ and the cargo registry are buildkit cache mounts: they
-              # would otherwise inflate the layer (and the runner disk) by
-              # gigabytes and are reused across runs. The sccache store stays
-              # in the layer on purpose so it can be exported back out.
+              # target/ and the cargo registry are buildkit cache mounts (they
+              # are gigabytes); the sccache store stays in the layer for export.
               RUN --mount=type=cache,target=/src/target \
                   --mount=type=cache,target=/opt/cargo/registry \
                   <<END
               set -eux
 
-              # The store was restored into .sccache and copied here by COPY . .;
-              # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
-              # Lints run without the wrapper (clippy is analysis, not cached
-              # object code), so it is applied only to the test/build steps.
-              # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
-              # compilation (it would bypass the cache). SCCACHE_CACHE_SIZE
-              # caps the store: without it sccache would cache every rlib of
-              # the workspace and fill the build container's disk.
+              # The store was restored into .sccache by COPY . .; the knobs below
+              # are what make the rustc invocations cacheable.
               export SCCACHE_DIR=/src/.sccache
               export SCCACHE_CACHE_SIZE=512M
               export CARGO_INCREMENTAL=0
-              # Isolate the daemon from every other build on the shared
-              # builder: by default sccache listens on 127.0.0.1:4226 and
-              # containers on the same host can reach each other's daemons
-              # (a compile request served by a daemon from another container
-              # fails with a bogus "failed to spawn ... No such file or
-              # directory", since the compiler path of this image is not
-              # present in that container). A unix socket lives in this
-              # container's filesystem, so it cannot be hijacked.
+              # Pin the daemon to this container: a foreign one on the shared
+              # builder cannot see our sources ("No such file or directory").
               export SCCACHE_SERVER_UDS=/tmp/sccache.sock
 
               mkdir -p /src/results
@@ -86,9 +69,8 @@ jobs:
                   && make lint-rust) || test_status=$?
 
               echo "${test_status:-0}" > /src/results/test-status
-              # Capture the sccache counters where the compilations happened:
-              # the runner-side daemon never sees them (all zeros otherwise).
-              # The .txt is for the job log, the .json drives force-save.
+              # Counters from the daemon that compiled: .txt for the log,
+              # .json for force-save (the runner daemon sees none of them).
               sccache --show-stats > /src/results/sccache-stats.txt 2>&1 || true
               sccache --show-stats --stats-format=json > /src/results/sccache-stats.json 2>/dev/null || true
 
@@ -119,9 +101,8 @@ jobs:
             test-command: |
               set -eux
 
-              # RUSTC_WRAPPER makes cargo use sccache for the rustc invocations.
-              # CARGO_INCREMENTAL=0: sccache is incompatible with incremental
-              # compilation (it would bypass the cache).
+              # RUSTC_WRAPPER routes rustc through sccache; CARGO_INCREMENTAL=0
+              # keeps incremental builds from bypassing it.
               export RUSTC_WRAPPER=sccache
               export CARGO_INCREMENTAL=0
 
@@ -153,10 +134,8 @@ jobs:
         id: sccache-stats
         if: always()
         run: |
-          # Linux runs the compilations inside a docker build, which exports
-          # the counters it captured (the runner-side daemon never sees them
-          # and would report all zeros); Mac compiles on the runner itself,
-          # so there is no file and its daemon is queried directly.
+          # Linux exports the counters its container captured; Mac compiles on
+          # the runner itself, so its daemon is queried directly.
           if [ -f build/sccache-stats.json ]; then
             cat build/sccache-stats.txt 2>/dev/null || true
             cache_writes=$(grep -o '"cache_writes":[0-9]*' build/sccache-stats.json 2>/dev/null \
