@@ -167,6 +167,8 @@ max_connection_window = 25165824
 max_stream_window = 16777216
 disable_active_migration = true
 enable_early_data = true
+cc_algorithm = "cubic"
+discover_pmtu = false
 message_queue_capacity = 4096
 
 # Forward protocol (optional, defaults to direct)
@@ -327,6 +329,8 @@ Configure which protocols the endpoint accepts. At least one protocol must be en
 | `max_stream_window` | Integer | `16777216` | Maximum stream window (16 MB) |
 | `disable_active_migration` | Boolean | `true` | Disable active connection migration |
 | `enable_early_data` | Boolean | `true` | Enable 0-RTT early data |
+| `cc_algorithm` | String | `"cubic"` | Congestion control algorithm: `reno`, `cubic`, `bbr`, `bbr2`. Rejected at startup if unknown |
+| `discover_pmtu` | Boolean | `false` | Perform QUIC path MTU discovery. While disabled, datagrams of `send_udp_payload_size` are silently dropped on paths with a smaller MTU |
 | `message_queue_capacity` | Integer | `4096` | QUIC multiplexer queue capacity |
 
 ### Forward Protocol Settings
