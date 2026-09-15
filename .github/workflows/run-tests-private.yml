@@ -22,12 +22,13 @@ jobs:
       matrix:
         include:
           # Linux runs inside a docker build (see the test-command): the store
-          # goes in via COPY . . and comes back out at build/sccache.
+          # goes in via COPY . . and comes back out at build/.sccache.
           - name: Linux
             runs-on: [team-corelibs]
             sccache-key: sccache-linux
-            # Path the stats/save steps read the store from after the build.
-            sccache-path: build/sccache
+            # Path the stats/save steps read the store from after the build;
+            # its last component must match the restore path (env.SCCACHE_DIR).
+            sccache-path: build/.sccache
             test-command: |
               set -euxo pipefail
 
@@ -80,7 +81,10 @@ jobs:
               FROM scratch AS native-tests-output
 
               COPY --from=native-tests /src/results/ /
-              COPY --from=native-tests /src/.sccache /sccache
+              # Keep the .sccache name: the restore extracts a member named
+              # after its own path, so renaming this silently turns restores
+              # into misses.
+              COPY --from=native-tests /src/.sccache /.sccache
               EOF
               DOCKER_BUILDKIT=1 docker build --progress=plain \
                 --no-cache-filter native-tests \
