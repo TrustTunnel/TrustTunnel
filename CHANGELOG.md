@@ -8,7 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the PSK key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
+- [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
+- [Feature] Added `client_random_psk_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the PSK key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. PSK and prefix/mask are mutually exclusive; PSK takes priority. Added the `--client-random-psk-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
 
 ### Changed
 
