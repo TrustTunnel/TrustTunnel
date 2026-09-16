@@ -137,6 +137,8 @@ fn compose_quic_listener_table(settings: Option<&QuicSettings>) -> String {
             table["max_stream_window"] = value(*x.get_max_stream_window() as i64);
             table["disable_active_migration"] = value(*x.get_disable_active_migration());
             table["enable_early_data"] = value(*x.get_enable_early_data());
+            table["cc_algorithm"] = value(x.get_cc_algorithm().as_str());
+            table["discover_pmtu"] = value(*x.get_discover_pmtu());
             table["message_queue_capacity"] = value(*x.get_message_queue_capacity() as i64);
 
             doc.to_string()
