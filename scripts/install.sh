@@ -103,10 +103,9 @@ set_os() {
     os="$( uname -s )"
     case "$os"
     in
-    # Darwin packages are currently not available
-    # ('Darwin')
-    #   os='macos'
-    #   ;;
+    ('Darwin')
+      os='macos'
+      ;;
     ('Linux')
       os='linux'
       ;;
@@ -119,7 +118,7 @@ set_os() {
   # Validate.
   case "$os"
   in
-  ('linux')
+  ('macos'|'linux')
     # All right, go on.
     ;;
   (*)
@@ -133,6 +132,12 @@ set_os() {
 
 # Function set_cpu sets the cpu if needed and validates the value.
 set_cpu() {
+  # For macOS there is a universal binary, so we don't need to set cpu
+  if [ "$os" = 'macos' ]
+  then
+    return 0
+  fi
+
   # Set if needed.
   if [ "$cpu" = '' ]
   then
@@ -200,7 +205,13 @@ set_is_root() {
 is_dir_owned_by_current_user() {
   dir="$1"
 
-  if [ "$os" = "linux" ]; then
+  if [ "$os" = "macos" ]; then
+      # macOS
+      if ! owner_name=$(stat -f '%Su' "$dir"); then
+          echo "Cannot stat '$dir'"
+          return 0
+      fi
+  elif [ "$os" = "linux" ]; then
       # Linux
       if ! owner_name=$(stat -c '%U' "$dir"); then
           echo "Cannot stat '$dir'"
@@ -436,7 +447,12 @@ configure() {
 
   parse_version
 
-  pkg_name="trusttunnel-${os}-${cpu}.${pkg_ext}"
+  if [ "$os" = 'macos' ]
+  then
+    pkg_name="trusttunnel-macos-universal.${pkg_ext}"
+  else
+    pkg_name="trusttunnel-${os}-${cpu}.${pkg_ext}"
+  fi
   apply_version
   url="https://github.com/TrustTunnel/TrustTunnel/releases/download/v${version}/${pkg_name}"
 
@@ -587,6 +603,12 @@ report_success() {
   echo "    cd ${output_dir}"
   echo "    sudo ./setup_wizard"
   echo
+
+  if [ "$os" != 'linux' ]
+  then
+    return 0
+  fi
+
   echo "--- Configure systemd service ---"
   echo
   echo "The '${output_dir}/trusttunnel.service.template' template"

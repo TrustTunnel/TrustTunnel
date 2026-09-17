@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
+
 ### Changed
 
 ### Deprecated
