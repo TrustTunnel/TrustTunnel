@@ -35,7 +35,7 @@ jobs:
               rm -rf build
               cat > Dockerfile <<'EOF'
               # syntax=docker/dockerfile:1
-              FROM adguard/core-libs:2.10 AS build
+              FROM adguard/core-libs:2.12 AS build
 
               # sccache caches the Rust compilations; installing the pinned
               # binary before COPY . . keeps this layer cached across runs.
