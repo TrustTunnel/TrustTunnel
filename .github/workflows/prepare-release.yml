@@ -15,6 +15,11 @@ on:
         description: 'Proposed version (without leading v). Leave empty to increment the last component of the latest version (1.2.9 -> 1.2.10, 1.2.0-beta.9 -> 1.2.0-beta.10).'
         required: false
         type: string
+      flatten-prereleases:
+        description: 'Flatten the beta/rc sections of the released version cycle into the final version section of the changelog (enable when releasing the stable version after a beta/rc cycle). Requires an explicit version: fails fast when combined with the empty-version auto-increment.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -29,3 +34,4 @@ jobs:
       id-token: write
     with:
       version: ${{ inputs.version }}
+      flatten-prereleases: ${{ inputs.flatten-prereleases }}
