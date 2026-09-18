@@ -199,9 +199,9 @@ values you could safely use:
         - A registered domain pointing to your server's IP address
         - Port 80 accessible from the internet (for HTTP-01 challenge), or
         - Ability to add DNS TXT records (for DNS-01 challenge)
-    - **Generate a self-signed certificate** - suitable for testing or when using
-      the CLI client only. Note: The Flutter client does not support self-signed
-      certificates **yet**.
+    - **Generate a self-signed certificate** - supported by both the CLI client
+      and the Flutter client. The generated certificate is automatically embedded
+      into the exported client configuration.
     - **Provide path to existing certificate** - use your own certificate files
       obtained from another CA or tool like [certbot][certbot].
 - **Path to a file to store the TLS hosts settings** - path to store the TLS host settings file.
