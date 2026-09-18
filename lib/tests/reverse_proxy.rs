@@ -20,17 +20,6 @@ mod common;
 // Use a larger body to catch partial responses without flooding logs.
 static RESPONSE_BODY: Lazy<Bytes> = Lazy::new(|| Bytes::from(vec![b'x'; 1024 * 1024]));
 
-/// Whole-test budget. A real hang is caught by the CI job timeout as well, so this is only
-/// a safety net and must stay well above any expected transfer time.
-const TEST_TIMEOUT: Duration = Duration::from_secs(60);
-/// Extra time granted to the client after the origin has finished sending its response.
-/// The endpoint may need a few seconds to drain it under load, and the client used to be
-/// killed by its own 5s QUIC idle timeout before it could finish.
-const CLIENT_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
-/// Message shown when the client is still waiting for the response body.
-const CLIENT_STALLED_MSG: &str =
-    "Client did not finish draining the response; look for DIAG: PARK/PUMP/IDLE lines";
-
 macro_rules! reverse_proxy_tests {
     ($($name:ident: $client_fn:expr,)*) => {
     $(
@@ -57,7 +46,7 @@ macro_rules! reverse_proxy_tests {
 
             tokio::select! {
                 _ = &mut endpoint_task => unreachable!(),
-                _ = tokio::time::sleep(TEST_TIMEOUT) => panic!("Timed out"),
+                _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
                 // Wait for client_task first; if proxy_task completes, continue waiting for client
                 _ = &mut client_task => (),
                 _ = &mut proxy_task => {
@@ -66,7 +55,7 @@ macro_rules! reverse_proxy_tests {
                     tokio::select! {
                         _ = client_task => (),
                         _ = &mut endpoint_task => unreachable!(),
-                        _ = tokio::time::sleep(CLIENT_DRAIN_TIMEOUT) => panic!("{}", CLIENT_STALLED_MSG),
+                        _ = tokio::time::sleep(Duration::from_secs(5)) => panic!("Client timed out after proxy completed"),
                     }
                 },
             }
@@ -103,14 +92,14 @@ async fn path_h2_chunked() {
 
     tokio::select! {
         _ = &mut endpoint_task => unreachable!(),
-        _ = tokio::time::sleep(TEST_TIMEOUT) => panic!("Timed out"),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
         _ = &mut client_task => (),
         _ = &mut proxy_task => {
             tokio::select! {
                 _ = client_task => (),
                 _ = &mut endpoint_task => unreachable!(),
-                _ = tokio::time::sleep(CLIENT_DRAIN_TIMEOUT) => {
-                    panic!("{}", CLIENT_STALLED_MSG)
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
                 }
             }
         },
@@ -137,14 +126,14 @@ async fn path_h3_chunked() {
 
     tokio::select! {
         _ = &mut endpoint_task => unreachable!(),
-        _ = tokio::time::sleep(TEST_TIMEOUT) => panic!("Timed out"),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
         _ = &mut client_task => (),
         _ = &mut proxy_task => {
             tokio::select! {
                 _ = client_task => (),
                 _ = &mut endpoint_task => unreachable!(),
-                _ = tokio::time::sleep(CLIENT_DRAIN_TIMEOUT) => {
-                    panic!("{}", CLIENT_STALLED_MSG)
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
                 }
             }
         },
@@ -174,14 +163,14 @@ async fn path_h1_private_network_disallowed() {
 
     tokio::select! {
         _ = &mut endpoint_task => unreachable!(),
-        _ = tokio::time::sleep(TEST_TIMEOUT) => panic!("Timed out"),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
         _ = &mut client_task => (),
         _ = &mut proxy_task => {
             tokio::select! {
                 _ = client_task => (),
                 _ = &mut endpoint_task => unreachable!(),
-                _ = tokio::time::sleep(CLIENT_DRAIN_TIMEOUT) => {
-                    panic!("{}", CLIENT_STALLED_MSG)
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
                 }
             }
         },
