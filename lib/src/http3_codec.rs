@@ -433,37 +433,12 @@ impl StreamSink {
             match self.socket.stream_capacity(self.stream_id) {
                 Ok(n) if n > self.data_frame_overhead => return Ok(()),
                 Ok(_) => {
-                    // TEMP DIAG (remove before merging).
-                    log_id!(
-                        debug,
-                        self.id,
-                        "DIAG: PARK stream={} cap={:?} need={}",
-                        self.stream_id,
-                        self.socket
-                            .stream_capacity(self.stream_id)
-                            .map(|x| x as i64),
-                        self.data_frame_overhead
-                    );
                     self.codec_tx
                         .send(StreamMessage::WaitingWritable(self.stream_id))
                         .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
-                    let parked_at = std::time::Instant::now();
                     match self.writable_event_rx.recv().await {
                         None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
-                        Some(_) => {
-                            // TEMP DIAG (remove before merging).
-                            log_id!(
-                                debug,
-                                self.id,
-                                "DIAG: UNPARK stream={} after_ms={} cap={:?}",
-                                self.stream_id,
-                                parked_at.elapsed().as_millis(),
-                                self.socket
-                                    .stream_capacity(self.stream_id)
-                                    .map(|x| x as i64)
-                            );
-                            continue;
-                        }
+                        Some(_) => continue,
                     }
                 }
                 Err(e) => return Err(io::Error::other(e.to_string())),

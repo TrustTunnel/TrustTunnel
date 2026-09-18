@@ -162,19 +162,6 @@ impl QuicMultiplexer {
         }
 
         loop {
-            // TEMP DIAG (remove before merging): an already expired deadline disables the
-            // timer branch below, so the loop can only handle it once a packet arrives.
-            if let Some(deadline) = self.closest_deadline {
-                // Only a real skew is interesting: a sub-ms race is harmless.
-                if deadline + Duration::from_millis(50) <= Instant::now() {
-                    log_id!(
-                        debug,
-                        self.id,
-                        "DIAG: LOOP expired deadline (skew_ms={})",
-                        (Instant::now() - deadline).as_millis()
-                    );
-                }
-            }
             let event = {
                 let wait_timeout =
                     tokio::time::sleep_until(self.closest_deadline.unwrap_or_else(Instant::now));
