@@ -362,9 +362,13 @@ impl ForwardedStreamSink {
             return Ok(data);
         }
 
-        let chunk_size = data.len();
         let unsent = state.sink.write(data.slice(..to_send))?;
-        state.sent_bytes += (chunk_size - unsent.len()) as u64;
+        // Only the bytes handed over to the sink count. Using the whole input length here
+        // overshoots `body_length` whenever the buffer carries bytes past the declared body
+        // (e.g. a response followed by another one on the same connection), and then the
+        // `sent_bytes == body_length` check below never fires, so the downstream stream is
+        // never finished with `eof()`.
+        state.sent_bytes += (to_send - unsent.len()) as u64;
 
         if Some(state.sent_bytes) == state.body_length {
             assert!(unsent.is_empty());

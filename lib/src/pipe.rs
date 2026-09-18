@@ -18,15 +18,6 @@ macro_rules! log_dir {
     };
 }
 
-// TEMP DIAG (H3 stall investigation, remove after one CI run). Raw stderr
-// writes, unlike println!/eprintln!, are not swallowed by libtest's capture.
-macro_rules! diag {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), "DIAG: {}", format_args!($($arg)*));
-    }};
-}
-
 pub(crate) enum Data {
     /// Data chunk
     Chunk(Bytes),
@@ -101,8 +92,6 @@ pub(crate) struct SimplexPipe<F> {
     pending_chunk: Option<Data>,
     direction: SimplexDirection,
     last_activity: Instant,
-    // TEMP DIAG: last time the pump phase was reported.
-    diag_last: Instant,
 }
 
 pub(crate) struct Error<T> {
@@ -147,7 +136,6 @@ impl<F: Fn(SimplexDirection, usize) + Send> SimplexPipe<F> {
             pending_chunk: Default::default(),
             direction,
             last_activity: Instant::now(),
-            diag_last: Instant::now(),
         }
     }
 
@@ -159,22 +147,6 @@ impl<F: Fn(SimplexDirection, usize) + Send> SimplexPipe<F> {
     ) -> Result<ExchangeOnceStatus<T>, Error<T>> {
         loop {
             self.last_activity = Instant::now();
-
-            // TEMP DIAG: which await the pump is about to enter (at most once per second
-            // per pipe). Tells where a stalled transfer is parked.
-            if self.diag_last.elapsed().as_millis() > 1000 {
-                self.diag_last = Instant::now();
-                diag!(
-                    "PUMP wait phase={} pending={} dir={}",
-                    if self.pending_chunk.is_none() {
-                        "source_read"
-                    } else {
-                        "sink_writable"
-                    },
-                    self.pending_chunk.is_some(),
-                    self.direction
-                );
-            }
 
             let future = async {
                 self.sink.flush().await?;

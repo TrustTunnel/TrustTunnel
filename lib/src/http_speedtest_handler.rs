@@ -12,15 +12,6 @@ const MAX_DOWNLOAD_MB: u32 = 100;
 const MAX_UPLOAD_MB: u32 = 120;
 const CHUNK_SIZE: usize = 64 * 1024;
 
-// TEMP DIAG (H3 stall investigation, remove after one CI run). Raw stderr
-// writes, unlike println!/eprintln!, are not swallowed by libtest's capture.
-macro_rules! diag {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), "DIAG: {}", format_args!($($arg)*));
-    }};
-}
-
 #[derive(Default)]
 struct SpeedtestManager {
     running_tests_num: AtomicUsize,
@@ -206,7 +197,6 @@ async fn run_download_test(stream: Box<dyn http_codec::Stream>, n: u32) {
         let chunk_length = std::cmp::min(CHUNK.len(), n);
         let chunk = CHUNK.slice(..chunk_length);
 
-        let iter_started = std::time::Instant::now();
         match sink.write(chunk) {
             Ok(unsent) => n = n.saturating_sub(chunk_length - unsent.len()),
             Err(e) => {
@@ -220,22 +210,8 @@ async fn run_download_test(stream: Box<dyn http_codec::Stream>, n: u32) {
                 return;
             }
         }
-        let write_elapsed = iter_started.elapsed();
 
-        let wait_started = std::time::Instant::now();
-        let wait_result = sink.wait_writable().await;
-        let wait_elapsed = wait_started.elapsed();
-        // TEMP DIAG: which phase of the loop is slow when the transfer stalls.
-        if iter_started.elapsed().as_millis() > 200 {
-            diag!(
-                "HANDLER slow remaining={} write={:?} wait={:?}",
-                n,
-                write_elapsed,
-                wait_elapsed
-            );
-        }
-
-        if let Err(e) = wait_result {
+        if let Err(e) = sink.wait_writable().await {
             log_id!(
                 debug,
                 log_id,

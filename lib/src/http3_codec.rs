@@ -11,18 +11,6 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-// TEMP DIAG (H3 stall investigation, remove after one CI run). Raw stderr
-// writes, unlike println!/eprintln!, are not swallowed by libtest's capture.
-macro_rules! diag {
-    ($($arg:tt)*) => {{
-        use std::io::Write as _;
-        let _ = writeln!(std::io::stderr(), "DIAG: {}", format_args!($($arg)*));
-    }};
-}
-
-// TEMP DIAG: parks of the body sink, logged when long or sampled.
-static DIAG_PARKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
 pub(crate) struct Http3Codec {
     socket: Arc<QuicSocket>,
     streams: HashMap<u64, Stream>,
@@ -444,28 +432,11 @@ impl StreamSink {
         loop {
             match self.socket.stream_capacity(self.stream_id) {
                 Ok(n) if n > self.data_frame_overhead => return Ok(()),
-                Ok(cap) => {
+                Ok(_) => {
                     self.codec_tx
                         .send(StreamMessage::WaitingWritable(self.stream_id))
                         .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))?;
-                    // TEMP DIAG: how long the sink stays parked and whether capacity grew
-                    // by the time it is woken up. A long park means nothing (no packet, no
-                    // writable event) could move the stream forward.
-                    let parked_at = std::time::Instant::now();
-                    let event = self.writable_event_rx.recv().await;
-                    let waited = parked_at.elapsed();
-                    let n = DIAG_PARKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if waited.as_millis() > 200 || n.is_multiple_of(1000) {
-                        diag!(
-                            "PARK stream={} cap_before={} waited={:?} cap_after={:?} count={}",
-                            self.stream_id,
-                            cap,
-                            waited,
-                            self.socket.stream_capacity(self.stream_id),
-                            n + 1
-                        );
-                    }
-                    match event {
+                    match self.writable_event_rx.recv().await {
                         None => return Err(io::Error::from(ErrorKind::UnexpectedEof)),
                         Some(_) => continue,
                     }
