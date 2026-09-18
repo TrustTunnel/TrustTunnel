@@ -60,8 +60,21 @@ impl ClientDiag {
         self.port.store(port, Relaxed);
         let me = std::sync::Arc::clone(self);
         eprintln!("DIAG: CLIENT watchdog thread started for port={}", port);
+        let mut prev = (0usize, 0usize, 0usize, 0usize);
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_secs(1));
+            let now = (
+                me.phase.load(Relaxed),
+                me.bytes.load(Relaxed),
+                me.iters.load(Relaxed),
+                me.waits.load(Relaxed),
+            );
+            // Only report a session that is mid-transfer and has not moved for a second.
+            if now.0 == 0 || now == prev {
+                prev = now;
+                continue;
+            }
+            prev = now;
             eprintln!(
                 "DIAG: CLIENT port={} phase={} bytes={} iters={} waits={} last_wait_ms={} rx_all={} tx_drops_all={} readable={} finished={} closed={} polls(data/done/fin)={}/{}/{}",
                 me.port.load(Relaxed),

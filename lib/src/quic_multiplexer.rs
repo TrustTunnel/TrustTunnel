@@ -165,7 +165,8 @@ impl QuicMultiplexer {
             // TEMP DIAG (remove before merging): an already expired deadline disables the
             // timer branch below, so the loop can only handle it once a packet arrives.
             if let Some(deadline) = self.closest_deadline {
-                if deadline <= Instant::now() {
+                // Only a real skew is interesting: a sub-ms race is harmless.
+                if deadline + Duration::from_millis(50) <= Instant::now() {
                     log_id!(
                         debug,
                         self.id,
