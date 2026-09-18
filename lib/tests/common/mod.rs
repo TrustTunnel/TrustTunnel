@@ -22,6 +22,15 @@ use std::{iter, slice};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::TlsConnector;
+
+// TEMP DIAG (H3 stall investigation, remove after one CI run). Raw stderr
+// writes, unlike println!/eprintln!, are not swallowed by libtest's capture.
+macro_rules! diag {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "DIAG: {}", format_args!($($arg)*));
+    }};
+}
 use trusttunnel::authentication::{registry_based::RegistryBasedAuthenticator, Authenticator};
 use trusttunnel::core::Core;
 use trusttunnel::log_utils;
@@ -384,11 +393,22 @@ impl Http3Session {
                 .map(|x| x.to_str().unwrap().parse::<usize>().unwrap())
         });
         let mut content = BytesMut::with_capacity(content_length.unwrap_or_default());
+        let mut diag_next = 262_144usize;
         while content_length.is_none_or(|x| content.len() < x) {
             let mut buffer = [0; 64 * 1024];
             match self.recv(&mut buffer).await {
                 0 => break,
-                n => content.extend_from_slice(&buffer[..n]),
+                n => {
+                    content.extend_from_slice(&buffer[..n]);
+                    if content.len() >= diag_next {
+                        diag!(
+                            "CLIENT-BYTES received={} of {:?}",
+                            content.len(),
+                            content_length
+                        );
+                        diag_next += 262_144;
+                    }
+                }
             }
         }
 
@@ -641,10 +661,18 @@ impl Http3Session {
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
 
-            if tokio::time::timeout(self.quic_conn.timeout().unwrap(), self.socket.readable())
+            let wait = self.quic_conn.timeout().unwrap();
+            let wait_started = std::time::Instant::now();
+            let timed_out = tokio::time::timeout(wait, self.socket.readable())
                 .await
-                .is_err()
-            {
+                .is_err();
+            diag!(
+                "CLIENT-WAIT timeout={:?} elapsed={:?} timed_out={}",
+                wait,
+                wait_started.elapsed(),
+                timed_out
+            );
+            if timed_out {
                 self.quic_conn.on_timeout();
             }
 

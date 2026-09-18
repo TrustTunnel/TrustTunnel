@@ -52,6 +52,14 @@ macro_rules! reverse_proxy_tests {
                 _ = &mut proxy_task => {
                     // Proxy completed (expected after handling request); keep endpoint
                     // alive while we wait for the client to finish draining the response.
+                    // TEMP DIAG (remove after one CI run).
+                    {
+                        use std::io::Write as _;
+                        let _ = writeln!(
+                            std::io::stderr(),
+                            "DIAG: HARNESS proxy completed, waiting up to 5s for the client"
+                        );
+                    }
                     tokio::select! {
                         _ = client_task => (),
                         _ = &mut endpoint_task => unreachable!(),

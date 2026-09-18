@@ -26,6 +26,19 @@ const SOCKET_ID_FMT: &str = "QSOCK={}";
 
 const QUIC_CONNECTION_CLOSE_CODE: u64 = 0x42;
 
+// TEMP DIAG (H3 stall investigation, remove after one CI run). Raw stderr
+// writes, unlike println!/eprintln!, are not swallowed by libtest's capture.
+macro_rules! diag {
+    ($($arg:tt)*) => {{
+        use std::io::Write as _;
+        let _ = writeln!(std::io::stderr(), "DIAG: {}", format_args!($($arg)*));
+    }};
+}
+
+// TEMP DIAG: cumulative bytes handed to the socket and blocked writes.
+static DIAG_WRITTEN: AtomicU64 = AtomicU64::new(0);
+static DIAG_BLOCKED: AtomicU64 = AtomicU64::new(0);
+
 type QuicConnection = quiche::Connection;
 
 pub(crate) struct QuicMultiplexer {
@@ -137,6 +150,7 @@ impl QuicMultiplexer {
             .unwrap()
             .message_queue_capacity;
         let (tx, rx) = mpsc::channel(queue_cap);
+        diag!("CAP message_queue_capacity={}", queue_cap);
 
         Ok(Self {
             core_settings,
@@ -173,6 +187,11 @@ impl QuicMultiplexer {
                 let wait_udp_read = self.socket.readable();
                 tokio::pin!(wait_udp_read);
 
+                let timeout_armed = self.closest_deadline.is_some_and(|x| x > Instant::now());
+                if self.closest_deadline.is_some() && !timeout_armed {
+                    diag!("GUARD expired deadline at select entry, timer branch disabled");
+                }
+
                 tokio::select! {
                     r = wait_udp_read => match r {
                         Ok(_) => Some(Event::UdpRead),
@@ -182,7 +201,7 @@ impl QuicMultiplexer {
                         Some(m) => Some(Event::UdpSend(m)),
                         None => return Err(io::Error::other("Message receiving channel closed unexpectedly")),
                     },
-                    _ = &mut wait_timeout, if self.closest_deadline.is_some_and(|x| x > Instant::now()) => None,
+                    _ = &mut wait_timeout, if timeout_armed => None,
                 }
             };
 
@@ -643,6 +662,9 @@ impl QuicMultiplexer {
         conn_id: quiche::ConnectionId<'static>,
         duration: Duration,
     ) {
+        if duration.is_zero() {
+            diag!("ZERO quiche asked for an immediate call");
+        }
         let deadline = Instant::now() + duration;
         self.deadlines.insert(conn_id, deadline);
         self.closest_deadline = self.deadlines.values().min().copied();
@@ -687,6 +709,10 @@ impl QuicMultiplexer {
             if let Some(timeout) = new_timeout {
                 self.update_connection_deadline(conn_id, timeout);
             }
+            diag!(
+                "TIMER expired deadline handled, new timeout={:?}",
+                new_timeout
+            );
         }
 
         self.closest_deadline = self.deadlines.values().min().copied();
@@ -842,6 +868,7 @@ impl QuicSocket {
     }
 
     pub fn write(&self, stream_id: u64, mut data: Bytes) -> io::Result<Bytes> {
+        let pending_before = data.len();
         match self.h3_conn.lock().unwrap().send_body(
             &mut self.quic_conn.lock().unwrap(),
             stream_id,
@@ -851,6 +878,24 @@ impl QuicSocket {
             Ok(n) => data.advance(n),
             Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
             Err(e) => return Err(io::Error::other(e.to_string())),
+        }
+
+        // TEMP DIAG: progress every 256 KiB, blocked writes sampled 1-in-100.
+        let written = (pending_before - data.len()) as u64;
+        if written == 0 {
+            let n = DIAG_BLOCKED.fetch_add(1, Ordering::Relaxed);
+            if n.is_multiple_of(100) {
+                diag!(
+                    "WRITE-BLOCKED pending={} occurrences={}",
+                    pending_before,
+                    n + 1
+                );
+            }
+        } else {
+            let total = DIAG_WRITTEN.fetch_add(written, Ordering::Relaxed) + written;
+            if total / 262_144 != (total - written) / 262_144 {
+                diag!("WRITE progress total={} (+{})", total, written);
+            }
         }
 
         self.flush_pending_data().map(|_| data)
@@ -980,11 +1025,14 @@ impl QuicSocket {
             (r, quic_conn.source_id().into_owned())
         };
         // Notify the multiplexer that the loss-detection timer may have changed
-        let _ = self
+        if let Err(e) = self
             .mux_tx
             .lock()
             .unwrap()
-            .try_send(SocketMessage::RefreshDeadline(conn_id));
+            .try_send(SocketMessage::RefreshDeadline(conn_id))
+        {
+            diag!("REFRESH-DROP deadline refresh dropped: {:?}", e);
+        }
         result
     }
 
