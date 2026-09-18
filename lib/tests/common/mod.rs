@@ -32,6 +32,57 @@ use trusttunnel::settings::{
 };
 use trusttunnel::shutdown::Shutdown;
 
+// TEMP DIAG (remove before merging): process-wide socket counters.
+pub static DIAG_RX: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+pub static DIAG_TX_DROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+// TEMP DIAG (remove before merging): per-session client state, printed once a second by a
+// real thread so it survives a frozen or busy-spinning runtime.
+#[derive(Default)]
+pub struct ClientDiag {
+    phase: std::sync::atomic::AtomicUsize,
+    bytes: std::sync::atomic::AtomicUsize,
+    iters: std::sync::atomic::AtomicUsize,
+    waits: std::sync::atomic::AtomicUsize,
+    wait_ms: std::sync::atomic::AtomicU64,
+    readable: std::sync::atomic::AtomicUsize,
+    finished: std::sync::atomic::AtomicUsize,
+    closed: std::sync::atomic::AtomicUsize,
+    poll_data: std::sync::atomic::AtomicUsize,
+    poll_done: std::sync::atomic::AtomicUsize,
+    poll_fin: std::sync::atomic::AtomicUsize,
+    port: std::sync::atomic::AtomicU16,
+}
+
+impl ClientDiag {
+    fn start(self: &std::sync::Arc<Self>, port: u16) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.port.store(port, Relaxed);
+        let me = std::sync::Arc::clone(self);
+        eprintln!("DIAG: CLIENT watchdog thread started for port={}", port);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_secs(1));
+            eprintln!(
+                "DIAG: CLIENT port={} phase={} bytes={} iters={} waits={} last_wait_ms={} rx_all={} tx_drops_all={} readable={} finished={} closed={} polls(data/done/fin)={}/{}/{}",
+                me.port.load(Relaxed),
+                me.phase.load(Relaxed),
+                me.bytes.load(Relaxed),
+                me.iters.load(Relaxed),
+                me.waits.load(Relaxed),
+                me.wait_ms.load(Relaxed),
+                DIAG_RX.load(Relaxed),
+                DIAG_TX_DROPS.load(Relaxed),
+                me.readable.load(Relaxed),
+                me.finished.load(Relaxed),
+                me.closed.load(Relaxed),
+                me.poll_data.load(Relaxed),
+                me.poll_done.load(Relaxed),
+                me.poll_fin.load(Relaxed),
+            );
+        });
+    }
+}
+
 pub const MAIN_DOMAIN_NAME: &str = "localhost";
 pub const ENDPOINT_IP: Ipv4Addr = Ipv4Addr::LOCALHOST;
 pub static NEXT_ENDPOINT_PORT: AtomicU16 = AtomicU16::new(9128);
@@ -296,6 +347,7 @@ pub async fn run_endpoint_with_settings(settings: Settings, hosts_settings: TlsH
 const MAX_QUIC_UDP_PAYLOAD_SIZE: usize = 1350;
 
 pub struct Http3Session {
+    diag: std::sync::Arc<ClientDiag>,
     socket: UdpSocket,
     quic_conn: quiche::Connection,
     h3_conn: h3::Connection,
@@ -364,7 +416,11 @@ impl Http3Session {
             h3::Connection::with_transport(&mut quic_conn, &h3::Config::new().unwrap()).unwrap();
         Self::flush_quic_data(&socket, &mut quic_conn);
 
+        let diag = std::sync::Arc::new(ClientDiag::default());
+        diag.start(socket.local_addr().unwrap().port());
+
         Self {
+            diag,
             socket,
             quic_conn,
             h3_conn,
@@ -388,6 +444,9 @@ impl Http3Session {
                 .map(|x| x.to_str().unwrap().parse::<usize>().unwrap())
         });
         let mut content = BytesMut::with_capacity(content_length.unwrap_or_default());
+        self.diag
+            .phase
+            .store(5, std::sync::atomic::Ordering::Relaxed);
         while content_length.is_none_or(|x| content.len() < x) {
             let mut buffer = [0; 64 * 1024];
             match self.recv(&mut buffer).await {
@@ -396,6 +455,9 @@ impl Http3Session {
             }
         }
 
+        self.diag
+            .phase
+            .store(0, std::sync::atomic::Ordering::Relaxed);
         (response, content.freeze())
     }
 
@@ -494,6 +556,9 @@ impl Http3Session {
                     }
 
                     if !self.is_tunnel {
+                        self.diag
+                            .phase
+                            .store(4, std::sync::atomic::Ordering::Relaxed);
                         loop {
                             let stream_id = self.stream_id();
                             match self
@@ -545,6 +610,7 @@ impl Http3Session {
         loop {
             match socket.try_recv_from(&mut buffer) {
                 Ok((n, peer)) => {
+                    DIAG_RX.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let recv_info = quiche::RecvInfo {
                         from: peer,
                         to: socket.local_addr().unwrap(),
@@ -633,12 +699,28 @@ impl Http3Session {
     }
 
     pub async fn recv(&mut self, buf: &mut [u8]) -> usize {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.diag.phase.store(1, Relaxed);
         let ret = loop {
+            self.diag.iters.fetch_add(1, Relaxed);
             Self::read_out_socket(&self.socket, &mut self.quic_conn);
+            self.diag
+                .readable
+                .store(self.quic_conn.readable().len(), Relaxed);
+            self.diag.finished.store(
+                self.quic_conn.stream_finished(self.stream_id()) as usize,
+                Relaxed,
+            );
+            self.diag
+                .closed
+                .store(self.quic_conn.is_closed() as usize, Relaxed);
 
             let stream_id = self.stream_id();
             match self.h3_conn.recv_body(&mut self.quic_conn, stream_id, buf) {
-                Ok(n) => break n,
+                Ok(n) => {
+                    self.diag.bytes.fetch_add(n, Relaxed);
+                    break n;
+                }
                 Err(h3::Error::Done) => (),
                 Err(e) => panic!("{}", e),
             }
@@ -652,12 +734,20 @@ impl Http3Session {
                 Ok((stream_id, event)) => {
                     assert_eq!(stream_id, self.stream_id.unwrap());
                     match event {
-                        h3::Event::Data => continue,
-                        h3::Event::Finished | h3::Event::Reset(_) => break 0,
+                        h3::Event::Data => {
+                            self.diag.poll_data.fetch_add(1, Relaxed);
+                            continue;
+                        }
+                        h3::Event::Finished | h3::Event::Reset(_) => {
+                            self.diag.poll_fin.fetch_add(1, Relaxed);
+                            break 0;
+                        }
                         x => unreachable!("{:?}", x),
                     }
                 }
-                Err(h3::Error::Done) => (),
+                Err(h3::Error::Done) => {
+                    self.diag.poll_done.fetch_add(1, Relaxed);
+                }
                 Err(e) => panic!("{}", e),
             }
 
@@ -666,12 +756,16 @@ impl Http3Session {
             let Some(wait) = self.quic_conn.timeout() else {
                 break 0;
             };
+            self.diag.phase.store(2, Relaxed);
+            self.diag.waits.fetch_add(1, Relaxed);
+            self.diag.wait_ms.store(wait.as_millis() as u64, Relaxed);
             if tokio::time::timeout(wait, self.socket.readable())
                 .await
                 .is_err()
             {
                 self.quic_conn.on_timeout();
             }
+            self.diag.phase.store(1, Relaxed);
 
             Self::read_out_socket(&self.socket, &mut self.quic_conn);
         };
@@ -687,7 +781,10 @@ impl Http3Session {
             match quic_conn.send(&mut buffer) {
                 Ok((n, send_info)) => match socket.try_send_to(&buffer[..n], send_info.to) {
                     Ok(_) => (),
-                    Err(e) if e.kind() == ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                        DIAG_TX_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        break;
+                    }
                     Err(e) => panic!("{}", e),
                 },
                 Err(quiche::Error::Done) => break,
@@ -697,6 +794,9 @@ impl Http3Session {
     }
 
     async fn poll(&mut self) -> h3::Event {
+        self.diag
+            .phase
+            .store(3, std::sync::atomic::Ordering::Relaxed);
         Self::read_out_socket(&self.socket, &mut self.quic_conn);
 
         let ret = loop {
