@@ -312,9 +312,8 @@ impl Http3Session {
 
         let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
         config.verify_peer(false);
-        // A stalled transfer must not be turned into a closed connection: an expired idle
-        // timeout makes quiche drop the connection (`mark_closed()` in `on_timeout()`), after
-        // which every following wait panics. Keep it far above any test budget.
+        // An expired idle timeout makes quiche drop the connection and every later wait
+        // panics, so keep it far above any test budget.
         config.set_max_idle_timeout(60_000);
         config.set_max_recv_udp_payload_size(MAX_QUIC_UDP_PAYLOAD_SIZE);
         config.set_max_send_udp_payload_size(MAX_QUIC_UDP_PAYLOAD_SIZE);
@@ -645,9 +644,8 @@ impl Http3Session {
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
 
-            // Advance the H3 state machine before sleeping on the socket. Otherwise pending
-            // DATA frames and the stream FIN stay unprocessed while we wait, the receive
-            // window never opens and the peer legitimately parks on flow control.
+            // Advance the H3 state machine before sleeping: `recv_body` only returns parsed
+            // data, so pending DATA frames or FIN would stay unseen while we wait.
             match self.h3_conn.poll(&mut self.quic_conn) {
                 Ok((stream_id, event)) => {
                     assert_eq!(stream_id, self.stream_id.unwrap());
@@ -661,8 +659,7 @@ impl Http3Session {
                 Err(e) => panic!("{}", e),
             }
 
-            // A closed connection has no timers left (quiche reports `None`), so treat it as
-            // EOF instead of panicking on `unwrap()`.
+            // A closed connection reports no timer: treat it as EOF, not as a panic.
             let Some(wait) = self.quic_conn.timeout() else {
                 break 0;
             };
@@ -710,8 +707,7 @@ impl Http3Session {
             }
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
-            // Same as in `recv`: a closed connection reports no timer, so there is nothing
-            // left to wait for.
+            // Same as in `recv`: no timer left means nothing to wait for.
             let Some(wait) = self.quic_conn.timeout() else {
                 break h3::Event::Finished;
             };

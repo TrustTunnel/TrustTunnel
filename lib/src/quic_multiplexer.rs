@@ -182,12 +182,9 @@ impl QuicMultiplexer {
                         Some(m) => Some(Event::UdpSend(m)),
                         None => return Err(io::Error::other("Message receiving channel closed unexpectedly")),
                     },
-                    // A deadline that already passed must still be handled here. Tokio
-                    // timers fire slightly after the deadline, so requiring `x > now`
-                    // disables this branch exactly when the timer fires, and timeouts then
-                    // only run when a packet happens to arrive. Timer-driven work (loss
-                    // detection, idle timeout, probes) would be stuck until the peer sends
-                    // something, which deadlocks a transfer whose peer is waiting for us.
+                    // Arm this even for an expired deadline: tokio timers fire slightly
+                    // after the deadline, so a `> now` guard disables the branch exactly
+                    // when the timer fires and timeouts would only run on incoming packets.
                     _ = &mut wait_timeout, if self.closest_deadline.is_some() => None,
                 }
             };
