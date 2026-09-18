@@ -645,19 +645,27 @@ impl Http3Session {
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
 
+            // Advance the H3 state machine before sleeping on the socket. Otherwise pending
+            // DATA frames and the stream FIN stay unprocessed while we wait, the receive
+            // window never opens and the peer legitimately parks on flow control.
+            match self.h3_conn.poll(&mut self.quic_conn) {
+                Ok((stream_id, event)) => {
+                    assert_eq!(stream_id, self.stream_id.unwrap());
+                    match event {
+                        h3::Event::Data => continue,
+                        h3::Event::Finished | h3::Event::Reset(_) => break 0,
+                        x => unreachable!("{:?}", x),
+                    }
+                }
+                Err(h3::Error::Done) => (),
+                Err(e) => panic!("{}", e),
+            }
+
             // A closed connection has no timers left (quiche reports `None`), so treat it as
             // EOF instead of panicking on `unwrap()`.
             let Some(wait) = self.quic_conn.timeout() else {
                 break 0;
             };
-            // A long silent wait means the peer has no reason to send anything either, and
-            // the endpoint only makes progress once it receives a packet. Poke it with an
-            // ack-eliciting PING so a stalled transfer recovers instead of hanging until
-            // the idle timeout. Real QUIC clients keep the connection alive the same way.
-            if wait > Duration::from_millis(200) {
-                let _ = self.quic_conn.send_ack_eliciting();
-                Self::flush_quic_data(&self.socket, &mut self.quic_conn);
-            }
             if tokio::time::timeout(wait, self.socket.readable())
                 .await
                 .is_err()
@@ -666,12 +674,6 @@ impl Http3Session {
             }
 
             Self::read_out_socket(&self.socket, &mut self.quic_conn);
-
-            match self.poll().await {
-                h3::Event::Data => (),
-                h3::Event::Finished | h3::Event::Reset(_) => break 0,
-                x => unreachable!("{:?}", x),
-            }
         };
 
         Self::flush_quic_data(&self.socket, &mut self.quic_conn);
