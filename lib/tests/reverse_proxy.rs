@@ -177,43 +177,6 @@ async fn path_h1_private_network_disallowed() {
     }
 }
 
-/// TEMP STRESS (remove before merging): the H3 stall is rare, so hammer the same
-/// SNI-over-H3 reverse proxy exchange many times in one test.
-#[tokio::test]
-async fn sni_h3_stress() {
-    common::set_up_logger();
-    for round in 0..48 {
-        let endpoint_address = common::make_endpoint_address();
-        let (proxy_address, proxy_task) = run_proxy();
-
-        let client_task = async {
-            let (response, body) = sni_h3_client(&endpoint_address).await;
-            assert_eq!(response.status, http::StatusCode::OK);
-            assert_body_matches(&body);
-        };
-        let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
-
-        tokio::pin!(client_task);
-        tokio::pin!(proxy_task);
-        tokio::pin!(endpoint_task);
-
-        tokio::select! {
-            _ = &mut endpoint_task => unreachable!(),
-            _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out in round {}", round),
-            _ = &mut client_task => (),
-            _ = &mut proxy_task => {
-                tokio::select! {
-                    _ = client_task => (),
-                    _ = &mut endpoint_task => unreachable!(),
-                    _ = tokio::time::sleep(Duration::from_secs(5)) => {
-                        panic!("Client timed out after proxy completed (round {})", round)
-                    }
-                }
-            },
-        }
-    }
-}
-
 fn assert_body_matches(body: &Bytes) {
     assert_eq!(body.len(), RESPONSE_BODY.len(), "response length mismatch");
     let expected_hash = digest(&SHA256, RESPONSE_BODY.as_ref());
