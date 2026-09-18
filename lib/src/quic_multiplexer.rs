@@ -880,11 +880,11 @@ impl QuicSocket {
             Err(e) => return Err(io::Error::other(e.to_string())),
         }
 
-        // TEMP DIAG: progress every 256 KiB, blocked writes sampled 1-in-100.
+        // TEMP DIAG: progress every 8 MiB, blocked writes sampled 1-in-1000.
         let written = (pending_before - data.len()) as u64;
         if written == 0 {
             let n = DIAG_BLOCKED.fetch_add(1, Ordering::Relaxed);
-            if n.is_multiple_of(100) {
+            if n.is_multiple_of(1000) {
                 diag!(
                     "WRITE-BLOCKED pending={} occurrences={}",
                     pending_before,
@@ -893,7 +893,7 @@ impl QuicSocket {
             }
         } else {
             let total = DIAG_WRITTEN.fetch_add(written, Ordering::Relaxed) + written;
-            if total / 262_144 != (total - written) / 262_144 {
+            if total / 8_388_608 != (total - written) / 8_388_608 {
                 diag!("WRITE progress total={} (+{})", total, written);
             }
         }

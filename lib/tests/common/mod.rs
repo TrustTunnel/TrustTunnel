@@ -393,7 +393,7 @@ impl Http3Session {
                 .map(|x| x.to_str().unwrap().parse::<usize>().unwrap())
         });
         let mut content = BytesMut::with_capacity(content_length.unwrap_or_default());
-        let mut diag_next = 262_144usize;
+        let mut diag_next = 8_388_608usize;
         while content_length.is_none_or(|x| content.len() < x) {
             let mut buffer = [0; 64 * 1024];
             match self.recv(&mut buffer).await {
@@ -406,7 +406,7 @@ impl Http3Session {
                             content.len(),
                             content_length
                         );
-                        diag_next += 262_144;
+                        diag_next += 8_388_608;
                     }
                 }
             }
@@ -556,8 +556,9 @@ impl Http3Session {
         }
     }
 
-    fn read_out_socket(socket: &UdpSocket, quic_conn: &mut quiche::Connection) {
+    fn read_out_socket(socket: &UdpSocket, quic_conn: &mut quiche::Connection) -> usize {
         let mut buffer = [0; MAX_QUIC_UDP_PAYLOAD_SIZE];
+        let mut total = 0;
         loop {
             match socket.try_recv_from(&mut buffer) {
                 Ok((n, peer)) => {
@@ -567,11 +568,13 @@ impl Http3Session {
                     };
                     let x = quic_conn.recv(&mut buffer[..n], recv_info).unwrap();
                     assert_eq!(n, x);
+                    total += n;
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => break,
                 Err(e) => panic!("{}", e),
             }
         }
+        total
     }
 
     pub async fn send(
@@ -666,17 +669,24 @@ impl Http3Session {
             let timed_out = tokio::time::timeout(wait, self.socket.readable())
                 .await
                 .is_err();
-            diag!(
-                "CLIENT-WAIT timeout={:?} elapsed={:?} timed_out={}",
-                wait,
-                wait_started.elapsed(),
-                timed_out
-            );
+            let waited = wait_started.elapsed();
             if timed_out {
                 self.quic_conn.on_timeout();
             }
 
-            Self::read_out_socket(&self.socket, &mut self.quic_conn);
+            let drained = Self::read_out_socket(&self.socket, &mut self.quic_conn);
+            // TEMP DIAG: only long waits, plus how many bytes were already buffered in the
+            // socket. `drained > 0` after a long wait means the data was there all along and
+            // the client was not woken up in time.
+            if waited.as_millis() > 200 || timed_out {
+                diag!(
+                    "CLIENT-WAIT timeout={:?} elapsed={:?} timed_out={} drained={}",
+                    wait,
+                    waited,
+                    timed_out,
+                    drained
+                );
+            }
 
             match self.poll().await {
                 h3::Event::Data => (),
