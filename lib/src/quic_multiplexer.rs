@@ -42,8 +42,6 @@ static DIAG_BLOCKED: AtomicU64 = AtomicU64::new(0);
 // per-connection loop.
 static DIAG_PACKETS: AtomicU64 = AtomicU64::new(0);
 static DIAG_H3_POLLS: AtomicU64 = AtomicU64::new(0);
-// TEMP DIAG: last time the IDLE probe was printed, in wall-clock millis.
-static DIAG_LAST_IDLE: AtomicU64 = AtomicU64::new(0);
 
 type QuicConnection = quiche::Connection;
 
@@ -204,18 +202,9 @@ impl QuicMultiplexer {
                 let idle_ms = self
                     .closest_deadline
                     .map(|d| d.saturating_duration_since(Instant::now()).as_millis());
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
-                let last_idle = DIAG_LAST_IDLE.load(Ordering::Relaxed);
-                if idle_ms.is_none_or(|ms| ms > 300)
-                    && !self.connections.is_empty()
-                    && now_ms.saturating_sub(last_idle) > 1000
-                    && DIAG_LAST_IDLE
-                        .compare_exchange(last_idle, now_ms, Ordering::Relaxed, Ordering::Relaxed)
-                        .is_ok()
-                {
+                // TEMP DIAG: only log when the loop is about to sleep for a long time
+                // (no timers pending), which is the state a stalled transfer goes quiet in.
+                if idle_ms.is_none_or(|ms| ms > 5000) {
                     let conns: Vec<_> = self
                         .connections
                         .values()
@@ -237,9 +226,10 @@ impl QuicMultiplexer {
                         })
                         .collect();
                     diag!(
-                        "IDLE deadline_ms={:?} deadlines={} packets={} h3polls={} conns={:?}",
+                        "IDLE deadline_ms={:?} deadlines={} connections={} packets={} h3polls={} conns={:?}",
                         idle_ms,
                         self.deadlines.len(),
+                        self.connections.len(),
                         DIAG_PACKETS.load(Ordering::Relaxed),
                         DIAG_H3_POLLS.load(Ordering::Relaxed),
                         conns
@@ -826,6 +816,7 @@ impl QuicMultiplexer {
         for conn_id in closed {
             self.deadlines.remove(&conn_id);
             if let Some(Connection::Established(c)) = self.connections.remove(&conn_id) {
+                diag!("REMOVE closed connection, socket_tx notified");
                 let _ = c.socket_tx.try_send(MultiplexerMessage::Close);
             }
         }
@@ -1008,6 +999,7 @@ impl QuicSocket {
     }
 
     pub fn graceful_shutdown(&self) -> io::Result<()> {
+        diag!("GS graceful_shutdown entered");
         {
             let mut quic_conn = self.quic_conn.lock().unwrap();
             let mut h3_conn = self.h3_conn.lock().unwrap();
@@ -1017,6 +1009,7 @@ impl QuicSocket {
         }
         let _ = self.flush_pending_data();
 
+        diag!("GS closing connection with 'bye'");
         self.quic_conn
             .lock()
             .unwrap()
