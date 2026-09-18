@@ -38,6 +38,12 @@ macro_rules! diag {
 // TEMP DIAG: cumulative bytes handed to the socket and blocked writes.
 static DIAG_WRITTEN: AtomicU64 = AtomicU64::new(0);
 static DIAG_BLOCKED: AtomicU64 = AtomicU64::new(0);
+// TEMP DIAG: cumulative UDP packets read by the multiplexer and H3 polls of the
+// per-connection loop.
+static DIAG_PACKETS: AtomicU64 = AtomicU64::new(0);
+static DIAG_H3_POLLS: AtomicU64 = AtomicU64::new(0);
+// TEMP DIAG: last time the IDLE probe was printed, in wall-clock millis.
+static DIAG_LAST_IDLE: AtomicU64 = AtomicU64::new(0);
 
 type QuicConnection = quiche::Connection;
 
@@ -192,6 +198,54 @@ impl QuicMultiplexer {
                     diag!("GUARD expired deadline at select entry, timer branch disabled");
                 }
 
+                // TEMP DIAG: log the timer bookkeeping and the connection stats whenever the
+                // loop is about to sleep for a long time. This is the state a stalled
+                // transfer goes quiet in.
+                let idle_ms = self
+                    .closest_deadline
+                    .map(|d| d.saturating_duration_since(Instant::now()).as_millis());
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                let last_idle = DIAG_LAST_IDLE.load(Ordering::Relaxed);
+                if idle_ms.is_none_or(|ms| ms > 300)
+                    && !self.connections.is_empty()
+                    && now_ms.saturating_sub(last_idle) > 1000
+                    && DIAG_LAST_IDLE
+                        .compare_exchange(last_idle, now_ms, Ordering::Relaxed, Ordering::Relaxed)
+                        .is_ok()
+                {
+                    let conns: Vec<_> = self
+                        .connections
+                        .values()
+                        .map(|c| {
+                            let arc = match c {
+                                Connection::Handshake(x) => x.quic_conn.clone(),
+                                Connection::Established(x) => x.quic_conn.clone(),
+                            };
+                            let conn = arc.lock().unwrap();
+                            let stats = conn.stats();
+                            (
+                                conn.timeout(),
+                                conn.is_closed(),
+                                stats.lost,
+                                stats.retrans,
+                                stats.sent_bytes,
+                                stats.recv_bytes,
+                            )
+                        })
+                        .collect();
+                    diag!(
+                        "IDLE deadline_ms={:?} deadlines={} packets={} h3polls={} conns={:?}",
+                        idle_ms,
+                        self.deadlines.len(),
+                        DIAG_PACKETS.load(Ordering::Relaxed),
+                        DIAG_H3_POLLS.load(Ordering::Relaxed),
+                        conns
+                    );
+                }
+
                 tokio::select! {
                     r = wait_udp_read => match r {
                         Ok(_) => Some(Event::UdpRead),
@@ -216,7 +270,6 @@ impl QuicMultiplexer {
                     }
                 }
             }
-
             self.process_pending_socket_messages()?;
             self.remove_closed_connections();
         }
@@ -237,6 +290,7 @@ impl QuicMultiplexer {
         for _ in 0..READ_BUDGET {
             match self.socket.try_recv_from(&mut buffer) {
                 Ok((n, peer)) => {
+                    DIAG_PACKETS.fetch_add(1, Ordering::Relaxed);
                     let header =
                         match quiche::Header::from_slice(&mut buffer[..n], quiche::MAX_CONN_ID_LEN)
                         {
@@ -869,6 +923,8 @@ impl QuicSocket {
 
     pub fn write(&self, stream_id: u64, mut data: Bytes) -> io::Result<Bytes> {
         let pending_before = data.len();
+        // TEMP DIAG: time spent inside `send_body` (locks `h3_conn` and `quic_conn`).
+        let send_started = Instant::now();
         match self.h3_conn.lock().unwrap().send_body(
             &mut self.quic_conn.lock().unwrap(),
             stream_id,
@@ -879,9 +935,19 @@ impl QuicSocket {
             Err(h3::Error::Done | h3::Error::StreamBlocked) => (),
             Err(e) => return Err(io::Error::other(e.to_string())),
         }
+        let send_elapsed = send_started.elapsed();
 
         // TEMP DIAG: progress every 8 MiB, blocked writes sampled 1-in-1000.
         let written = (pending_before - data.len()) as u64;
+        if send_elapsed.as_millis() > 200 {
+            diag!(
+                "WRITE-SLOW pending={} written={} elapsed={:?} capacity={:?}",
+                pending_before,
+                written,
+                send_elapsed,
+                self.stream_capacity(stream_id)
+            );
+        }
         if written == 0 {
             let n = DIAG_BLOCKED.fetch_add(1, Ordering::Relaxed);
             if n.is_multiple_of(1000) {
@@ -962,6 +1028,7 @@ impl QuicSocket {
     pub async fn listen(&self) -> io::Result<QuicSocketEvent> {
         loop {
             let event = loop {
+                DIAG_H3_POLLS.fetch_add(1, Ordering::Relaxed);
                 match self.process_pending_h3_events()? {
                     None => {
                         let writable_streams: Vec<_> = {
