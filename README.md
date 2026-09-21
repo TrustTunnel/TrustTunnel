@@ -7,7 +7,8 @@
 </p>
 
 <p align="center"><a href="#clients">Clients</a>
-  · <a href="https://agrd.io/ios_trusttunnel">App store</a>
+  · <a href="https://agrd.io/ios_trusttunnel">App Store (iOS)</a>
+  · <a href="https://agrd.io/macos_trusttunnel">App Store (macOS)</a>
   · <a href="https://agrd.io/android_trusttunnel">Play store</a>
 </p>
 

@@ -3,8 +3,7 @@ use crate::{authentication, log_utils};
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
 use serde::Deserialize;
-use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 /// A client descriptor
 #[derive(Deserialize)]
@@ -26,7 +25,8 @@ pub struct Client {
 /// The [`Authenticator`] implementation which checks presence of a client in the list.
 /// Is only able to authenticate a client using the Proxy basic authorization.
 pub struct RegistryBasedAuthenticator {
-    clients: HashSet<Cow<'static, str>>,
+    /// Maps the base64-encoded `username:password` credentials to the username.
+    clients: HashMap<String, String>,
 }
 
 impl RegistryBasedAuthenticator {
@@ -34,8 +34,12 @@ impl RegistryBasedAuthenticator {
         Self {
             clients: clients
                 .iter()
-                .map(|x| BASE64_ENGINE.encode(format!("{}:{}", x.username, x.password)))
-                .map(Cow::Owned)
+                .map(|x| {
+                    (
+                        BASE64_ENGINE.encode(format!("{}:{}", x.username, x.password)),
+                        x.username.clone(),
+                    )
+                })
                 .collect(),
         }
     }
@@ -51,10 +55,69 @@ impl Authenticator for RegistryBasedAuthenticator {
             authentication::Source::ProxyBasic(str) => str,
             authentication::Source::Sni(str) => str,
         };
-        if self.clients.contains(creds.as_ref()) {
+        if self.clients.contains_key(creds.as_ref()) {
             authentication::Status::Pass
         } else {
             authentication::Status::Reject
         }
+    }
+
+    fn username(&self, source: &authentication::Source<'_>) -> Option<String> {
+        let creds = match &source {
+            authentication::Source::ProxyBasic(str) => str,
+            authentication::Source::Sni(str) => str,
+        };
+        self.clients.get(creds.as_ref()).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::authentication::Status;
+    use crate::log_utils::{IdChain, IdItem};
+
+    fn make_client(username: &str, password: &str) -> Client {
+        Client {
+            username: username.into(),
+            password: password.into(),
+            max_http2_conns: None,
+            max_http3_conns: None,
+        }
+    }
+
+    fn creds(username: &str, password: &str) -> String {
+        BASE64_ENGINE.encode(format!("{}:{}", username, password))
+    }
+
+    fn log_id() -> IdChain<u64> {
+        IdChain::from(IdItem::new("TEST={}", 0u64))
+    }
+
+    #[test]
+    fn resolves_username_from_credentials() {
+        let auth = RegistryBasedAuthenticator::new(&[make_client("alice", "secret")]);
+
+        let proxy = authentication::Source::ProxyBasic(creds("alice", "secret").into());
+        assert_eq!(auth.username(&proxy).as_deref(), Some("alice"));
+
+        let sni = authentication::Source::Sni(creds("alice", "secret").into());
+        assert_eq!(auth.username(&sni).as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn unknown_credentials_have_no_username() {
+        let auth = RegistryBasedAuthenticator::new(&[make_client("alice", "secret")]);
+        let unknown = authentication::Source::ProxyBasic(creds("bob", "secret").into());
+        assert_eq!(auth.username(&unknown), None);
+    }
+
+    #[test]
+    fn authenticate_still_works_with_map_backing() {
+        let auth = RegistryBasedAuthenticator::new(&[make_client("alice", "secret")]);
+        let ok = authentication::Source::ProxyBasic(creds("alice", "secret").into());
+        let bad = authentication::Source::ProxyBasic(creds("alice", "wrong").into());
+        assert!(auth.authenticate(&ok, &log_id()) == Status::Pass);
+        assert!(auth.authenticate(&bad, &log_id()) == Status::Reject);
     }
 }

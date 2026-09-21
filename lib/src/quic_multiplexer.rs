@@ -920,7 +920,7 @@ impl QuicSocket {
                 match self.process_pending_h3_events()? {
                     None => {
                         let writable_streams: Vec<_> = {
-                            let quic_conn = self.quic_conn.lock().unwrap();
+                            let mut quic_conn = self.quic_conn.lock().unwrap();
                             let mut waiting_streams = self.waiting_writable_streams.lock().unwrap();
                             // Avoid emitting Writable events for streams with negligible capacity.
                             let writable_streams: Vec<_> = waiting_streams

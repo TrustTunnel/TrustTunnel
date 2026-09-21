@@ -2,7 +2,21 @@
 
 set -e -x
 
-VERSION=$(grep '^version = ' endpoint/Cargo.toml | head -1 | sed -e 's/version = "\(.*\)"/\1/')
+# The released version: prefer the TRUSTTUNNEL_VERSION override (set by CI from
+# CHANGELOG.md), then fall back to the nearest git tag (a plain local build).
+# endpoint/Cargo.toml is intentionally a 0.0.0 placeholder and is NOT the source
+# of truth.
+if [ -n "${TRUSTTUNNEL_VERSION:-}" ]; then
+  VERSION="${TRUSTTUNNEL_VERSION}"
+else
+  VERSION=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
+fi
+
+if [ -z "$VERSION" ]; then
+  echo "::error::Could not determine the release version (set TRUSTTUNNEL_VERSION or run from a tagged commit)" >&2
+  exit 1
+fi
+
 GPG_KEY=devteam@adguard.com
 
 echo "$GPG_SECRET_KEY" | gpg --import --batch --yes

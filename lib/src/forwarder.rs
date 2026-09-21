@@ -85,9 +85,19 @@ pub(crate) trait DatagramMultiplexerAuthenticator: Send {
 #[async_trait]
 pub(crate) trait UdpDatagramPipeShared: Send + Sync {
     /// Notify the pipe of a new UDP "connection"
+    ///
+    /// `meta` is forward-oriented (`source` = the client, `destination` = the
+    /// target). Implementations store the connection under this orientation, so
+    /// it must match what `on_connection_closed` derives the forward key from
     async fn on_new_udp_connection(&self, meta: &downstream::UdpDatagramMeta) -> io::Result<()>;
 
     /// Notify the pipe of a UDP "connection" close
+    ///
+    /// `meta` MUST be reverse-oriented (i.e. `source` = the target a datagram
+    /// was received from, `destination` = the client it is forwarded to).
+    /// Implementations look up their internally stored connections by the
+    /// forward-oriented key, so passing a forward-oriented `meta` would miss
+    /// the entry and leak the underlying socket
     fn on_connection_closed(&self, meta: &UdpDatagramMeta);
 }
 

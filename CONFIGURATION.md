@@ -116,7 +116,9 @@ listen_address = "0.0.0.0:443"
 # Whether IPv6 connections can be routed
 ipv6_available = true
 
-# Whether connections to private network of the endpoint are allowed
+# Whether connections to private network of the endpoint are allowed.
+# Applies to traffic tunneled by clients only, the reverse proxy
+# `server_address` is always reachable.
 allow_private_network_connections = false
 
 # Timeout of an incoming TLS handshake (seconds)
@@ -188,6 +190,7 @@ direct = {}
 # [metrics]
 # address = "127.0.0.1:1987"
 # request_timeout_secs = 3
+# per_client_metrics = false
 ```
 
 ### TLS Hosts Settings File (hosts.toml)
@@ -372,6 +375,8 @@ h3_backward_compatibility = false
 
 The reverse proxy translates HTTP/x traffic to HTTP/1.1 towards the origin server. Translated requests include the `X-Original-Protocol` header (`HTTP1` or `HTTP3`).
 
+`server_address` is configured by the endpoint operator and is therefore not affected by `allow_private_network_connections`: an origin server on a loopback or private address stays reachable even when tunneled client traffic to private networks is forbidden.
+
 ### ICMP Settings
 
 Optional. Enables ICMP forwarding. Requires superuser privileges on some systems.
@@ -397,12 +402,14 @@ Optional. Enables Prometheus-compatible metrics endpoint.
 [metrics]
 address = "127.0.0.1:1987"
 request_timeout_secs = 3
+per_client_metrics = false
 ```
 
 | Setting | Type | Default | Description |
 | ------- | ---- | ------- | ----------- |
 | `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+| `per_client_metrics` | Boolean | `false` | Expose per-user metric series and the `/clients` endpoint labelled with the authenticated username. Exposes usernames and client IPs on the metrics listener. |
 
 ### Subscription Settings
 

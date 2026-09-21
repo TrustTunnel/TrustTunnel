@@ -14,7 +14,7 @@ use trusttunnel::settings::Settings;
 use trusttunnel::shutdown::Shutdown;
 use trusttunnel::{log_utils, settings};
 
-const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
+const VERSION_STRING: &str = env!("TRUSTTUNNEL_VERSION");
 const VERSION_PARAM_NAME: &str = "v_e_r_s_i_o_n_do_not_change_this_name_it_will_break";
 const LOG_LEVEL_PARAM_NAME: &str = "log_level";
 const LOG_FILE_PARAM_NAME: &str = "log_file";
