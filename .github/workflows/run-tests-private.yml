@@ -19,6 +19,7 @@ jobs:
       - ${{ vars.BUILD_IMAGE_VERSION_CORELIBS_BUILDER }}
       - ephemeral-limit-memory-8192
       - ephemeral-limit-cpu-6
+      - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
     container:
       image: adguard/core-libs:2.10
     steps:
@@ -40,6 +41,7 @@ jobs:
       - ephemeral
       - ephemeral-mac
       - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
+      - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
