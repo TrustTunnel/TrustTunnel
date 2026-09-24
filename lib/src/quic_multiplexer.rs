@@ -1225,6 +1225,7 @@ fn make_quic_config_with_domain_contexts(
     cfg.set_max_idle_timeout(core_settings.client_listener_timeout.as_millis() as u64);
     cfg.set_max_recv_udp_payload_size(quic_settings.recv_udp_payload_size);
     cfg.set_max_send_udp_payload_size(quic_settings.send_udp_payload_size);
+    cfg.discover_pmtu(quic_settings.discover_pmtu);
     cfg.set_initial_max_data(quic_settings.initial_max_data);
     cfg.set_initial_max_stream_data_bidi_local(quic_settings.initial_max_stream_data_bidi_local);
     cfg.set_initial_max_stream_data_bidi_remote(quic_settings.initial_max_stream_data_bidi_remote);
@@ -1233,6 +1234,13 @@ fn make_quic_config_with_domain_contexts(
     cfg.set_initial_max_streams_uni(quic_settings.initial_max_streams_uni);
     cfg.set_max_connection_window(quic_settings.max_connection_window);
     cfg.set_max_stream_window(quic_settings.max_stream_window);
+    cfg.set_cc_algorithm_name(&quic_settings.cc_algorithm)
+        .map_err(|e| {
+            io::Error::other(format!(
+                "Invalid QUIC cc_algorithm {:?}: {} (expected one of: reno, cubic, bbr, bbr2)",
+                quic_settings.cc_algorithm, e
+            ))
+        })?;
     cfg.set_disable_active_migration(quic_settings.disable_active_migration);
     if quic_settings.enable_early_data {
         cfg.enable_early_data();

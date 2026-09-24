@@ -9,6 +9,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
+- [Feature] Two QUIC listener settings that quiche already supports but the
+  endpoint did not expose: `cc_algorithm` (`reno`/`cubic`/`bbr`/`bbr2`,
+  default `cubic` -- unchanged behaviour) and `discover_pmtu` (default `false`
+  -- unchanged behaviour). Without the first, the congestion control is pinned
+  to quiche's CUBIC default, which underperforms on lossy mobile paths where
+  the TCP listeners can use BBR. Without the second, the endpoint keeps sending
+  `send_udp_payload_size` datagrams on paths with a smaller MTU, where they are
+  silently dropped.
 
 ### Changed
 

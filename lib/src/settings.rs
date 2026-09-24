@@ -486,6 +486,15 @@ pub struct QuicSettings {
     /// Enable sending or receiving early data
     #[serde(default = "QuicSettings::default_enable_early_data")]
     pub(crate) enable_early_data: bool,
+    /// The congestion control algorithm to use: `reno`, `cubic`, `bbr` or `bbr2`.
+    /// An unknown value is rejected when the listener starts.
+    #[serde(default = "QuicSettings::default_cc_algorithm")]
+    pub(crate) cc_algorithm: String,
+    /// Perform QUIC path MTU discovery. While disabled, the endpoint keeps sending
+    /// datagrams of `send_udp_payload_size`, which are silently dropped on paths
+    /// whose MTU is smaller.
+    #[serde(default = "QuicSettings::default_discover_pmtu")]
+    pub(crate) discover_pmtu: bool,
     /// The capacity of the QUIC multiplexer message queue.
     /// Decreasing it may cause packet dropping in case the multiplexer cannot keep up the pace.
     /// Increasing it may lead to high memory consumption.
@@ -844,6 +853,14 @@ impl QuicSettings {
 
     pub fn default_enable_early_data() -> bool {
         true
+    }
+
+    pub fn default_cc_algorithm() -> String {
+        "cubic".to_string()
+    }
+
+    pub fn default_discover_pmtu() -> bool {
+        false
     }
 
     pub fn default_message_queue_capacity() -> usize {
@@ -1293,6 +1310,8 @@ impl QuicSettingsBuilder {
                 max_stream_window: QuicSettings::default_max_stream_window(),
                 disable_active_migration: QuicSettings::default_disable_active_migration(),
                 enable_early_data: QuicSettings::default_enable_early_data(),
+                cc_algorithm: QuicSettings::default_cc_algorithm(),
+                discover_pmtu: QuicSettings::default_discover_pmtu(),
                 message_queue_capacity: QuicSettings::default_message_queue_capacity(),
             },
         }
@@ -1372,6 +1391,18 @@ impl QuicSettingsBuilder {
     /// Enable receiving early data
     pub fn enable_early_data(mut self, v: bool) -> Self {
         self.settings.enable_early_data = v;
+        self
+    }
+
+    /// Set the congestion control algorithm
+    pub fn cc_algorithm(mut self, v: impl Into<String>) -> Self {
+        self.settings.cc_algorithm = v.into();
+        self
+    }
+
+    /// Set whether to perform path MTU discovery
+    pub fn discover_pmtu(mut self, v: bool) -> Self {
+        self.settings.discover_pmtu = v;
         self
     }
 
@@ -1728,6 +1759,33 @@ mod tests {
     fn default_auth_failure_status_code_is_407() {
         let settings = Settings::default();
         assert_eq!(settings.auth_failure_status_code, 407);
+    }
+
+    /// The two new QUIC knobs must leave today's behaviour untouched when unset.
+    #[test]
+    fn quic_cc_and_pmtud_defaults_match_quiche() {
+        let quic = QuicSettings::builder().build();
+        assert_eq!(quic.cc_algorithm, "cubic");
+        assert!(!quic.discover_pmtu);
+    }
+
+    #[test]
+    fn quic_cc_and_pmtud_are_read_from_config() {
+        let quic: QuicSettings =
+            serde_json::from_str(r#"{"cc_algorithm":"bbr","discover_pmtu":true}"#).unwrap();
+        assert_eq!(quic.cc_algorithm, "bbr");
+        assert!(quic.discover_pmtu);
+    }
+
+    /// Control: an operator who does not mention the new keys keeps the old
+    /// behaviour. This fails if the `#[serde(default = ...)]` attributes are
+    /// dropped, which is the only way the additions could change anything for
+    /// an existing deployment.
+    #[test]
+    fn quic_cc_and_pmtud_fall_back_when_absent() {
+        let quic: QuicSettings = serde_json::from_str("{}").unwrap();
+        assert_eq!(quic.cc_algorithm, QuicSettings::default_cc_algorithm());
+        assert!(!quic.discover_pmtu);
     }
 
     #[test]
