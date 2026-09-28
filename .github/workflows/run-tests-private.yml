@@ -13,7 +13,10 @@ jobs:
   build:
     name: ${{ matrix.name }} build
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on: ${{ matrix.runs-on }}
+    # The job-unique label cannot be built inside a matrix value (`strategy` is not in
+    # scope there), so append it here. Only ephemeral entries get it: a job that asks for
+    # both `team-corelibs` and an ephemeral key is picked up by no runner at all.
+    runs-on: ${{ fromJSON(matrix.ephemeral && format('["{0}","ephemeral-job-key-{1}-{2}-{3}"]', join(fromJSON(matrix.runs-on), '","'), github.run_id, github.job, strategy.job-index || 0) || matrix.runs-on) }}
     permissions:
       contents: read
       id-token: write
@@ -24,7 +27,8 @@ jobs:
           # Linux runs inside a docker build (see the test-command): the store
           # goes in via COPY . . and comes back out at build/.sccache.
           - name: Linux
-            runs-on: [team-corelibs]
+            runs-on: '["team-corelibs"]'
+            ephemeral: false
             sccache-key: sccache-linux
             # Path the stats/save steps read the store from after the build;
             # its last component must match the restore path (env.SCCACHE_DIR).
@@ -96,13 +100,8 @@ jobs:
           # Mac runs cargo directly on the runner; the store stays in
           # $SCCACHE_DIR (= .sccache relative to the workspace) all along.
           - name: Mac
-            runs-on:
-              - ephemeral
-              - ephemeral-mac
-              - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
-              # `strategy` is not available inside a matrix, so the index (1 = Mac) is
-              # spelled out. It must stay unique across the ephemeral matrix entries.
-              - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-1
+            runs-on: '["ephemeral","ephemeral-mac","${{ vars.BUILD_IMAGE_VERSION_MACOS }}"]'
+            ephemeral: true
             sccache-key: sccache-mac
             sccache-path: .sccache
             test-command: |
