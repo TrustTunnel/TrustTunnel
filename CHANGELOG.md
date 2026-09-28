@@ -18,6 +18,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] 32-bit targets (e.g. `linux/arm`): `net_utils::varint_len` compared the value against a literal that does not fit into a 32-bit `usize`, so `cargo build` failed with "literal out of range for `usize`".
+- [Fix] `Dockerfile`: the build stage now uses Debian 12 (bookworm) instead of the end-of-life Debian 11 (bullseye), and pins Rust 1.95 to match `rust-toolchain.toml`.
+
 ### Security
 
 ## [1.1.0] - 2026-09-01
