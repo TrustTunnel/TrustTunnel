@@ -100,7 +100,9 @@ jobs:
               - ephemeral
               - ephemeral-mac
               - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
-              - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+              # `strategy` is not available inside a matrix, so the index (1 = Mac) is
+              # spelled out. It must stay unique across the ephemeral matrix entries.
+              - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-1
             sccache-key: sccache-mac
             sccache-path: .sccache
             test-command: |
