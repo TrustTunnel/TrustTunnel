@@ -100,6 +100,7 @@ jobs:
               - ephemeral
               - ephemeral-mac
               - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
+              - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
             sccache-key: sccache-mac
             sccache-path: .sccache
             test-command: |
