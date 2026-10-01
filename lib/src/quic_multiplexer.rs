@@ -182,7 +182,10 @@ impl QuicMultiplexer {
                         Some(m) => Some(Event::UdpSend(m)),
                         None => return Err(io::Error::other("Message receiving channel closed unexpectedly")),
                     },
-                    _ = &mut wait_timeout, if self.closest_deadline.is_some_and(|x| x > Instant::now()) => None,
+                    // Arm this even for an expired deadline: tokio timers fire slightly
+                    // after the deadline, so a `> now` guard disables the branch exactly
+                    // when the timer fires and timeouts would only run on incoming packets.
+                    _ = &mut wait_timeout, if self.closest_deadline.is_some() => None,
                 }
             };
 
