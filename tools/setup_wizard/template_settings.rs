@@ -234,6 +234,10 @@ disable_active_migration = {}
 {}
 enable_early_data = {}
 {}
+cc_algorithm = "{}"
+{}
+discover_pmtu = {}
+{}
 message_queue_capacity = {}
 "#,
         QuicSettings::doc().to_toml_comment(),
@@ -261,6 +265,10 @@ message_queue_capacity = {}
         QuicSettings::default_disable_active_migration(),
         QuicSettings::doc_enable_early_data().to_toml_comment(),
         QuicSettings::default_enable_early_data(),
+        QuicSettings::doc_cc_algorithm().to_toml_comment(),
+        QuicSettings::default_cc_algorithm(),
+        QuicSettings::doc_discover_pmtu().to_toml_comment(),
+        QuicSettings::default_discover_pmtu(),
         QuicSettings::doc_message_queue_capacity().to_toml_comment(),
         QuicSettings::default_message_queue_capacity(),
     )
