@@ -134,8 +134,8 @@ fn test_roundtrip_long_values() {
     let uri = encode(&original).unwrap();
     let decoded = decode(&uri).unwrap();
 
-    assert_eq!(decoded.hostname, long_hostname);
-    assert_eq!(decoded.password, long_password);
+    assert_eq!(decoded.hostname.as_deref(), Some(long_hostname.as_str()));
+    assert_eq!(decoded.password.as_deref(), Some(long_password.as_str()));
 }
 
 #[test]
@@ -238,9 +238,9 @@ fn test_roundtrip_with_client_random_prefix() {
     let uri = encode(&config).unwrap();
     let decoded = decode(&uri).unwrap();
 
-    assert_eq!(decoded.hostname, "crp.example.com");
-    assert_eq!(decoded.username, "testuser");
-    assert_eq!(decoded.password, "testpass");
+    assert_eq!(decoded.hostname.as_deref(), Some("crp.example.com"));
+    assert_eq!(decoded.username.as_deref(), Some("testuser"));
+    assert_eq!(decoded.password.as_deref(), Some("testpass"));
     assert_eq!(decoded.client_random_prefix, Some("aabbcc".to_string()));
 }
 
@@ -258,7 +258,7 @@ fn test_roundtrip_without_client_random_prefix() {
     let uri = encode(&config).unwrap();
     let decoded = decode(&uri).unwrap();
 
-    assert_eq!(decoded.hostname, "nocrp.example.com");
+    assert_eq!(decoded.hostname.as_deref(), Some("nocrp.example.com"));
     assert_eq!(decoded.client_random_prefix, None);
 }
 
@@ -363,7 +363,68 @@ fn test_unsupported_version_rejected() {
         result.unwrap_err(),
         DeepLinkError::UnsupportedVersion {
             found: 99,
-            max_supported: 1
+            max_supported: 2
         }
+    ));
+}
+
+#[test]
+fn test_roundtrip_full_config_with_subscription_url() {
+    let url = "https://alice:s3cret@vpn.example.com/subscription".to_string();
+    let original = DeepLinkConfig::builder()
+        .hostname("vpn.example.com".to_string())
+        .addresses(vec!["1.2.3.4:443".to_string()])
+        .username("alice".to_string())
+        .password("s3cret".to_string())
+        .name(Some("Acme VPN".to_string()))
+        .dns_upstreams(vec!["tls://1.1.1.1".to_string()])
+        .subscription_url(Some(url.clone()))
+        .build()
+        .unwrap();
+
+    let uri = encode(&original).unwrap();
+    let decoded = decode(&uri).unwrap();
+
+    // Subscription URL and all static fallback fields survive the roundtrip.
+    assert_eq!(decoded.subscription_url, Some(url));
+    assert_eq!(decoded, original);
+}
+
+#[test]
+fn test_roundtrip_subscription_only() {
+    let url = "https://alice:s3cret@vpn.example.com/subscription".to_string();
+    let original = DeepLinkConfig::builder()
+        .subscription_url(Some(url.clone()))
+        .build()
+        .unwrap();
+
+    let uri = encode(&original).unwrap();
+    let decoded = decode(&uri).unwrap();
+
+    assert_eq!(decoded.subscription_url, Some(url));
+    assert_eq!(decoded.hostname, None);
+    assert!(decoded.addresses.is_empty());
+    assert_eq!(decoded.username, None);
+    assert_eq!(decoded.password, None);
+    assert_eq!(decoded.name, None);
+    assert!(decoded.dns_upstreams.is_empty());
+    // Defaults still apply.
+    assert!(decoded.has_ipv6);
+    assert_eq!(decoded.upstream_protocol, Protocol::Http2);
+}
+
+#[test]
+fn test_build_rejects_http_subscription_url() {
+    let result = DeepLinkConfig::builder()
+        .hostname("vpn.example.com".to_string())
+        .addresses(vec!["1.2.3.4:443".to_string()])
+        .username("alice".to_string())
+        .password("s3cret".to_string())
+        .subscription_url(Some("http://vpn.example.com/subscription".to_string()))
+        .build();
+
+    assert!(matches!(
+        result.unwrap_err(),
+        DeepLinkError::InvalidSubscriptionUrl(_)
     ));
 }

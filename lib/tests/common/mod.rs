@@ -111,7 +111,7 @@ pub fn make_stream_of_chunks(
 
     static CHUNK: [u8; SIZE] = [0; SIZE];
 
-    futures::stream::iter(iter::repeat(&CHUNK[..size]).take(total_size / size))
+    futures::stream::iter(std::iter::repeat_n(&CHUNK[..size], total_size / size))
 }
 
 pub struct File {

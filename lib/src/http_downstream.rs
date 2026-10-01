@@ -5,8 +5,8 @@ use crate::tls_demultiplexer::Protocol;
 use crate::{
     authentication, core, datagram_pipe, downstream, http_codec, http_datagram_codec,
     http_demultiplexer, http_forwarded_stream, http_icmp_codec, http_ping_handler,
-    http_speedtest_handler, http_udp_codec, log_id, log_utils, net_utils, pipe, reverse_proxy,
-    tunnel,
+    http_speedtest_handler, http_subscription_handler, http_udp_codec, log_id, log_utils,
+    net_utils, pipe, reverse_proxy, tunnel,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -68,7 +68,7 @@ struct PendingRequest {
 impl HttpDownstream {
     pub fn new(context: Arc<core::Context>, codec: Box<dyn HttpCodec>, tls_domain: String) -> Self {
         Self {
-            request_demux: HttpDemux::new(context.settings.clone()),
+            request_demux: HttpDemux::new(context.settings.clone(), context.subscription.clone()),
             context,
             codec,
             tls_domain,
@@ -163,6 +163,21 @@ impl Downstream for HttpDownstream {
                         async move {
                             reverse_proxy::listen(
                                 context,
+                                Box::new(http_codec::stream_into_codec(stream, protocol)),
+                                sni,
+                                stream_id,
+                            )
+                            .await
+                        }
+                    });
+                }
+                net_utils::Channel::Subscription => {
+                    log_id!(trace, stream_id, "HTTP downstream: subscription request");
+                    tokio::spawn({
+                        let sni = self.tls_domain.clone();
+                        async move {
+                            http_subscription_handler::listen(
+                                context.clone(),
                                 Box::new(http_codec::stream_into_codec(stream, protocol)),
                                 sni,
                                 stream_id,

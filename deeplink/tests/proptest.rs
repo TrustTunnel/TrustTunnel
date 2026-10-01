@@ -17,13 +17,25 @@ fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
     prop::option::of("([0-9a-f]{2}){0,16}")
 }
 
+fn arbitrary_subscription_url() -> impl Strategy<Value = Option<String>> {
+    prop::option::of(
+        (
+            "[a-z0-9_]{3,10}",
+            "[a-zA-Z0-9]{4,12}",
+            "[a-z]{3,10}\\.[a-z]{2,5}",
+            "[a-z0-9._-]{1,15}",
+        )
+            .prop_map(|(user, pass, host, path)| format!("https://{user}:{pass}@{host}/{path}")),
+    )
+}
+
 fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
     (
         (
-            "[a-z]{3,20}\\.[a-z]{3,10}\\.[a-z]{2,5}",
-            prop::collection::vec(arbitrary_address_string(), 1..5),
-            "[a-z0-9_]{3,20}",
-            "[a-zA-Z0-9!@#$%]{8,30}",
+            prop::option::of("[a-z]{3,20}\\.[a-z]{3,10}\\.[a-z]{2,5}"),
+            prop::collection::vec(arbitrary_address_string(), 0..5),
+            prop::option::of("[a-z0-9_]{3,20}"),
+            prop::option::of("[a-zA-Z0-9!@#$%]{8,30}"),
             arbitrary_hex_string(),
             prop::option::of("[a-z]{3,15}\\.[a-z]{2,10}\\.[a-z]{2,5}"),
             any::<bool>(),
@@ -34,6 +46,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
         ),
         prop::option::of("[a-z]{3,20}"),
         prop::collection::vec("[a-z0-9:/._-]{5,40}", 0..3),
+        arbitrary_subscription_url(),
     )
         .prop_map(
             |(
@@ -52,6 +65,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                 ),
                 name,
                 dns_upstreams,
+                subscription_url,
             )| {
                 DeepLinkConfig {
                     hostname,
@@ -67,7 +81,18 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     anti_dpi,
                     name,
                     dns_upstreams,
+                    subscription_url,
                 }
+            },
+        )
+        .prop_filter(
+            "static fields are required when subscription_url is absent",
+            |config| {
+                config.subscription_url.is_some()
+                    || (config.hostname.is_some()
+                        && !config.addresses.is_empty()
+                        && config.username.is_some()
+                        && config.password.is_some())
             },
         )
 }
@@ -90,6 +115,7 @@ proptest! {
         prop_assert_eq!(decoded.anti_dpi, config.anti_dpi);
         prop_assert_eq!(decoded.name, config.name);
         prop_assert_eq!(decoded.dns_upstreams, config.dns_upstreams);
+        prop_assert_eq!(decoded.subscription_url, config.subscription_url);
     }
 
     #[test]

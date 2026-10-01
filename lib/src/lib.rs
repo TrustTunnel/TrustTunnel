@@ -13,6 +13,7 @@ pub mod net_utils;
 pub mod rules;
 pub mod settings;
 pub mod shutdown;
+pub mod subscription;
 pub mod utils;
 
 mod connection_limiter;
@@ -31,6 +32,7 @@ mod http_forwarded_stream;
 mod http_icmp_codec;
 mod http_ping_handler;
 mod http_speedtest_handler;
+mod http_subscription_handler;
 mod http_udp_codec;
 mod icmp_forwarder;
 mod icmp_utils;

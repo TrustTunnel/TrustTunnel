@@ -122,6 +122,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
     let mut client_random_prefix: Option<String> = None;
     let mut name: Option<String> = None;
     let mut dns_upstreams: Vec<String> = Vec::new();
+    let mut subscription_url: Option<String> = None;
 
     while let Some(field_result) = parser.next_field() {
         let (tag_opt, value) = field_result?;
@@ -196,16 +197,11 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
             TlvTag::DnsUpstreams => {
                 dns_upstreams = decode_string_array(&value)?;
             }
+            TlvTag::SubscriptionUrl => {
+                subscription_url = Some(decode_string(&value)?);
+            }
         }
     }
-
-    // Validate required fields
-    let hostname = hostname.ok_or(DeepLinkError::MissingRequiredField("hostname"))?;
-    if addresses.is_empty() {
-        return Err(DeepLinkError::MissingRequiredField("addresses"));
-    }
-    let username = username.ok_or(DeepLinkError::MissingRequiredField("username"))?;
-    let password = password.ok_or(DeepLinkError::MissingRequiredField("password"))?;
 
     let config = DeepLinkConfig {
         hostname,
@@ -221,8 +217,11 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
         anti_dpi,
         name,
         dns_upstreams,
+        subscription_url,
     };
 
+    // Presence-based validation: when subscription_url is set, static
+    // fields are optional; https:// scheme is enforced here as well.
     config.validate()?;
     Ok(config)
 }
@@ -351,14 +350,14 @@ mod tests {
         // Legacy format without ?
         let legacy_uri = format!("tt://{}", encoded);
         let decoded = decode(&legacy_uri).unwrap();
-        assert_eq!(decoded.hostname, "vpn.example.com");
-        assert_eq!(decoded.username, "alice");
+        assert_eq!(decoded.hostname.as_deref(), Some("vpn.example.com"));
+        assert_eq!(decoded.username.as_deref(), Some("alice"));
 
         // New format with ?
         let new_uri = format!("tt://?{}", encoded);
         let decoded2 = decode(&new_uri).unwrap();
-        assert_eq!(decoded2.hostname, "vpn.example.com");
-        assert_eq!(decoded2.username, "alice");
+        assert_eq!(decoded2.hostname.as_deref(), Some("vpn.example.com"));
+        assert_eq!(decoded2.username.as_deref(), Some("alice"));
     }
 
     #[test]
@@ -371,5 +370,92 @@ mod tests {
         let (tag, value) = parser.next_field().unwrap().unwrap();
         assert_eq!(tag, Some(TlvTag::ClientRandomPrefix));
         assert_eq!(value, b"5841/7a43");
+    }
+
+    fn tlv_bytes(tag: u8, value: &[u8]) -> Vec<u8> {
+        use crate::varint::encode_varint;
+        let mut out = encode_varint(tag as u64).unwrap();
+        out.extend(encode_varint(value.len() as u64).unwrap());
+        out.extend_from_slice(value);
+        out
+    }
+
+    #[test]
+    fn test_decode_subscription_only_v2() {
+        use crate::varint::encode_varint;
+
+        let url = "https://alice:s3cret@vpn.example.com/subscription";
+        let mut payload = tlv_bytes(0x00, &encode_varint(2).unwrap());
+        payload.extend(tlv_bytes(0x0E, url.as_bytes()));
+
+        let config = decode_tlv_payload(&payload).unwrap();
+        assert_eq!(config.subscription_url.as_deref(), Some(url));
+        assert_eq!(config.hostname, None);
+        assert!(config.addresses.is_empty());
+        assert_eq!(config.username, None);
+        assert_eq!(config.password, None);
+    }
+
+    #[test]
+    fn test_decode_rejects_non_https_subscription_url() {
+        use crate::varint::encode_varint;
+
+        let mut payload = tlv_bytes(0x00, &encode_varint(2).unwrap());
+        payload.extend(tlv_bytes(0x0E, b"http://vpn.example.com/subscription"));
+
+        let result = decode_tlv_payload(&payload);
+        assert!(matches!(
+            result.unwrap_err(),
+            DeepLinkError::InvalidSubscriptionUrl(_)
+        ));
+    }
+
+    #[test]
+    fn test_decode_v1_link_with_required_fields_accepted() {
+        use crate::varint::encode_varint;
+
+        let mut payload = tlv_bytes(0x00, &encode_varint(1).unwrap());
+        payload.extend(tlv_bytes(0x01, b"vpn.example.com"));
+        payload.extend(tlv_bytes(0x02, b"1.2.3.4:443"));
+        payload.extend(tlv_bytes(0x05, b"alice"));
+        payload.extend(tlv_bytes(0x06, b"s3cret"));
+
+        let config = decode_tlv_payload(&payload).unwrap();
+        assert_eq!(config.hostname.as_deref(), Some("vpn.example.com"));
+        assert_eq!(config.subscription_url, None);
+    }
+
+    #[test]
+    fn test_decode_v1_link_missing_required_field_rejected() {
+        use crate::varint::encode_varint;
+
+        // No password tag and no subscription_url: still a hard error.
+        let mut payload = tlv_bytes(0x00, &encode_varint(1).unwrap());
+        payload.extend(tlv_bytes(0x01, b"vpn.example.com"));
+        payload.extend(tlv_bytes(0x02, b"1.2.3.4:443"));
+        payload.extend(tlv_bytes(0x05, b"alice"));
+
+        let result = decode_tlv_payload(&payload);
+        assert!(matches!(
+            result.unwrap_err(),
+            DeepLinkError::MissingRequiredField("password")
+        ));
+    }
+
+    #[test]
+    fn test_decode_rejects_version_3() {
+        use crate::varint::encode_varint;
+
+        let mut payload = tlv_bytes(0x00, &encode_varint(3).unwrap());
+        payload.extend(tlv_bytes(0x0E, b"https://vpn.example.com/subscription"));
+
+        let result = decode_tlv_payload(&payload);
+        assert!(matches!(
+            result.unwrap_err(),
+            DeepLinkError::UnsupportedVersion {
+                found: 3,
+                max_supported: 2
+            }
+        ));
     }
 }

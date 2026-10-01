@@ -241,7 +241,7 @@ async fn handle_stream(
         }
 
         let mut client_sink = respond.send_response(response, false)?.into_pipe_sink();
-        write_all(&mut client_sink, body.freeze()).await?;
+        client_sink.write_all(body.freeze()).await?;
         client_sink.eof()?;
         return Ok(());
     }
@@ -334,7 +334,7 @@ async fn handle_stream(
                     }
                     ensure_client_sink(&mut response_opt, &mut respond_opt, &mut client_sink)?;
                     if let Some(sink) = client_sink.as_mut() {
-                        write_all(sink, buffered_body.split().freeze()).await?;
+                        sink.write_all(buffered_body.split().freeze()).await?;
                     }
                 }
                 ensure_client_sink(&mut response_opt, &mut respond_opt, &mut client_sink)?;
@@ -361,7 +361,7 @@ async fn handle_stream(
                     // Fall back to streaming without a known length.
                     ensure_client_sink(&mut response_opt, &mut respond_opt, &mut client_sink)?;
                     if let Some(sink) = client_sink.as_mut() {
-                        write_all(sink, buffered_body.split().freeze()).await?;
+                        sink.write_all(buffered_body.split().freeze()).await?;
                     }
                 }
                 continue;
@@ -369,13 +369,13 @@ async fn handle_stream(
 
             ensure_client_sink(&mut response_opt, &mut respond_opt, &mut client_sink)?;
             if let Some(sink) = client_sink.as_mut() {
-                write_all(sink, data).await?;
+                sink.write_all(data).await?;
             }
         }
     }
 
     let mut client_sink = respond.send_response(response, false)?.into_pipe_sink();
-    write_all(&mut client_sink, chunk).await?;
+    client_sink.write_all(chunk).await?;
     server_source.consume(chunk_len)?;
 
     if let Some(mut remaining) = content_length.and_then(|x| x.checked_sub(chunk_len)) {
@@ -390,7 +390,7 @@ async fn handle_stream(
                 pipe::Data::Chunk(chunk) => {
                     server_source.consume(chunk.len())?;
                     let to_send = std::cmp::min(chunk.len(), remaining);
-                    write_all(&mut client_sink, chunk.slice(..to_send)).await?;
+                    client_sink.write_all(chunk.slice(..to_send)).await?;
                     remaining -= to_send;
                 }
                 pipe::Data::Eof => break,
@@ -424,17 +424,6 @@ async fn handle_stream(
         Err(e) if e.kind() == ErrorKind::UnexpectedEof => Ok(()),
         Err(e) => Err(e),
     }
-}
-
-async fn write_all(sink: &mut Box<dyn pipe::Sink>, mut data: bytes::Bytes) -> io::Result<()> {
-    while !data.is_empty() {
-        let before = data.len();
-        data = sink.write(data)?;
-        if data.len() == before || !data.is_empty() {
-            sink.wait_writable().await?;
-        }
-    }
-    Ok(())
 }
 
 fn send_bad_gateway(

@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Subscription URL: clients can provision and refresh their configuration from a stable HTTPS URL served by the endpoint.
+    - Endpoint: serve a per-user subscription JSON over HTTPS via the new optional `[subscription]` section in `vpn.toml`; reload it on `SIGHUP`.
+    - `--client_config` export: embed `subscription_url` into both TOML and deep-link outputs when `[subscription]` is enabled; add `--subscription-url` to override the base URL. For deep-links, add `--subscription-only` to emit a minimal link containing only the subscription URL.
+    - Deep-link format v2: new `subscription_url` TLV tag (`0x0E`); when present, static connection parameters are optional, enabling subscription-only links.
 - [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
 
 ### Changed

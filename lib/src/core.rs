@@ -72,6 +72,8 @@ impl FatalIoError {
 pub(crate) struct Context {
     pub settings: Arc<Settings>,
     pub authenticator: Option<Arc<dyn authentication::Authenticator>>,
+    pub(crate) subscription:
+        Arc<std::sync::RwLock<Option<crate::subscription::SubscriptionConfig>>>,
     tls_demux: Arc<RwLock<TlsDemux>>,
     pub icmp_forwarder: Option<Arc<IcmpForwarder>>,
     pub shutdown: Arc<Mutex<Shutdown>>,
@@ -134,6 +136,13 @@ impl Core {
             None
         };
 
+        let subscription = match settings.subscription.as_ref() {
+            Some(sub) => Some(
+                crate::subscription::resolve(sub, &settings, &tls_hosts_settings)
+                    .map_err(Error::SettingsValidation)?,
+            ),
+            None => None,
+        };
         let per_client_metrics = settings
             .metrics
             .as_ref()
@@ -144,6 +153,7 @@ impl Core {
             context: Arc::new(Context {
                 settings: settings.clone(),
                 authenticator,
+                subscription: Arc::new(std::sync::RwLock::new(subscription)),
                 tls_demux: Arc::new(RwLock::new(
                     TlsDemux::new(&settings, &tls_hosts_settings)
                         .map_err(|e| Error::TlsDemultiplexer(e.to_string()))?,
@@ -236,6 +246,30 @@ impl Core {
         }
 
         *demux = TlsDemux::new(&self.context.settings, &settings)?;
+        Ok(())
+    }
+
+    /// Reload the subscription settings.
+    ///
+    /// `sub` is the freshly parsed `[subscription]` section (or `None` when the
+    /// section is absent). On a validation/resolve failure the previously applied
+    /// configuration is left unchanged and an error is returned.
+    pub fn reload_subscription_settings(
+        &self,
+        sub: Option<crate::subscription::SubscriptionSettings>,
+        hosts: &settings::TlsHostsSettings,
+    ) -> io::Result<()> {
+        let resolved = match sub {
+            Some(sub) => Some(
+                crate::subscription::resolve(&sub, &self.context.settings, hosts).map_err(|e| {
+                    io::Error::other(format!("Subscription resolve failure: {:?}", e))
+                })?,
+            ),
+            None => None,
+        };
+
+        let mut store = self.context.subscription.write().unwrap();
+        *store = resolved;
         Ok(())
     }
 
@@ -572,6 +606,10 @@ impl Core {
                 )
                 .await
             }
+            // TLS-level routing is SNI-based and subscription is
+            // never matched by hostname, only by request path via `HttpDemux`
+            // in `HttpDownstream`.
+            net_utils::Channel::Subscription => unreachable!(),
         }
 
         Ok(())
@@ -658,6 +696,10 @@ impl Core {
                 )
                 .await
             }
+            // TLS-level routing is SNI-based and subscription is
+            // never matched by hostname, only by request path via `HttpDemux`
+            // in `HttpDownstream`.
+            net_utils::Channel::Subscription => unreachable!(),
         }
     }
 
@@ -804,6 +846,7 @@ impl Default for Context {
         Self {
             settings: settings.clone(),
             authenticator: None,
+            subscription: Arc::new(std::sync::RwLock::new(None)),
             tls_demux: Arc::new(RwLock::new(
                 TlsDemux::new(&settings, &settings::TlsHostsSettings::default()).unwrap(),
             )),

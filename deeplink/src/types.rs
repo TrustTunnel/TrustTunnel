@@ -20,6 +20,7 @@ pub enum TlvTag {
     ClientRandomPrefix = 0x0B,
     Name = 0x0C,
     DnsUpstreams = 0x0D,
+    SubscriptionUrl = 0x0E,
 }
 
 impl TlvTag {
@@ -43,6 +44,7 @@ impl TlvTag {
             0x0B => Some(TlvTag::ClientRandomPrefix),
             0x0C => Some(TlvTag::Name),
             0x0D => Some(TlvTag::DnsUpstreams),
+            0x0E => Some(TlvTag::SubscriptionUrl),
             _ => None,
         }
     }
@@ -97,7 +99,7 @@ impl fmt::Display for Protocol {
     }
 }
 
-pub const CURRENT_VERSION: u64 = 1;
+pub const CURRENT_VERSION: u64 = 2;
 
 /// TrustTunnel deep-link configuration.
 ///
@@ -106,10 +108,10 @@ pub const CURRENT_VERSION: u64 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct DeepLinkConfig {
-    pub hostname: String,
+    pub hostname: Option<String>,
     pub addresses: Vec<String>,
-    pub username: String,
-    pub password: String,
+    pub username: Option<String>,
+    pub password: Option<String>,
     pub client_random_prefix: Option<String>,
     pub custom_sni: Option<String>,
     pub has_ipv6: bool,
@@ -119,6 +121,10 @@ pub struct DeepLinkConfig {
     pub anti_dpi: bool,
     pub name: Option<String>,
     pub dns_upstreams: Vec<String>,
+    /// HTTPS subscription URL (may embed HTTP Basic Auth credentials).
+    /// When present, the static connection parameters are optional fallback
+    /// for the initial connection attempt (format version 2).
+    pub subscription_url: Option<String>,
 }
 
 impl DeepLinkConfig {
@@ -127,18 +133,26 @@ impl DeepLinkConfig {
         DeepLinkConfigBuilder::default()
     }
 
-    /// Validate that all required fields are present and valid.
+    /// Validate that required fields are present and the subscription URL
+    /// uses HTTPS. When `subscription_url` is present, the static connection
+    /// parameters are optional fallback; otherwise they are all required.
     pub fn validate(&self) -> Result<()> {
-        if self.hostname.is_empty() {
+        if let Some(ref url) = self.subscription_url {
+            if !url.starts_with("https://") {
+                return Err(DeepLinkError::InvalidSubscriptionUrl(url.clone()));
+            }
+            return Ok(());
+        }
+        if self.hostname.as_deref().is_none_or(str::is_empty) {
             return Err(DeepLinkError::MissingRequiredField("hostname"));
         }
         if self.addresses.is_empty() {
             return Err(DeepLinkError::MissingRequiredField("addresses"));
         }
-        if self.username.is_empty() {
+        if self.username.as_deref().is_none_or(str::is_empty) {
             return Err(DeepLinkError::MissingRequiredField("username"));
         }
-        if self.password.is_empty() {
+        if self.password.as_deref().is_none_or(str::is_empty) {
             return Err(DeepLinkError::MissingRequiredField("password"));
         }
         Ok(())
@@ -161,6 +175,7 @@ pub struct DeepLinkConfigBuilder {
     anti_dpi: Option<bool>,
     name: Option<String>,
     dns_upstreams: Option<Vec<String>>,
+    subscription_url: Option<String>,
 }
 
 impl DeepLinkConfigBuilder {
@@ -229,6 +244,11 @@ impl DeepLinkConfigBuilder {
         self
     }
 
+    pub fn subscription_url(mut self, subscription_url: Option<String>) -> Self {
+        self.subscription_url = subscription_url;
+        self
+    }
+
     pub fn build(self) -> Result<DeepLinkConfig> {
         // Validate client_random_prefix is valid hex if provided
         if let Some(ref prefix) = self.client_random_prefix {
@@ -243,18 +263,10 @@ impl DeepLinkConfigBuilder {
         }
 
         let config = DeepLinkConfig {
-            hostname: self
-                .hostname
-                .ok_or(DeepLinkError::MissingRequiredField("hostname"))?,
-            addresses: self
-                .addresses
-                .ok_or(DeepLinkError::MissingRequiredField("addresses"))?,
-            username: self
-                .username
-                .ok_or(DeepLinkError::MissingRequiredField("username"))?,
-            password: self
-                .password
-                .ok_or(DeepLinkError::MissingRequiredField("password"))?,
+            hostname: self.hostname,
+            addresses: self.addresses.unwrap_or_default(),
+            username: self.username,
+            password: self.password,
             client_random_prefix: self.client_random_prefix,
             custom_sni: self.custom_sni,
             has_ipv6: self.has_ipv6.unwrap_or(true),
@@ -264,6 +276,7 @@ impl DeepLinkConfigBuilder {
             anti_dpi: self.anti_dpi.unwrap_or(false),
             name: self.name,
             dns_upstreams: self.dns_upstreams.unwrap_or_default(),
+            subscription_url: self.subscription_url,
         };
         config.validate()?;
         Ok(config)
@@ -312,7 +325,7 @@ mod tests {
             .build()
             .unwrap();
 
-        assert_eq!(config.hostname, "vpn.example.com");
+        assert_eq!(config.hostname.as_deref(), Some("vpn.example.com"));
         assert_eq!(config.addresses.len(), 1);
         assert!(config.has_ipv6);
         assert_eq!(config.upstream_protocol, Protocol::Http2);
@@ -344,10 +357,10 @@ mod tests {
     #[test]
     fn test_validate_empty_hostname() {
         let config = DeepLinkConfig {
-            hostname: String::new(),
+            hostname: Some(String::new()),
             addresses: vec!["1.2.3.4:443".to_string()],
-            username: "alice".to_string(),
-            password: "secret".to_string(),
+            username: Some("alice".to_string()),
+            password: Some("secret".to_string()),
             custom_sni: None,
             has_ipv6: true,
             skip_verification: false,
@@ -357,8 +370,60 @@ mod tests {
             client_random_prefix: None,
             name: None,
             dns_upstreams: vec![],
+            subscription_url: None,
         };
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_tlv_tag_subscription_url() {
+        assert_eq!(TlvTag::SubscriptionUrl.as_u8(), 0x0E);
+        assert_eq!(TlvTag::from_u8(0x0E), Some(TlvTag::SubscriptionUrl));
+    }
+
+    #[test]
+    fn test_builder_subscription_only() {
+        let config = DeepLinkConfig::builder()
+            .subscription_url(Some(
+                "https://alice:s3cret@vpn.example.com/subscription".to_string(),
+            ))
+            .build()
+            .unwrap();
+
+        assert_eq!(config.hostname, None);
+        assert!(config.addresses.is_empty());
+        assert_eq!(
+            config.subscription_url.as_deref(),
+            Some("https://alice:s3cret@vpn.example.com/subscription")
+        );
+    }
+
+    #[test]
+    fn test_builder_rejects_non_https_subscription_url() {
+        let result = DeepLinkConfig::builder()
+            .subscription_url(Some("http://vpn.example.com/subscription".to_string()))
+            .build();
+
+        assert!(matches!(
+            result.unwrap_err(),
+            DeepLinkError::InvalidSubscriptionUrl(_)
+        ));
+    }
+
+    #[test]
+    fn test_builder_full_config_with_subscription_url() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .subscription_url(Some(
+                "https://alice:s3cret@vpn.example.com/subscription".to_string(),
+            ))
+            .build()
+            .unwrap();
+
+        assert!(config.validate().is_ok());
     }
 }
