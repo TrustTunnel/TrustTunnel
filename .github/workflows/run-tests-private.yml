@@ -10,42 +10,158 @@ on:
   workflow_dispatch:
 
 jobs:
-  linux-build:
-    name: Linux build
+  build:
+    name: ${{ matrix.name }} build
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on:
-      - ephemeral
-      - ephemeral-linux
-      - ${{ vars.BUILD_IMAGE_VERSION_CORELIBS_BUILDER }}
-      - ephemeral-limit-memory-8192
-      - ephemeral-limit-cpu-6
-      - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
-    container:
-      image: adguard/core-libs:2.10
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-      - name: Run tests
-        run: cargo test --workspace
-      - name: Build binaries
-        run: cargo build --bins
-      - name: Lint Rust
-        run: |
-          rustup component add rustfmt clippy
-          make lint-rust
+    # The job-unique label cannot be built inside a matrix value (`strategy` is not in
+    # scope there), so append it here. Only ephemeral entries get it: a job that asks for
+    # both `team-corelibs` and an ephemeral key is picked up by no runner at all.
+    runs-on: ${{ fromJSON(matrix.ephemeral && format('["{0}","ephemeral-job-key-{1}-{2}-{3}"]', join(fromJSON(matrix.runs-on), '","'), github.run_id, github.job, strategy.job-index || 0) || matrix.runs-on) }}
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux runs inside a docker build (see the test-command): the store
+          # goes in via COPY . . and comes back out at build/.sccache.
+          - name: Linux
+            runs-on: '["team-corelibs"]'
+            ephemeral: false
+            sccache-key: sccache-linux
+            # Path the stats/save steps read the store from after the build;
+            # its last component must match the restore path (env.SCCACHE_DIR).
+            sccache-path: build/.sccache
+            test-command: |
+              set -euxo pipefail
 
-  mac-build:
-    name: Mac build
-    if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on:
-      - ephemeral
-      - ephemeral-mac
-      - ${{ vars.BUILD_IMAGE_VERSION_MACOS }}
-      - ephemeral-job-key-${{ github.run_id }}-${{ github.job }}-${{ strategy.job-index || 0 }}
+              rm -rf build
+              cat > Dockerfile <<'EOF'
+              # syntax=docker/dockerfile:1
+              FROM adguard/core-libs:2.12 AS build
+
+              # sccache caches the Rust compilations; installing the pinned
+              # binary before COPY . . keeps this layer cached across runs.
+              RUN curl -fsSL https://github.com/mozilla/sccache/releases/download/v0.17.0/sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz \
+                  | tar -xz -C /usr/local/bin --strip-components=1
+
+              WORKDIR /src
+              COPY . .
+
+              FROM build AS native-tests
+
+              # target/ and the cargo registry are buildkit cache mounts (they
+              # are gigabytes); the sccache store stays in the layer for export.
+              RUN --mount=type=cache,target=/src/target \
+                  --mount=type=cache,target=/opt/cargo/registry \
+                  <<END
+              set -eux
+
+              # The store was restored into .sccache by COPY . .; the knobs below
+              # are what make the rustc invocations cacheable.
+              export SCCACHE_DIR=/src/.sccache
+              export SCCACHE_CACHE_SIZE=512M
+              export CARGO_INCREMENTAL=0
+              # Pin the daemon to this container: a foreign one on the shared
+              # builder cannot see our sources ("No such file or directory").
+              export SCCACHE_SERVER_UDS=/tmp/sccache.sock
+
+              mkdir -p /src/results
+              (RUSTC_WRAPPER=sccache cargo test --workspace \
+                  && RUSTC_WRAPPER=sccache cargo build --bins \
+                  && rustup component add rustfmt clippy \
+                  && make lint-rust) || test_status=$?
+
+              echo "${test_status:-0}" > /src/results/test-status
+              # Counters from the daemon that compiled: .txt for the log,
+              # .json for force-save (the runner daemon sees none of them).
+              sccache --show-stats > /src/results/sccache-stats.txt 2>&1 || true
+              sccache --show-stats --stats-format=json > /src/results/sccache-stats.json 2>/dev/null || true
+
+              exit 0
+              END
+
+              FROM scratch AS native-tests-output
+
+              COPY --from=native-tests /src/results/ /
+              # Keep the .sccache name: the restore extracts a member named
+              # after its own path, so renaming this silently turns restores
+              # into misses.
+              COPY --from=native-tests /src/.sccache /.sccache
+              EOF
+              DOCKER_BUILDKIT=1 docker build --progress=plain \
+                --no-cache-filter native-tests \
+                --target native-tests-output \
+                --output type=local,dest=build \
+                -f Dockerfile .
+
+              test "$(cat build/test-status)" -eq 0
+          # Mac runs cargo directly on the runner; the store stays in
+          # $SCCACHE_DIR (= .sccache relative to the workspace) all along.
+          - name: Mac
+            runs-on: '["ephemeral","ephemeral-mac","${{ vars.BUILD_IMAGE_VERSION_MACOS }}"]'
+            ephemeral: true
+            sccache-key: sccache-mac
+            sccache-path: .sccache
+            test-command: |
+              set -eux
+
+              # RUSTC_WRAPPER routes rustc through sccache; CARGO_INCREMENTAL=0
+              # keeps incremental builds from bypassing it.
+              export RUSTC_WRAPPER=sccache
+              export CARGO_INCREMENTAL=0
+
+              cargo test --workspace
+              cargo build --bins
+    env:
+      # sccache local-disk store, restored/saved across runs by the
+      # registry-cache action as an OCI registry blob.
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 512M
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+
+      - name: Configure sccache
+        uses: AdguardTeam/sccache-action@main
+
+      - name: Restore sccache store
+        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/restore@master
+        with:
+          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
+          key: ${{ matrix.sccache-key }}
+          path: ${{ env.SCCACHE_DIR }}
+
       - name: Run tests
-        run: cargo test --workspace
-      - name: Build binaries
-        run: cargo build --bins
+        run: ${{ matrix.test-command }}
+
+      - name: sccache stats
+        id: sccache-stats
+        if: always()
+        run: |
+          # Linux exports the counters its container captured; Mac compiles on
+          # the runner itself, so its daemon is queried directly.
+          if [ -f build/sccache-stats.json ]; then
+            cat build/sccache-stats.txt 2>/dev/null || true
+            cache_writes=$(grep -o '"cache_writes":[0-9]*' build/sccache-stats.json 2>/dev/null \
+              | grep -o '[0-9]*' || echo 0)
+          else
+            SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats || true
+            cache_writes=$(SCCACHE_DIR=${{ matrix.sccache-path }} sccache --show-stats --stats-format=json 2>/dev/null \
+              | grep -o '"cache_writes":[0-9]*' | grep -o '[0-9]*' || echo 0)
+          fi
+          if [ "$cache_writes" -gt 0 ] 2>/dev/null; then
+            echo "force=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "force=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Save sccache store
+        if: always()
+        uses: AdGuardSoftwareLimited/actions/actions/registry-cache/save@master
+        with:
+          config: ${{ secrets.REGISTRY_CACHE_AUTH }}
+          key: ${{ matrix.sccache-key }}
+          path: ${{ matrix.sccache-path }}
+          force: ${{ steps.sccache-stats.outputs.force }}

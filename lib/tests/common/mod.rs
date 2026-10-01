@@ -22,6 +22,7 @@ use std::{iter, slice};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::TlsConnector;
+
 use trusttunnel::authentication::{registry_based::RegistryBasedAuthenticator, Authenticator};
 use trusttunnel::core::Core;
 use trusttunnel::log_utils;
@@ -311,7 +312,9 @@ impl Http3Session {
 
         let mut config = quiche::Config::new(quiche::PROTOCOL_VERSION).unwrap();
         config.verify_peer(false);
-        config.set_max_idle_timeout(5000);
+        // An expired idle timeout makes quiche drop the connection and every later wait
+        // panics, so keep it far above any test budget.
+        config.set_max_idle_timeout(60_000);
         config.set_max_recv_udp_payload_size(MAX_QUIC_UDP_PAYLOAD_SIZE);
         config.set_max_send_udp_payload_size(MAX_QUIC_UDP_PAYLOAD_SIZE);
         config.set_initial_max_data(10_000_000);
@@ -572,12 +575,12 @@ impl Http3Session {
                     Ok(n) => chunk = &chunk[n..],
                     Err(h3::Error::Done) => {
                         Self::flush_quic_data(&self.socket, &mut self.quic_conn);
-                        if tokio::time::timeout(
-                            self.quic_conn.timeout().unwrap(),
-                            self.socket.readable(),
-                        )
-                        .await
-                        .is_err()
+                        let Some(wait) = self.quic_conn.timeout() else {
+                            return;
+                        };
+                        if tokio::time::timeout(wait, self.socket.readable())
+                            .await
+                            .is_err()
                         {
                             self.quic_conn.on_timeout();
                         }
@@ -601,12 +604,12 @@ impl Http3Session {
                     Ok(_) => break,
                     Err(h3::Error::Done) => {
                         Self::flush_quic_data(&self.socket, &mut self.quic_conn);
-                        if tokio::time::timeout(
-                            self.quic_conn.timeout().unwrap(),
-                            self.socket.readable(),
-                        )
-                        .await
-                        .is_err()
+                        let Some(wait) = self.quic_conn.timeout() else {
+                            break;
+                        };
+                        if tokio::time::timeout(wait, self.socket.readable())
+                            .await
+                            .is_err()
                         {
                             self.quic_conn.on_timeout();
                         }
@@ -641,7 +644,26 @@ impl Http3Session {
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
 
-            if tokio::time::timeout(self.quic_conn.timeout().unwrap(), self.socket.readable())
+            // Advance the H3 state machine before sleeping: `recv_body` only returns parsed
+            // data, so pending DATA frames or FIN would stay unseen while we wait.
+            match self.h3_conn.poll(&mut self.quic_conn) {
+                Ok((stream_id, event)) => {
+                    assert_eq!(stream_id, self.stream_id.unwrap());
+                    match event {
+                        h3::Event::Data => continue,
+                        h3::Event::Finished | h3::Event::Reset(_) => break 0,
+                        x => unreachable!("{:?}", x),
+                    }
+                }
+                Err(h3::Error::Done) => (),
+                Err(e) => panic!("{}", e),
+            }
+
+            // A closed connection reports no timer: treat it as EOF, not as a panic.
+            let Some(wait) = self.quic_conn.timeout() else {
+                break 0;
+            };
+            if tokio::time::timeout(wait, self.socket.readable())
                 .await
                 .is_err()
             {
@@ -649,12 +671,6 @@ impl Http3Session {
             }
 
             Self::read_out_socket(&self.socket, &mut self.quic_conn);
-
-            match self.poll().await {
-                h3::Event::Data => (),
-                h3::Event::Finished | h3::Event::Reset(_) => break 0,
-                x => unreachable!("{:?}", x),
-            }
         };
 
         Self::flush_quic_data(&self.socket, &mut self.quic_conn);
@@ -691,7 +707,11 @@ impl Http3Session {
             }
 
             Self::flush_quic_data(&self.socket, &mut self.quic_conn);
-            if tokio::time::timeout(self.quic_conn.timeout().unwrap(), self.socket.readable())
+            // Same as in `recv`: no timer left means nothing to wait for.
+            let Some(wait) = self.quic_conn.timeout() else {
+                break h3::Event::Finished;
+            };
+            if tokio::time::timeout(wait, self.socket.readable())
                 .await
                 .is_err()
             {
