@@ -85,8 +85,9 @@ TAG_ANTI_DPI           = 0x0A
 TAG_CLIENT_RANDOM_PREFIX = 0x0B
 TAG_NAME                 = 0x0C
 TAG_DNS_UPSTREAMS        = 0x0D
+TAG_SUBSCRIPTION_URL     = 0x0E
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 PROTOCOL_MAP = {"http2": 0x01, "http3": 0x02}
 
@@ -112,25 +113,33 @@ def encode_config(cfg: dict) -> bytes:
     """Encode a parsed TOML config dict into the TLV binary payload."""
     buf = bytearray()
 
+    subscription_url = cfg.get("subscription_url")
+    if subscription_url is not None and not subscription_url.startswith("https://"):
+        raise ValueError("subscription_url must be an https:// URL")
+
     # Version tag
     buf += tlv(0x00, encode_varint(CURRENT_VERSION))
 
-    # Required string fields
+    # Static connection parameters (required unless subscription_url is present)
     for tag, key in [
         (TAG_HOSTNAME, "hostname"),
         (TAG_USERNAME, "username"),
         (TAG_PASSWORD, "password"),
     ]:
         if key not in cfg:
-            raise KeyError(f"missing required field: {key}")
+            if subscription_url is None:
+                raise KeyError(f"missing required field: {key}")
+            continue
         buf += tlv(tag, cfg[key].encode())
 
-    # addresses (required, may repeat)
+    # addresses (may repeat; required unless subscription_url is present)
     addresses = cfg.get("addresses")
     if not addresses:
-        raise KeyError("missing required field: addresses")
-    for addr in addresses:
-        buf += tlv(TAG_ADDRESS, addr.encode())
+        if subscription_url is None:
+            raise KeyError("missing required field: addresses")
+    else:
+        for addr in addresses:
+            buf += tlv(TAG_ADDRESS, addr.encode())
 
     # client_random_prefix (optional hex-encoded string)
     if "client_random_prefix" in cfg and cfg["client_random_prefix"]:
@@ -168,6 +177,10 @@ def encode_config(cfg: dict) -> bytes:
     dns = cfg.get("dns_upstreams")
     if dns:
         buf += tlv(TAG_DNS_UPSTREAMS, encode_string_array(dns))
+
+    # subscription_url (optional, format v2)
+    if subscription_url:
+        buf += tlv(TAG_SUBSCRIPTION_URL, subscription_url.encode())
 
     return bytes(buf)
 

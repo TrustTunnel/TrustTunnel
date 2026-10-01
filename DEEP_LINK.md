@@ -3,8 +3,10 @@
 This document describes the deep link URI scheme used to share TrustTunnel
 endpoint configurations between devices and applications.
 
-Status: version 1
+Status: version 2
 
+- version 2: Added the subscription_url field; static connection parameters
+  are optional when it is present.
 - version 1: Added fields for version, server display name, and DNS upstreams.
 - draft 2: Changed format to tt://? to use case-sensitive URL part (query) instead of case-insensitive (host)
 - draft 1: Initial specification
@@ -80,12 +82,12 @@ in one or two bytes.
 | Tag | Field | Value type | Value encoding | Required |
 | --- | --- | --- | --- | --- |
 | `0x00` | `version` | VarInt | Deep link format version (see Versioning below) | no (default `0`) |
-| `0x01` | `hostname` | String | UTF-8 string | yes |
-| `0x02` | `addresses` | String | UTF-8, one `address:port` per entry; multiple entries are encoded as separate TLVs with the same tag | yes |
+| `0x01` | `hostname` | String | UTF-8 string | yes * |
+| `0x02` | `addresses` | String | UTF-8, one `address:port` per entry; multiple entries are encoded as separate TLVs with the same tag | yes * |
 | `0x03` | `custom_sni` | String | UTF-8 string | no |
 | `0x04` | `has_ipv6` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `true`) |
-| `0x05` | `username` | String | UTF-8 string | yes |
-| `0x06` | `password` | String | UTF-8 string | yes |
+| `0x05` | `username` | String | UTF-8 string | yes * |
+| `0x06` | `password` | String | UTF-8 string | yes * |
 | `0x07` | `skip_verification` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
 | `0x08` | `certificate` | Bytes | Concatenated DER-encoded certificates (raw binary); omit if the chain is verified by system CAs | no |
 | `0x09` | `upstream_protocol` | VarInt | `0x01` = `http2`, `0x02` = `http3` | no (default `http2`) |
@@ -93,6 +95,12 @@ in one or two bytes.
 | `0x0B` | `client_random_prefix` | String | UTF-8 hex-encoded string in the following format: `prefix[/mask]` | no |
 | `0x0C` | `name` | String | Human-readable server name for display in the client UI | no |
 | `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
+| `0x0E` | `subscription_url` | String | HTTPS subscription URL; may embed HTTP Basic Auth credentials in the userinfo component | no |
+
+\* Required unless the `subscription_url` tag (`0x0E`) is present. When
+`subscription_url` is present, all static connection parameters are OPTIONAL
+and serve as a fallback for the initial connection attempt if the first
+subscription fetch fails.
 
 ### Encoding Rules
 
@@ -101,7 +109,15 @@ in one or two bytes.
    address to the list. All other tags MUST appear at most once; if duplicated,
    the last occurrence wins.
 3. Boolean fields that match their default value MAY be omitted to save space.
-4. A parser MUST reject a payload that is missing any required field.
+4. A parser MUST reject a payload that is missing any required field and does
+   not contain a `subscription_url` tag.
+5. Encoders conforming to this document MUST emit `version` = 2.
+6. When tag `0x0E` (`subscription_url`) is present, any other tag MAY be
+   omitted. A "subscription-only" payload contains only tags `0x00` and
+   `0x0E`; clients importing it must complete a successful subscription fetch
+   before they can connect.
+7. A parser MUST reject a `subscription_url` value that does not start with
+   `https://`.
 
 ---
 
@@ -200,7 +216,8 @@ enabling zero-typing configuration sharing.
 ## Security Considerations
 
 - **Credentials in the URI**: The deep link contains the `username` and
-  `password` in cleartext (after decoding). Treat deep link URIs with the same
+  `password` in cleartext (after decoding). Even the `subscription_url`
+  embeds the user credentials in clear text. Treat deep link URIs with the same
   care as passwords. Do not log or persist them unnecessarily.
 - **Certificate pinning**: When `certificate` is present and
   `skip_verification` is `false`, the client MUST verify the endpoint

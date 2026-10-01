@@ -48,26 +48,33 @@ use trusttunnel_deeplink::decode;
 let uri = "tt://?AQ92cG4uZXhhbXBsZS5jb20CAzEuMi4zLjQ6NDQzBQVhbGljZQYJc2VjcmV0MTIz";
 let config = decode(uri).unwrap();
 
-println!("Hostname: {}", config.hostname);
-println!("Username: {}", config.username);
+println!("Hostname: {:?}", config.hostname);
+println!("Username: {:?}", config.username);
 ```
 
 ## Configuration Fields
 
 The `DeepLinkConfig` struct supports the following fields:
 
-| Field               | Type              | Required | Default | Description                          |
-|---------------------|-------------------|----------|---------|--------------------------------------|
-| `hostname`          | `String`          | Yes      | -       | Server hostname                      |
-| `addresses`         | `Vec<SocketAddr>` | Yes      | -       | Server addresses (IP:port)           |
-| `username`          | `String`          | Yes      | -       | Authentication username              |
-| `password`          | `String`          | Yes      | -       | Authentication password              |
-| `custom_sni`        | `Option<String>`  | No       | None    | Custom SNI for TLS                   |
-| `has_ipv6`          | `bool`            | No       | `true`  | IPv6 support enabled                 |
-| `skip_verification` | `bool`            | No       | `false` | Skip certificate verification        |
-| `certificate`       | `Option<Vec<u8>>` | No       | None    | DER-encoded certificate chain        |
-| `upstream_protocol` | `Protocol`        | No       | `Http2` | Upstream protocol (HTTP/2 or HTTP/3) |
-| `anti_dpi`          | `bool`            | No       | `false` | Anti-DPI measures enabled            |
+| Field | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `hostname` | `Option<String>` | Yes * | None | Server hostname |
+| `addresses` | `Vec<String>` | Yes * | `[]` | Server addresses (`host:port`) |
+| `username` | `Option<String>` | Yes * | None | Authentication username |
+| `password` | `Option<String>` | Yes * | None | Authentication password |
+| `custom_sni` | `Option<String>` | No | None | Custom SNI for TLS |
+| `has_ipv6` | `bool` | No | `true` | IPv6 support enabled |
+| `skip_verification` | `bool` | No | `false` | Skip certificate verification |
+| `certificate` | `Option<Vec<u8>>` | No | None | DER-encoded certificate chain |
+| `upstream_protocol` | `Protocol` | No | `Http2` | Upstream protocol (HTTP/2 or HTTP/3) |
+| `anti_dpi` | `bool` | No | `false` | Anti-DPI measures enabled |
+| `client_random_prefix` | `Option<String>` | No | None | TLS client random hex prefix |
+| `name` | `Option<String>` | No | None | Human-readable server name |
+| `dns_upstreams` | `Vec<String>` | No | `[]` | DNS upstream addresses |
+| `subscription_url` | `Option<String>` | No | None | HTTPS subscription URL (v2) |
+
+\* Required unless `subscription_url` is present (format version 2); when it
+is, the static connection parameters are optional fallback.
 
 ## Advanced Usage
 

@@ -183,11 +183,11 @@ upstream_protocol = "http2"
     let rust_config = decode(&python_uri).expect("Failed to decode Python-encoded URI");
 
     // Verify fields
-    assert_eq!(rust_config.hostname, "test.example.org");
+    assert_eq!(rust_config.hostname.as_deref(), Some("test.example.org"));
     assert_eq!(rust_config.addresses.len(), 1);
     assert_eq!(rust_config.addresses[0], "203.0.113.1:9443");
-    assert_eq!(rust_config.username, "testuser");
-    assert_eq!(rust_config.password, "testpass");
+    assert_eq!(rust_config.username.as_deref(), Some("testuser"));
+    assert_eq!(rust_config.password.as_deref(), Some("testpass"));
     assert_eq!(rust_config.upstream_protocol, Protocol::Http2);
     assert!(rust_config.has_ipv6); // default
     assert!(!rust_config.anti_dpi); // default
@@ -318,4 +318,71 @@ dns_upstreams = ["1.1.1.1", "8.8.8.8"]
         python_decoded.contains("dns_upstreams"),
         "Python decoder failed on dns_upstreams"
     );
+}
+
+#[test]
+fn test_subscription_url_matches_python() {
+    let toml = r#"
+hostname = "vpn.example.com"
+addresses = ["1.2.3.4:443"]
+username = "alice"
+password = "s3cret"
+subscription_url = "https://alice:s3cret@vpn.example.com/subscription"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .hostname("vpn.example.com".to_string())
+        .addresses(vec!["1.2.3.4:443".to_string()])
+        .username("alice".to_string())
+        .password("s3cret".to_string())
+        .subscription_url(Some(
+            "https://alice:s3cret@vpn.example.com/subscription".to_string(),
+        ))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Rust and Python encoders produced different URIs for subscription_url"
+    );
+
+    let python_decoded = python_decode(&rust_uri);
+    assert!(
+        python_decoded
+            .contains("subscription_url = \"https://alice:s3cret@vpn.example.com/subscription\""),
+        "Python decoder failed on subscription_url"
+    );
+}
+
+#[test]
+fn test_subscription_only_matches_python() {
+    let toml = r#"
+subscription_url = "https://alice:s3cret@vpn.example.com/subscription"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .subscription_url(Some(
+            "https://alice:s3cret@vpn.example.com/subscription".to_string(),
+        ))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Rust and Python encoders produced different URIs for subscription-only config"
+    );
+
+    // Rust can decode the Python-encoded subscription-only URI.
+    let decoded = decode(&python_uri).unwrap();
+    assert_eq!(
+        decoded.subscription_url.as_deref(),
+        Some("https://alice:s3cret@vpn.example.com/subscription")
+    );
+    assert_eq!(decoded.hostname, None);
 }

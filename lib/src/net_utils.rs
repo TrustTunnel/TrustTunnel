@@ -49,6 +49,9 @@ pub(crate) enum Channel {
     Speedtest,
     /// The connection is used for proxying requests further (see [`crate::reverse_proxy`])
     ReverseProxy,
+    /// The connection is used to serve the subscription JSON
+    /// (see [`crate::http_subscription_handler`])
+    Subscription,
 }
 
 pub(crate) type HostnamePort = (String, u16);

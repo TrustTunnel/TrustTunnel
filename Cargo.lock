@@ -3547,6 +3547,7 @@ dependencies = [
  "tls-parser",
  "tokio",
  "tokio-rustls",
+ "toml",
  "toml_edit 0.19.15",
  "trusttunnel-deeplink",
 ]
@@ -3575,6 +3576,7 @@ dependencies = [
  "nix 0.28.0",
  "rustls",
  "sentry",
+ "serde",
  "tokio",
  "toml",
  "toml_edit 0.19.15",

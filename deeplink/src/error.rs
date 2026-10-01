@@ -21,6 +21,9 @@ pub enum DeepLinkError {
     #[error("Missing required field: {0}")]
     MissingRequiredField(&'static str),
 
+    #[error("Invalid subscription URL '{0}': must use the https:// scheme")]
+    InvalidSubscriptionUrl(String),
+
     #[error("Invalid protocol byte: {0:#04x} (expected 0x01 for http2 or 0x02 for http3)")]
     InvalidProtocol(u8),
 

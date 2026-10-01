@@ -57,8 +57,9 @@ TAG_ANTI_DPI           = 0x0A
 TAG_CLIENT_RANDOM_PREFIX = 0x0B
 TAG_NAME                   = 0x0C
 TAG_DNS_UPSTREAMS          = 0x0D
+TAG_SUBSCRIPTION_URL       = 0x0E
 
-CURRENT_VERSION = 1
+CURRENT_VERSION = 2
 
 PROTOCOL_RMAP = {0x01: "http2", 0x02: "http3"}
 
@@ -197,7 +198,14 @@ def decode_config(data: bytes) -> dict:
             cfg["name"] = value.decode()
         elif tag == TAG_DNS_UPSTREAMS:
             cfg["dns_upstreams"] = _decode_string_array(value)
+        elif tag == TAG_SUBSCRIPTION_URL:
+            cfg["subscription_url"] = value.decode()
         # Unknown tags are silently ignored per spec.
+
+    if "subscription_url" in cfg and not cfg["subscription_url"].startswith("https://"):
+        raise ValueError(
+            f"subscription_url must be an https:// URL: {cfg['subscription_url']}"
+        )
 
     if addresses:
         cfg["addresses"] = addresses
@@ -247,6 +255,7 @@ _FIELD_ORDER: list[tuple[str, str]] = [
     ("anti_dpi",          "Is anti-DPI measures should be enabled"),
     ("name",              "Human-readable server display name"),
     ("dns_upstreams",     "DNS upstreams to use when connected to this endpoint"),
+    ("subscription_url",  "Subscription URL (HTTPS, credentials embedded)"),
 ]
 
 
@@ -294,10 +303,11 @@ def main() -> None:
     uri = sys.argv[1]
     cfg = deeplink_to_config(uri)
 
-    # Validate required fields.
-    for field in ("hostname", "addresses", "username", "password"):
-        if field not in cfg:
-            sys.exit(f"error: missing required field: {field}")
+    # Validate required fields (optional when subscription_url is present).
+    if "subscription_url" not in cfg:
+        for field in ("hostname", "addresses", "username", "password"):
+            if field not in cfg:
+                sys.exit(f"error: missing required field: {field}")
 
     print(config_to_toml(cfg), end="")
 

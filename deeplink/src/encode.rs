@@ -54,10 +54,18 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
     let version_bytes = encode_varint(CURRENT_VERSION)?;
     payload.extend(encode_tlv(TlvTag::Version, &version_bytes)?);
 
-    // Required fields - order matches Python reference implementation
-    payload.extend(encode_string_field(TlvTag::Hostname, &config.hostname)?);
-    payload.extend(encode_string_field(TlvTag::Username, &config.username)?);
-    payload.extend(encode_string_field(TlvTag::Password, &config.password)?);
+    // Static connection parameters: emitted when present (omitted in the
+    // subscription-only variant). Order matches the Python reference
+    // implementation.
+    if let Some(ref hostname) = config.hostname {
+        payload.extend(encode_string_field(TlvTag::Hostname, hostname)?);
+    }
+    if let Some(ref username) = config.username {
+        payload.extend(encode_string_field(TlvTag::Username, username)?);
+    }
+    if let Some(ref password) = config.password {
+        payload.extend(encode_string_field(TlvTag::Password, password)?);
+    }
 
     for addr in &config.addresses {
         payload.extend(encode_string_field(TlvTag::Address, addr)?);
@@ -109,6 +117,11 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
     if !config.dns_upstreams.is_empty() {
         let value = encode_string_array(&config.dns_upstreams)?;
         payload.extend(encode_tlv(TlvTag::DnsUpstreams, &value)?);
+    }
+
+    // subscription_url (optional, format v2)
+    if let Some(ref url) = config.subscription_url {
+        payload.extend(encode_string_field(TlvTag::SubscriptionUrl, url)?);
     }
 
     Ok(payload)
@@ -229,5 +242,35 @@ mod tests {
 
         assert!(uri.starts_with(PREFIX));
         assert!(!uri.contains('='));
+    }
+
+    #[test]
+    fn test_encode_tlv_payload_subscription_only() {
+        let url = "https://alice:s3cret@vpn.example.com/subscription";
+        let config = DeepLinkConfig::builder()
+            .subscription_url(Some(url.to_string()))
+            .build()
+            .unwrap();
+
+        let payload = encode_tlv_payload(&config).unwrap();
+
+        // Version-2 TLV (tag 0x00, len 1, value 2) comes first.
+        assert_eq!(&payload[..3], &[0x00, 0x01, 0x02]);
+
+        // The whole payload is exactly these two TLVs; anything appended
+        // afterwards (e.g. a new default-emitted field) fails here.
+        let mut tags = Vec::new();
+        let mut offset = 0;
+        while offset < payload.len() {
+            let (tag, after_tag) = crate::varint::decode_varint(&payload, offset).unwrap();
+            let (len, after_len) = crate::varint::decode_varint(&payload, after_tag).unwrap();
+            tags.push(TlvTag::from_u8(tag as u8));
+            offset = after_len + len as usize;
+        }
+        assert_eq!(tags, [Some(TlvTag::Version), Some(TlvTag::SubscriptionUrl)]);
+
+        let decoded = crate::decode::decode_tlv_payload(&payload).unwrap();
+        assert_eq!(decoded.subscription_url.as_deref(), Some(url));
+        assert_eq!(decoded.hostname, None);
     }
 }

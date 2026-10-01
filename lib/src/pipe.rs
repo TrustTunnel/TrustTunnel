@@ -55,8 +55,10 @@ pub(crate) trait Sink: Send {
     /// Convenient helper to write the full chunk in one line
     async fn write_all(&mut self, mut data: Bytes) -> io::Result<()> {
         while !data.is_empty() {
-            self.wait_writable().await?;
             data = self.write(data)?;
+            if !data.is_empty() {
+                self.wait_writable().await?;
+            }
         }
 
         Ok(())

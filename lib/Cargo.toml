@@ -51,6 +51,7 @@ trusttunnel-deeplink = { path = "../deeplink" }
 hyper = { version = "0.14.26", features = ["http1", "http2", "client", "server", "runtime", "stream"] }
 rustls = { version = "0.23.37", features = ["logging"] }
 tempfile = "3"
+toml = { version = "0.7.4", default-features = false, features = ["parse"] }
 
 [features]
 rt_doc = ["dep:macros"]

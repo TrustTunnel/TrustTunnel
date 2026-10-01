@@ -18,6 +18,7 @@ This document describes all available configuration settings and configuration f
     - [Reverse Proxy Settings](#reverse-proxy-settings)
     - [ICMP Settings](#icmp-settings)
     - [Metrics Settings](#metrics-settings)
+    - [Subscription Settings](#subscription-settings)
 - [TLS Hosts Reference](#tls-hosts-reference)
 - [Rules Reference](#rules-reference)
 - [Runtime Configuration](#runtime-configuration)
@@ -52,7 +53,7 @@ The endpoint binary accepts the following command line arguments:
 | `<settings>` | - | **Required.** Path to main settings file | - |
 | `<tls_hosts_settings>` | - | **Required.** Path to TLS hosts settings file | - |
 | `--client_config` | `-c` | Print endpoint config for specified client and exit | - |
-| `--address` | `-a` | Endpoint address to add to client config (requires `-c`). Accepts `ip`, `ip:port`, `domain`, or `domain:port`. | - |
+| `--address` | `-a` | Endpoint address to add to client config (requires `-c`). Accepts `ip`, `ip:port`, `domain`, or `domain:port`. Optional when `[subscription]` is enabled: the subscription `address` is used as the fallback. | - |
 | `--client-random-prefix` | `-r` | Use an explicit `client_random_prefix` in the exported client config (requires `-c`). | - |
 | `--generate-client-random-prefix` | - | Generate a new `client_random_prefix`, append a matching allow rule to `rules.toml`, and use it in the exported client config (requires `-c`). | - |
 | `--prefix-length` | - | Length in bytes for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). | `4` |
@@ -410,6 +411,47 @@ per_client_metrics = false
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
 | `per_client_metrics` | Boolean | `false` | Expose per-user metric series and the `/clients` endpoint labelled with the authenticated username. Exposes usernames and client IPs on the metrics listener. |
 
+### Subscription Settings
+
+Optional. Enables an HTTPS subscription endpoint that serves a per-user JSON
+configuration over an existing main TLS host.
+
+```toml
+[subscription]
+enabled = true
+hostname = "vpn.example.com"
+path = "/subscription"
+address = "203.0.113.1:443"
+name = "Acme Corp VPN"
+dns_upstreams = ["tls://1.1.1.1", "tls://8.8.8.8"]
+custom_sni = "example.org"
+client_random_prefix = "a0b0/f0f0"
+```
+
+| Setting | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enabled` | Boolean | `false` | Master switch |
+| `hostname` | String | - | Must match a `main_hosts` hostname |
+| `path` | String | `"/subscription"` | HTTP path served (exact match) |
+| `address` | String | - | `host:port` / `ip:port` placed in the JSON |
+| `name` | String | - | (Optional) Configuration name hint |
+| `dns_upstreams` | Array | `[]` | (Optional) DNS upstreams |
+| `custom_sni` | String | - | (Optional) Custom TLS SNI |
+| `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
+
+All fields are validated on every endpoint invocation (including the
+`--client_config` export) whenever the `[subscription]` section is present in
+`vpn.toml`, even when `enabled = false`.
+
+The `address` value is also reused by the `--client_config` export
+if the `--address` is not specified
+
+The endpoint requires HTTP Basic Auth (`Authorization` header) matching an
+entry in `credentials.toml`; the response body contains only that user's
+credentials. Non-GET requests return `405`; missing or invalid credentials
+return `401`; an authenticated request while subscription is disabled returns
+`403`; otherwise the response is `200` with the per-user JSON body.
+
 ---
 
 ## TLS Hosts Reference
@@ -501,15 +543,19 @@ action = "deny"
 
 ## Runtime Configuration
 
-### Hot Reloading TLS Hosts
+### Hot Reloading TLS Hosts and Subscription Settings
 
-Send `SIGHUP` to the endpoint process to reload TLS hosts settings without restart:
+Send `SIGHUP` to the endpoint process to reload TLS hosts settings and the
+optional `[subscription]` section without restart:
 
 ```bash
 kill -HUP $(pidof trusttunnel_endpoint)
 ```
 
-This reloads the TLS hosts settings file specified at startup.
+This reloads the TLS hosts file and the `[subscription]` section of `vpn.toml`
+specified at startup. If the new `[subscription]` section fails to parse or
+validate, the previously loaded subscription configuration is kept and a
+warning is logged.
 
 ### Systemd Service
 
