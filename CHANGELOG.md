@@ -8,12 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- Subscription URL: clients can provision and refresh their configuration from a stable HTTPS URL served by the endpoint.
-    - Endpoint: serve a per-user subscription JSON over HTTPS via the new optional `[subscription]` section in `vpn.toml`; reload it on `SIGHUP`.
-    - `--client_config` export: embed `subscription_url` into both TOML and deep-link outputs when `[subscription]` is enabled; add `--subscription-url` to override the base URL. For deep-links, add `--subscription-only` to emit a minimal link containing only the subscription URL.
-    - Deep-link format v2: new `subscription_url` TLV tag (`0x0E`); when present, static connection parameters are optional, enabling subscription-only links.
-- [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
-
 ### Changed
 
 ### Deprecated
@@ -22,10 +16,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+### Security
+
+## [1.3.0-beta.1] - 2026-10-01
+
+### Added
+
+- Subscription URL: clients can provision and refresh their configuration from a stable HTTPS URL served by the endpoint.
+    - Endpoint: serve a per-user subscription JSON over HTTPS via the new optional `[subscription]` section in `vpn.toml`; reload it on `SIGHUP`.
+    - `--client_config` export: embed `subscription_url` into both TOML and deep-link outputs when `[subscription]` is enabled; add `--subscription-url` to override the base URL. For deep-links, add `--subscription-only` to emit a minimal link containing only the subscription URL.
+    - Deep-link format v2: new `subscription_url` TLV tag (`0x0E`); when present, static connection parameters are optional, enabling subscription-only links.
+- [Feature] macOS support in `scripts/install.sh`: on Darwin the script now downloads and installs the `macos-universal` release package instead of failing with "Unsupported operating system: 'Darwin'". The Linux-only systemd setup hints are not shown on macOS.
+
+### Fixed
+
 - [Fix] 32-bit targets (e.g. `linux/arm`): `net_utils::varint_len` compared the value against a literal that does not fit into a 32-bit `usize`, so `cargo build` failed with "literal out of range for `usize`".
 - [Fix] `Dockerfile`: the build stage now uses Debian 12 (bookworm) instead of the end-of-life Debian 11 (bullseye), and pins Rust 1.95 to match `rust-toolchain.toml`.
-
-### Security
 
 ## [1.1.0] - 2026-09-01
 
@@ -297,7 +303,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...HEAD
+[1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
 [1.1.0]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.41...v1.1.0
 [1.0.41]: https://github.com/TrustTunnel/TrustTunnel/compare/32bc4a47...v1.0.41
 [1.0.28]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.17...32bc4a47
