@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
-FROM python:3.13-slim-bullseye AS build
+FROM python:3.13-slim-bookworm AS build
 ARG ENDPOINT_DIR_NAME="TrustTunnel"
-ARG RUST_DEFAULT_VERSION="1.85"
+ARG RUST_DEFAULT_VERSION="1.95"
 WORKDIR /home
 # Install needed packets
 RUN apt update && \

@@ -89,6 +89,9 @@ pub(crate) fn make_udp_socket(is_v4: bool) -> io::Result<UdpSocket> {
     }
 }
 
+/// Maximum value of a QUIC variable-length integer.
+const MAX_QUIC_VARINT: u64 = 4_611_686_018_427_387_903;
+
 /// https://www.rfc-editor.org/rfc/rfc9000.html#section-16
 pub(crate) const fn varint_len(x: usize) -> usize {
     if x <= 63 {
@@ -97,7 +100,7 @@ pub(crate) const fn varint_len(x: usize) -> usize {
         2
     } else if x <= 1_073_741_823 {
         4
-    } else if x <= 4_611_686_018_427_387_903 {
+    } else if x as u64 <= MAX_QUIC_VARINT {
         8
     } else {
         unreachable!()
@@ -694,10 +697,21 @@ pub(crate) fn scrub_sni(mut sni: String) -> String {
 mod tests {
     use crate::net_utils::{
         is_global_ip, libc_to_socket_addr, scrub_request, scrub_sni, socket_addr_to_libc,
-        SCRUBBED_PLACEHOLDER,
+        varint_len, SCRUBBED_PLACEHOLDER,
     };
     use http::uri;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn varint_length_boundaries() {
+        assert_eq!(varint_len(0), 1);
+        assert_eq!(varint_len(63), 1);
+        assert_eq!(varint_len(64), 2);
+        assert_eq!(varint_len(16_383), 2);
+        assert_eq!(varint_len(16_384), 4);
+        assert_eq!(varint_len(1_073_741_823), 4);
+        assert_eq!(varint_len(1_073_741_824), 8);
+    }
 
     #[test]
     fn sockaddr_conversion_v4() {
