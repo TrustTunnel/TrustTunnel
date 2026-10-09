@@ -96,6 +96,7 @@ in one or two bytes.
 | `0x0C` | `name` | String | Human-readable server name for display in the client UI | no |
 | `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
 | `0x0E` | `subscription_url` | String | HTTPS subscription URL; may embed HTTP Basic Auth credentials in the userinfo component | no |
+| `0x0F` | `client_random_auth_key` | String | UTF-8 hex-encoded auth key; the client derives its TLS `client_random` from it and the SNI | no |
 
 \* Required unless the `subscription_url` tag (`0x0E`) is present. When
 `subscription_url` is present, all static connection parameters are OPTIONAL

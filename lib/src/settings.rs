@@ -1706,6 +1706,11 @@ where
                         .and_then(Item::as_str)
                         .map(|s| s.to_string());
 
+                    let client_random_auth_key = rule_table
+                        .get("client_random_auth_key")
+                        .and_then(Item::as_str)
+                        .map(|s| s.to_string());
+
                     let action = rule_table
                         .get("action")
                         .and_then(Item::as_str)
@@ -1718,6 +1723,7 @@ where
                     Some(rules::Rule {
                         cidr,
                         client_random_prefix,
+                        client_random_auth_key,
                         action,
                     })
                 })

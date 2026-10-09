@@ -14,7 +14,9 @@ fn arbitrary_protocol() -> impl Strategy<Value = Protocol> {
 }
 
 fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
-    prop::option::of("([0-9a-f]{2}){0,16}")
+    // {1,16} not {0,16}: empty string roundtrips as None (encode skips empty,
+    // decode returns None), so Some("") is not a valid roundtrip input.
+    prop::option::of("([0-9a-f]{2}){1,16}")
 }
 
 fn arbitrary_subscription_url() -> impl Strategy<Value = Option<String>> {
@@ -37,6 +39,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
             prop::option::of("[a-z0-9_]{3,20}"),
             prop::option::of("[a-zA-Z0-9!@#$%]{8,30}"),
             arbitrary_hex_string(),
+            arbitrary_hex_string(),
             prop::option::of("[a-z]{3,15}\\.[a-z]{2,10}\\.[a-z]{2,5}"),
             any::<bool>(),
             any::<bool>(),
@@ -56,6 +59,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     username,
                     password,
                     client_random_prefix,
+                    client_random_auth_key,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -73,6 +77,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     username,
                     password,
                     client_random_prefix,
+                    client_random_auth_key,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -107,6 +112,7 @@ proptest! {
         prop_assert_eq!(decoded.addresses, config.addresses);
         prop_assert_eq!(decoded.username, config.username);
         prop_assert_eq!(decoded.password, config.password);
+        prop_assert_eq!(decoded.client_random_auth_key, config.client_random_auth_key);
         prop_assert_eq!(decoded.custom_sni, config.custom_sni);
         prop_assert_eq!(decoded.has_ipv6, config.has_ipv6);
         prop_assert_eq!(decoded.skip_verification, config.skip_verification);

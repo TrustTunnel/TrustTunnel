@@ -94,6 +94,7 @@ pub fn build(
     hostsettings: &TlsHostsSettings,
     custom_sni: Option<String>,
     client_random_prefix: Option<String>,
+    client_random_auth_key: Option<String>,
     name: Option<String>,
     dns_upstreams: Vec<String>,
     subscription_url: Option<String>,
@@ -125,6 +126,7 @@ pub fn build(
         username: user.username.clone(),
         password: user.password.clone(),
         client_random_prefix: client_random_prefix.unwrap_or_default(),
+        client_random_auth_key: client_random_auth_key.unwrap_or_default(),
         skip_verification: false,
         certificate,
         cert_is_system_verifiable,
@@ -154,6 +156,9 @@ pub struct ClientConfig {
     /// TLS client random hex prefix for connection filtering.
     /// Must have a corresponding rule in rules.toml.
     client_random_prefix: String,
+    /// TLS client random auth key (hex string for HKDF+AES client_random derivation).
+    /// Must have a corresponding rule with client_random_auth_key in rules.toml.
+    client_random_auth_key: String,
     /// Skip the endpoint certificate verification?
     /// That is, any certificate is accepted with this one set to true.
     skip_verification: bool,
@@ -187,6 +192,7 @@ impl ClientConfig {
         doc["username"] = value(&self.username);
         doc["password"] = value(&self.password);
         doc["client_random_prefix"] = value(&self.client_random_prefix);
+        doc["client_random_auth_key"] = value(&self.client_random_auth_key);
         doc["skip_verification"] = value(self.skip_verification);
         if self.cert_is_system_verifiable {
             doc["certificate"] = value("");
@@ -238,6 +244,11 @@ impl ClientConfig {
                 None
             } else {
                 Some(self.client_random_prefix.clone())
+            },
+            client_random_auth_key: if self.client_random_auth_key.is_empty() {
+                None
+            } else {
+                Some(self.client_random_auth_key.clone())
             },
             custom_sni: if self.custom_sni.is_empty() {
                 None
@@ -310,6 +321,9 @@ password = ""
 client_random_prefix = ""
 
 {}
+client_random_auth_key = ""
+
+{}
 skip_verification = false
 
 {}
@@ -334,6 +348,7 @@ dns_upstreams = []
         ClientConfig::doc_username().to_toml_comment(),
         ClientConfig::doc_password().to_toml_comment(),
         ClientConfig::doc_client_random_prefix().to_toml_comment(),
+        ClientConfig::doc_client_random_auth_key().to_toml_comment(),
         ClientConfig::doc_skip_verification().to_toml_comment(),
         ClientConfig::doc_certificate().to_toml_comment(),
         ClientConfig::doc_upstream_protocol().to_toml_comment(),
@@ -356,6 +371,7 @@ mod tests {
                 username: "alice".into(),
                 password: "secret".into(),
                 client_random_prefix: String::new(),
+                client_random_auth_key: String::new(),
                 skip_verification: false,
                 certificate,
                 cert_is_system_verifiable,
@@ -632,5 +648,13 @@ omxU7kknZApM\n\
         );
         assert_eq!(subscription_url_port(Some("1.2.3.4:0")), None);
         assert_eq!(subscription_url_port(Some("1.2.3.4:99999")), None);
+    }
+
+    #[test]
+    fn test_compose_toml_auth_key() {
+        let mut config = ClientConfig::test_config(String::new(), true);
+        config.client_random_auth_key = "aabbccdd".into();
+        let toml = config.compose_toml();
+        assert!(toml.contains("client_random_auth_key = \"aabbccdd\""));
     }
 }

@@ -24,6 +24,7 @@ const CLIENT_CONFIG_PARAM_NAME: &str = "client_config";
 const ADDRESS_PARAM_NAME: &str = "address";
 const CUSTOM_SNI_PARAM_NAME: &str = "custom_sni";
 const CLIENT_RANDOM_PREFIX_PARAM_NAME: &str = "client_random_prefix";
+const CLIENT_RANDOM_AUTH_KEY_PARAM_NAME: &str = "client_random_auth_key";
 const GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME: &str = "generate_client_random_prefix";
 const PREFIX_LENGTH_PARAM_NAME: &str = "prefix_length";
 const PREFIX_PERCENT_PARAM_NAME: &str = "prefix_percent";
@@ -139,6 +140,13 @@ fn main() {
                 .short('r')
                 .long("client-random-prefix")
                 .help("TLS client random hex prefix for connection filtering. Must have a corresponding rule in rules.toml."),
+            clap::Arg::new(CLIENT_RANDOM_AUTH_KEY_PARAM_NAME)
+                .action(clap::ArgAction::Set)
+                .requires(CLIENT_CONFIG_PARAM_NAME)
+                .long("client-random-auth-key")
+                .conflicts_with(CLIENT_RANDOM_PREFIX_PARAM_NAME)
+                .conflicts_with(GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME)
+                .help("TLS client random auth key (hex). Derives full client_random via HKDF+AES. Must have a corresponding rule with client_random_auth_key in rules.toml."),
             clap::Arg::new(GENERATE_CLIENT_RANDOM_PREFIX_PARAM_NAME)
                 .action(clap::ArgAction::SetTrue)
                 .requires(CLIENT_CONFIG_PARAM_NAME)
@@ -367,7 +375,7 @@ fn main() {
         };
 
         let is_generated = generated_client_random_prefix.is_some();
-        let mut client_random_prefix = generated_client_random_prefix.or_else(|| {
+        let client_random_prefix = generated_client_random_prefix.or_else(|| {
             args.get_one::<String>(CLIENT_RANDOM_PREFIX_PARAM_NAME)
                 .cloned()
         });
@@ -438,20 +446,20 @@ fn main() {
                             .unwrap_or(false)
                     });
 
-                    // Print warning and continue, do not panic because it's optional field
                     match matching_rule {
                         None => {
                             eprintln!(
-                            "Warning: No rule found in rules.toml matching client_random_prefix '{}'. This field will be ignored.",
-                            prefix
-                        );
-                            client_random_prefix = None;
+                                "Error: No rule found in rules.toml matching client_random_prefix '{}'. Add the rule first or omit --client-random-prefix.",
+                                prefix
+                            );
+                            std::process::exit(1);
                         }
                         Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
                             eprintln!(
-                            "Warning: Matched rule in rules.toml for client_random_prefix '{}' has action 'deny'.",
-                            prefix
-                        );
+                                "Error: Matched rule in rules.toml for client_random_prefix '{}' has action 'deny'.",
+                                prefix
+                            );
+                            std::process::exit(1);
                         }
                         Some(_) => {}
                     }
@@ -507,6 +515,43 @@ fn main() {
             );
         }
 
+        let client_random_auth_key = args
+            .get_one::<String>(CLIENT_RANDOM_AUTH_KEY_PARAM_NAME)
+            .cloned();
+
+        if let Some(ref auth_key) = client_random_auth_key {
+            if !trusttunnel::rules::is_valid_hex(auth_key) {
+                // The auth key is a secret, do not log its value
+                eprintln!("Error: client_random_auth_key is not valid hex");
+                std::process::exit(1);
+            }
+            // Validate against rules.toml
+            if let Some(rules_engine) = settings.get_rules_engine() {
+                let matching_rule = rules_engine.config().rule.iter().find(|r| {
+                    r.client_random_auth_key
+                        .as_ref()
+                        .map(|s| s.to_lowercase())
+                        .as_deref()
+                        == Some(auth_key.to_lowercase().as_str())
+                });
+                match matching_rule {
+                    None => {
+                        // The auth key is a secret, do not log its value
+                        eprintln!(
+                            "Error: No rule found in rules.toml with matching client_random_auth_key. \
+                             Add the rule first or omit --client-random-auth-key."
+                        );
+                        std::process::exit(1);
+                    }
+                    Some(rule) if rule.action == trusttunnel::rules::RuleAction::Deny => {
+                        eprintln!("Error: Matched rule in rules.toml for client_random_auth_key has action 'deny'.");
+                        std::process::exit(1);
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+
         let client_config = client_config::build(
             username,
             addresses,
@@ -514,6 +559,7 @@ fn main() {
             &tls_hosts_settings,
             custom_sni,
             client_random_prefix,
+            client_random_auth_key,
             name,
             dns_upstreams,
             subscription_url,

@@ -78,6 +78,13 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
         }
     }
 
+    // client_random_auth_key: include if present and non-empty
+    if let Some(ref auth_key) = config.client_random_auth_key {
+        if !auth_key.is_empty() {
+            payload.extend(encode_string_field(TlvTag::ClientRandomAuthKey, auth_key)?);
+        }
+    }
+
     // Optional fields (omit if default value or None) - order matches Python
     if let Some(custom_sni) = &config.custom_sni {
         payload.extend(encode_string_field(TlvTag::CustomSni, custom_sni)?);

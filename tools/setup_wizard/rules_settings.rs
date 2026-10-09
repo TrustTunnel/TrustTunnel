@@ -44,7 +44,7 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
     println!();
     while ask_for_agreement("Add a custom rule?") {
         let rule_type = ask_for_input::<String>(
-            "Rule type (1=IP range, 2=client random prefix, 3=both)",
+            "Rule type (1=IP range, 2=client random prefix, 3=CIDR+prefix, 4=auth key, 5=CIDR+auth key)",
             Some("1".to_string()),
         );
 
@@ -52,6 +52,8 @@ fn add_custom_rules(rules: &mut Vec<Rule>) {
             "1" => add_ip_rule(rules),
             "2" => add_client_random_rule(rules),
             "3" => add_combined_rule(rules),
+            "4" => add_auth_key_rule(rules),
+            "5" => add_combined_auth_key_rule(rules),
             _ => {
                 warn!("Invalid choice. Skipping rule.");
                 continue;
@@ -78,6 +80,7 @@ fn add_ip_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: Some(cidr),
         client_random_prefix: None,
+        client_random_auth_key: None,
         action,
     });
 
@@ -124,6 +127,7 @@ fn add_client_random_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: None,
         client_random_prefix: Some(client_random_value),
+        client_random_auth_key: None,
         action,
     });
 
@@ -181,6 +185,7 @@ fn add_combined_rule(rules: &mut Vec<Rule>) {
     rules.push(Rule {
         cidr: Some(cidr),
         client_random_prefix: Some(client_random_value),
+        client_random_auth_key: None,
         action,
     });
 
@@ -194,4 +199,73 @@ fn ask_for_rule_action() -> RuleAction {
         "deny" => RuleAction::Deny,
         _ => RuleAction::Allow,
     }
+}
+
+fn add_auth_key_rule(rules: &mut Vec<Rule>) {
+    let auth_key = ask_for_input::<String>(
+        "Enter client random auth key (hex, 32+ chars recommended, e.g., aabbccddeeff00112233445566778899)",
+        None,
+    );
+
+    if !validate_auth_key(&auth_key) {
+        return;
+    }
+
+    let action = ask_for_rule_action();
+
+    rules.push(Rule {
+        cidr: None,
+        client_random_prefix: None,
+        client_random_auth_key: Some(auth_key),
+        action,
+    });
+
+    info!("Rule added successfully.");
+}
+
+fn add_combined_auth_key_rule(rules: &mut Vec<Rule>) {
+    let cidr = ask_for_input::<String>(
+        "Enter IP range in CIDR notation (e.g., 172.16.0.0/12)",
+        None,
+    );
+
+    if cidr.parse::<ipnet::IpNet>().is_err() {
+        warn!("Invalid CIDR format. Skipping rule.");
+        return;
+    }
+
+    let auth_key = ask_for_input::<String>(
+        "Enter client random auth key (hex, 32+ chars recommended, e.g., aabbccddeeff00112233445566778899)",
+        None,
+    );
+
+    if !validate_auth_key(&auth_key) {
+        return;
+    }
+
+    let action = ask_for_rule_action();
+
+    rules.push(Rule {
+        cidr: Some(cidr),
+        client_random_prefix: None,
+        client_random_auth_key: Some(auth_key),
+        action,
+    });
+
+    info!("Rule added successfully.");
+}
+
+fn validate_auth_key(auth_key: &str) -> bool {
+    if !trusttunnel::rules::is_valid_hex(auth_key) {
+        warn!("Invalid hex format for auth key. Skipping rule.");
+        return false;
+    }
+    if auth_key.len() < 32 {
+        warn!(
+            "auth key is shorter than 16 bytes (32 hex chars); \
+             a short auth key weakens authentication. Skipping rule."
+        );
+        return false;
+    }
+    true
 }

@@ -120,6 +120,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
     let mut upstream_protocol: Protocol = Protocol::Http2; // default
     let mut anti_dpi: bool = false; // default
     let mut client_random_prefix: Option<String> = None;
+    let mut client_random_auth_key: Option<String> = None;
     let mut name: Option<String> = None;
     let mut dns_upstreams: Vec<String> = Vec::new();
     let mut subscription_url: Option<String> = None;
@@ -191,6 +192,16 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
                 })?;
                 client_random_prefix = Some(prefix);
             }
+            TlvTag::ClientRandomAuthKey => {
+                let auth_key = decode_string(&value)?;
+                hex::decode(&auth_key).map_err(|e| {
+                    DeepLinkError::InvalidAddress(format!(
+                        "client_random_auth_key must be valid hex: {}",
+                        e
+                    ))
+                })?;
+                client_random_auth_key = Some(auth_key);
+            }
             TlvTag::Name => {
                 name = Some(decode_string(&value)?);
             }
@@ -209,6 +220,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
         username,
         password,
         client_random_prefix,
+        client_random_auth_key,
         custom_sni,
         has_ipv6,
         skip_verification,
@@ -305,8 +317,8 @@ mod tests {
 
     #[test]
     fn test_tlv_parser_unknown_tag() {
-        // Unknown tag 0x0F should be parsed but returned as None
-        let data = vec![0x0F, 0x03, 0x01, 0x02, 0x03];
+        // Unknown tag 0x10 should be parsed but returned as None
+        let data = vec![0x10, 0x03, 0x01, 0x02, 0x03];
         let mut parser = TlvParser::new(&data);
 
         let (tag, value) = parser.next_field().unwrap().unwrap();
@@ -457,5 +469,74 @@ mod tests {
                 max_supported: 2
             }
         ));
+    }
+
+    #[test]
+    fn test_auth_key_roundtrip() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_auth_key(Some("aabbccdd".to_string()))
+            .build()
+            .unwrap();
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+        assert_eq!(decoded.client_random_auth_key, Some("aabbccdd".to_string()));
+    }
+
+    #[test]
+    fn test_auth_key_none_omitted() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+        assert_eq!(decoded.client_random_auth_key, None);
+    }
+
+    #[test]
+    fn test_auth_key_invalid_hex_decode() {
+        let mut parser = TlvParser::new(&[0x0F, 0x07, b'n', b'o', b't', b'h', b'e', b'x', b'x']);
+        let (tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag, Some(TlvTag::ClientRandomAuthKey));
+        let result = hex::decode(String::from_utf8(value).unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_empty_string_fields_roundtrip() {
+        let config = DeepLinkConfig {
+            hostname: Some("vpn.example.com".to_string()),
+            addresses: vec!["1.2.3.4:443".to_string()],
+            username: Some("alice".to_string()),
+            password: Some("secret".to_string()),
+            client_random_prefix: Some(String::new()),
+            client_random_auth_key: Some(String::new()),
+            custom_sni: Some(String::new()),
+            has_ipv6: true,
+            skip_verification: false,
+            certificate: None,
+            upstream_protocol: Protocol::Http2,
+            anti_dpi: false,
+            name: Some(String::new()),
+            dns_upstreams: vec![],
+            subscription_url: None,
+        };
+
+        let uri = crate::encode::encode(&config).unwrap();
+        let decoded = crate::decode(&uri).unwrap();
+
+        // Some("") encodes as "field omitted" (empty strings are skipped for
+        // prefix and auth key), so decode returns None. This documents that behavior.
+        assert_eq!(decoded.client_random_prefix, None);
+        assert_eq!(decoded.client_random_auth_key, None);
     }
 }

@@ -21,6 +21,7 @@ pub enum TlvTag {
     Name = 0x0C,
     DnsUpstreams = 0x0D,
     SubscriptionUrl = 0x0E,
+    ClientRandomAuthKey = 0x0F,
 }
 
 impl TlvTag {
@@ -45,6 +46,7 @@ impl TlvTag {
             0x0C => Some(TlvTag::Name),
             0x0D => Some(TlvTag::DnsUpstreams),
             0x0E => Some(TlvTag::SubscriptionUrl),
+            0x0F => Some(TlvTag::ClientRandomAuthKey),
             _ => None,
         }
     }
@@ -113,6 +115,7 @@ pub struct DeepLinkConfig {
     pub username: Option<String>,
     pub password: Option<String>,
     pub client_random_prefix: Option<String>,
+    pub client_random_auth_key: Option<String>,
     pub custom_sni: Option<String>,
     pub has_ipv6: bool,
     pub skip_verification: bool,
@@ -167,6 +170,7 @@ pub struct DeepLinkConfigBuilder {
     username: Option<String>,
     password: Option<String>,
     client_random_prefix: Option<String>,
+    client_random_auth_key: Option<String>,
     custom_sni: Option<String>,
     has_ipv6: Option<bool>,
     skip_verification: Option<bool>,
@@ -234,6 +238,11 @@ impl DeepLinkConfigBuilder {
         self
     }
 
+    pub fn client_random_auth_key(mut self, client_random_auth_key: Option<String>) -> Self {
+        self.client_random_auth_key = client_random_auth_key;
+        self
+    }
+
     pub fn name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
@@ -262,12 +271,25 @@ impl DeepLinkConfigBuilder {
             }
         }
 
+        // Validate client_random_auth_key is valid hex if provided
+        if let Some(ref auth_key) = self.client_random_auth_key {
+            if !auth_key.is_empty() {
+                hex::decode(auth_key).map_err(|e| {
+                    DeepLinkError::InvalidAddress(format!(
+                        "client_random_auth_key must be valid hex: {}",
+                        e
+                    ))
+                })?;
+            }
+        }
+
         let config = DeepLinkConfig {
             hostname: self.hostname,
             addresses: self.addresses.unwrap_or_default(),
             username: self.username,
             password: self.password,
             client_random_prefix: self.client_random_prefix,
+            client_random_auth_key: self.client_random_auth_key,
             custom_sni: self.custom_sni,
             has_ipv6: self.has_ipv6.unwrap_or(true),
             skip_verification: self.skip_verification.unwrap_or(false),
@@ -355,6 +377,32 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_rejects_invalid_auth_key_hex() {
+        let result = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_auth_key(Some("not-hex".to_string()))
+            .build();
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_builder_auth_key_empty_is_allowed() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .client_random_auth_key(Some(String::new()))
+            .build()
+            .unwrap();
+        assert_eq!(config.client_random_auth_key, Some(String::new()));
+    }
+
+    #[test]
     fn test_validate_empty_hostname() {
         let config = DeepLinkConfig {
             hostname: Some(String::new()),
@@ -368,6 +416,7 @@ mod tests {
             upstream_protocol: Protocol::Http2,
             anti_dpi: false,
             client_random_prefix: None,
+            client_random_auth_key: None,
             name: None,
             dns_upstreams: vec![],
             subscription_url: None,

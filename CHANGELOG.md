@@ -8,7 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- [Feature] Added `client_random_auth_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the auth key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. The auth key and prefix/mask are mutually exclusive; the auth key takes priority. Added the `--client-random-auth-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
+
 ### Changed
+
+- `gen_client_config` now fails with an error instead of warning and silently dropping the value when the explicit `--client-random-prefix` or `--client-random-auth-key` has no matching allow rule in `rules.toml`.
+- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for auth key validation.
 
 ### Deprecated
 

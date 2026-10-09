@@ -198,6 +198,13 @@ fn generate_rules_toml_content(rules_config: &trusttunnel::rules::RulesConfig) -
     content.push_str(
         "#   Can optionally include a mask in format \"prefix[/mask]\" for bitwise matching\n",
     );
+    content.push_str(
+        "# - client_random_auth_key: Hex-encoded auth key, 16 bytes (32 hex chars) or longer\n",
+    );
+    content.push_str(
+        "#   Matches clients whose TLS client random is derived from this key and the SNI\n",
+    );
+    content.push_str("#   Mutually exclusive with client_random_prefix (the key takes priority)\n");
     content.push_str("# - action: \"allow\" or \"deny\"\n");
     content.push_str("#\n");
     content.push_str("# All fields except 'action' are optional - if specified, all conditions must match for the rule to apply.\n");
