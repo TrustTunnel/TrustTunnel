@@ -8,12 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- [Feature] Added `client_random_auth_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the auth key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. The auth key and prefix/mask are mutually exclusive; the auth key takes priority. Added the `--client-random-auth-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
-
 ### Changed
-
-- `gen_client_config` now fails with an error instead of warning and silently dropping the value when the explicit `--client-random-prefix` or `--client-random-auth-key` has no matching allow rule in `rules.toml`.
-- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for auth key validation.
 
 ### Deprecated
 
@@ -22,6 +17,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 ### Security
+
+## [1.3.0-beta.2] - 2026-10-09
+
+### Added
+
+- [Feature] Added `client_random_auth_key` field to `Rule` in `rules.toml`. When set, the rules engine validates part of the TLS `client_random` (the second half, derived from the auth key, SNI, and other random bytes) using the HKDF-SHA256 + AES-128 algorithm, instead of prefix/mask matching. The auth key and prefix/mask are mutually exclusive; the auth key takes priority. Added the `--client-random-auth-key` CLI flag to `gen_client_config` for exporting the key in client config TOML and deep-links.
+
+### Changed
+
+- `gen_client_config` now fails with an error instead of warning and silently dropping the value when the explicit `--client-random-prefix` or `--client-random-auth-key` has no matching allow rule in `rules.toml`.
+- `Rule::matches()` and `RulesEngine::evaluate()` now take an additional `sni: Option<&str>` parameter for auth key validation.
 
 ## [1.3.0-beta.1] - 2026-10-01
 
@@ -308,7 +314,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...HEAD
+[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...HEAD
+[1.3.0-beta.2]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...v1.3.0-beta.2
 [1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
 [1.1.0]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.41...v1.1.0
 [1.0.41]: https://github.com/TrustTunnel/TrustTunnel/compare/32bc4a47...v1.0.41
