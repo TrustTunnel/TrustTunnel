@@ -221,7 +221,10 @@ impl TlsDemux {
                 None => Default::default(),
                 Some(_) => make_hosts!(tls_settings.reverse_proxy_hosts)?,
             },
-            subscription_hosts: make_hosts!(tls_settings.subscription_hosts)?,
+            subscription_hosts: match settings.subscription {
+                None => Default::default(),
+                Some(_) => make_hosts!(tls_settings.subscription_hosts)?,
+            },
             tunnel_protocols: {
                 let mut x = SmallVec::new();
                 if settings.listen_protocols.http1.is_some() {
@@ -403,6 +406,7 @@ mod tests {
         Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, ReverseProxySettings,
         Settings, TlsHostInfo, TlsHostsSettings,
     };
+    use crate::subscription::SubscriptionSettings;
     use crate::tls_demultiplexer;
     use crate::tls_demultiplexer::{ConnectionMeta, Protocol};
     use std::net::ToSocketAddrs;
@@ -431,6 +435,15 @@ mod tests {
             hostname: host,
             ..Default::default()
         }
+    }
+
+    fn settings_with_subscription() -> Settings {
+        let mut settings = Settings::default();
+        settings.subscription = Some(SubscriptionSettings {
+            hostname: Some("vpn.example.com".to_string()),
+            ..Default::default()
+        });
+        settings
     }
 
     fn check_protocol_selection(
@@ -788,7 +801,8 @@ mod tests {
         let mut tls_settings = TlsHostsSettings::default();
         tls_settings.subscription_hosts = vec![make_tls_host(TEST_HOST.to_string())];
 
-        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+        let settings = settings_with_subscription();
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
 
         let meta = demux
             .select(
@@ -827,7 +841,8 @@ mod tests {
         tls_settings.main_hosts = vec![make_tls_host(MAIN_HOST.to_string())];
         tls_settings.subscription_hosts = vec![make_tls_host(SUBSCRIPTION_HOST.to_string())];
 
-        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+        let settings = settings_with_subscription();
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
         let advertised_alpn = [Protocol::Http1.as_alpn().as_bytes()].into_iter();
 
         let meta = demux
@@ -844,5 +859,20 @@ mod tests {
             .unwrap();
         assert_eq!(meta.channel, Channel::Tunnel);
         assert_eq!(meta.sni_auth_creds.as_deref(), Some(CREDENTIALS));
+    }
+
+    #[test]
+    fn subscription_hosts_not_served_without_subscription_section() {
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.subscription_hosts = vec![make_tls_host("sub.localhost".to_string())];
+
+        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+
+        demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                "sub.localhost".to_string(),
+            )
+            .expect_err("subscription host must not be served without [subscription]");
     }
 }
