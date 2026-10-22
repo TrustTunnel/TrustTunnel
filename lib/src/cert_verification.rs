@@ -15,6 +15,15 @@ pub struct CertificateVerifier {
     root_store: Arc<RootCertStore>,
 }
 
+/// Check whether the certificate chain in `cert_path` is verified against
+/// `hostname` by the system trust store. Returns `false` when the trust store
+/// cannot be loaded.
+pub fn is_system_verifiable(cert_path: &str, hostname: &str) -> bool {
+    CertificateVerifier::new()
+        .map(|verifier| verifier.is_system_verifiable(cert_path, hostname))
+        .unwrap_or(false)
+}
+
 impl CertificateVerifier {
     /// Create a new verifier with system trust anchors loaded.
     pub fn new() -> io::Result<Self> {

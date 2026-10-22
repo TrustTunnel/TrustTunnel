@@ -272,15 +272,14 @@ fn main() {
     )
     .expect("Couldn't parse the TLS hosts settings file");
 
-    if let Some(sub) = settings.get_subscription().as_ref() {
-        trusttunnel::subscription::validate_with_hosts(sub, &settings, &tls_hosts_settings)
-            .unwrap_or_else(|e| {
-                eprintln!("Error: {e:?}");
-                std::process::exit(1);
-            });
-    }
-
     if args.contains_id(CLIENT_CONFIG_PARAM_NAME) {
+        // The export path must not start the endpoint, so it validates the
+        // settings here instead of relying on Core::new.
+        if let Err(e) = Core::check_settings(&settings, &tls_hosts_settings) {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+
         let username = args.get_one::<String>(CLIENT_CONFIG_PARAM_NAME).unwrap();
         let listen_port = settings.get_listen_address().port();
         let explicit_addresses: Vec<String> = args
@@ -495,6 +494,12 @@ fn main() {
                         &tls_hosts_settings,
                         sub.hostname.as_deref(),
                     )?;
+                    if let Err(e) =
+                        client_config::validate_subscription_url_host(&tls_hosts_settings)
+                    {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
                     let port = client_config::subscription_url_port(sub.address.as_deref())
                         .map(|port| format!(":{port}"))
                         .unwrap_or_default();
@@ -592,12 +597,10 @@ fn main() {
                 client_config::subscription_url_host(&tls_hosts_settings, sub.hostname.as_deref())
             });
             if let Some(host) = host {
-                let system_verifiable = trusttunnel::cert_verification::CertificateVerifier::new()
-                    .ok()
-                    .map(|verifier| {
-                        verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname)
-                    })
-                    .unwrap_or(false);
+                let system_verifiable = trusttunnel::cert_verification::is_system_verifiable(
+                    &host.cert_chain_path,
+                    &host.hostname,
+                );
                 if !system_verifiable {
                     eprintln!(
                         "Error: --subscription-only requires the certificate of the subscription \
@@ -666,15 +669,18 @@ fn main() {
     } else {
         None
     };
-    let core = Arc::new(
-        Core::new(
-            settings,
-            authenticator,
-            tls_hosts_settings,
-            shutdown.clone(),
-        )
-        .expect("Couldn't create core instance"),
-    );
+    let core = match Core::new(
+        settings,
+        authenticator,
+        tls_hosts_settings,
+        shutdown.clone(),
+    ) {
+        Ok(core) => Arc::new(core),
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+    };
 
     let listen_task = {
         let core = core.clone();
@@ -698,10 +704,6 @@ fn main() {
                 )
                 .expect("Couldn't parse the TLS hosts settings file");
 
-                core.reload_tls_hosts_settings(tls_hosts_settings.clone())
-                    .expect("Couldn't apply new settings");
-                info!("TLS hosts settings are successfully reloaded");
-
                 info!("Reloading subscription settings");
                 let subscription = std::fs::read_to_string(&settings_path).and_then(|contents| {
                     extract_subscription(&contents).map_err(|e| {
@@ -713,14 +715,15 @@ fn main() {
                 });
                 match subscription {
                     Ok(sub) => {
-                        if let Err(e) = core.reload_subscription_settings(sub, &tls_hosts_settings)
+                        if let Err(e) =
+                            core.reload_tls_hosts_and_subscription_settings(sub, tls_hosts_settings)
                         {
                             error!(
-                                "Failed to reload subscription settings: {}; keeping previous",
+                                "Failed to reload TLS hosts and subscription settings: {}; keeping previous",
                                 e
                             );
                         } else {
-                            info!("Subscription settings are successfully reloaded");
+                            info!("TLS hosts and subscription settings are successfully reloaded");
                         }
                     }
                     Err(e) => error!(
@@ -898,7 +901,7 @@ struct SubscriptionOnly {
 /// Re-parsing the whole `Settings` would re-read `credentials.toml` and
 /// re-validate unrelated fields; this wrapper ignores all other keys (serde
 /// ignores unknown fields by default) and only validates `[subscription]` via
-/// `Core::reload_subscription_settings`.
+/// `Core::reload_tls_hosts_and_subscription_settings`.
 fn extract_subscription(
     contents: &str,
 ) -> Result<Option<trusttunnel::subscription::SubscriptionSettings>, toml::de::Error> {

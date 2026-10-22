@@ -163,17 +163,14 @@ pub(crate) struct SubscriptionResponse<'a> {
     pub dns_upstreams: &'a Vec<String>,
 }
 
-/// Validate `sub` against the endpoint and TLS hosts settings.
+/// Return the main host whose hostname matches `[subscription].hostname`.
 ///
-/// Runs the field checks ([`validate`]) and verifies that `hostname` matches a
-/// `main_hosts` entry, returning the matched host. Does not read certificate
-/// files, so it is cheap enough to run on every endpoint invocation.
-pub fn validate_with_hosts<'a>(
+/// The subscription section describes a main host, so the section is invalid
+/// when its `hostname` is absent from `main_hosts`.
+pub(crate) fn matching_host<'a>(
     sub: &SubscriptionSettings,
-    settings: &Settings,
     hosts: &'a TlsHostsSettings,
 ) -> Result<&'a TlsHostInfo, ValidationError> {
-    validate(sub, settings)?;
     let hostname = sub.hostname.as_deref().unwrap_or("");
     hosts
         .main_hosts
@@ -186,23 +183,25 @@ pub fn validate_with_hosts<'a>(
         })
 }
 
-/// Resolve a [`SubscriptionSettings`] into a [`SubscriptionConfig`].
+/// Resolve an already validated [`SubscriptionSettings`] into a
+/// [`SubscriptionConfig`].
 ///
-/// Reads the matched main host's certificate chain and checks system-verifiability
-/// using the same logic as `client_config::build`. Returns `Err` (without mutating
-/// any runtime state) on any validation failure, so reload callers can keep the
-/// previous configuration.
+/// Matches the configured hostname against `main_hosts`, reads the matched
+/// host's certificate chain, and checks its system-verifiability to decide
+/// whether the certificate must be embedded in the subscription response.
+/// Returns `Err` (without mutating any runtime state) on any failure, so
+/// reload callers can keep the previous configuration.
 pub(crate) fn resolve(
-    sub: &SubscriptionSettings,
-    settings: &Settings,
+    sub: Option<&SubscriptionSettings>,
     hosts: &TlsHostsSettings,
-) -> Result<SubscriptionConfig, ValidationError> {
-    let host = validate_with_hosts(sub, settings, hosts)?;
+) -> Result<Option<SubscriptionConfig>, ValidationError> {
+    let Some(sub) = sub else {
+        return Ok(None);
+    };
+    let host = matching_host(sub, hosts)?;
 
-    let system_verifiable = crate::cert_verification::CertificateVerifier::new()
-        .ok()
-        .map(|verifier| verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname))
-        .unwrap_or(false);
+    let system_verifiable =
+        crate::cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname);
 
     let certificate = if system_verifiable {
         None
@@ -215,7 +214,7 @@ pub(crate) fn resolve(
         })?)
     };
 
-    Ok(SubscriptionConfig {
+    Ok(Some(SubscriptionConfig {
         enabled: sub.enabled,
         path: sub.path.clone(),
         hostname: sub.hostname.clone().unwrap_or_default(),
@@ -225,7 +224,7 @@ pub(crate) fn resolve(
         certificate,
         custom_sni: sub.custom_sni.clone().filter(|s| !s.is_empty()),
         client_random_prefix: sub.client_random_prefix.clone().filter(|s| !s.is_empty()),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -377,29 +376,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_with_hosts_returns_matching_host() {
+    fn matching_host_returns_matching_host() {
         let hosts = tls_hosts_with("vpn.example.com");
-        let settings = Settings::default();
-        let host = validate_with_hosts(&enabled_sub(), &settings, &hosts).unwrap();
+        let host = matching_host(&enabled_sub(), &hosts).unwrap();
         assert_eq!(host.hostname, "vpn.example.com");
     }
 
     #[test]
-    fn validate_with_hosts_rejects_unknown_hostname() {
+    fn matching_host_rejects_unknown_hostname() {
         let hosts = tls_hosts_with("other.example.com");
-        let settings = Settings::default();
         assert!(matches!(
-            validate_with_hosts(&enabled_sub(), &settings, &hosts),
+            matching_host(&enabled_sub(), &hosts),
             Err(ValidationError::Subscription(_))
         ));
-    }
-
-    #[test]
-    fn validate_with_hosts_rejects_invalid_section() {
-        let mut sub = enabled_sub();
-        sub.address = Some("no-port".to_string());
-        let hosts = tls_hosts_with("vpn.example.com");
-        let settings = Settings::default();
-        assert!(validate_with_hosts(&sub, &settings, &hosts).is_err());
     }
 }

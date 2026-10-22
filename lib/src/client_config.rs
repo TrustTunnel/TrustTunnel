@@ -1,5 +1,5 @@
 use crate::{
-    authentication::registry_based, cert_verification::CertificateVerifier, settings::TlsHostInfo,
+    authentication::registry_based, cert_verification, settings::TlsHostInfo,
     settings::TlsHostsSettings, utils::ToTomlComment,
 };
 #[cfg(feature = "rt_doc")]
@@ -103,6 +103,30 @@ pub fn subscription_url_host<'a>(
     })
 }
 
+/// Check that a client receiving an exported config can fetch the subscription
+/// from the host the exported subscription URL points at.
+///
+/// When `subscription_hosts` is configured, the URL points at its first entry
+/// and no certificate is embedded for that host in the exported config, so its
+/// certificate must be verifiable by system CAs. Otherwise the URL points at a
+/// main host, whose certificate is embedded in the exported config.
+pub fn validate_subscription_url_host(hosts: &TlsHostsSettings) -> Result<(), String> {
+    let Some(host) = hosts.subscription_hosts.first() else {
+        return Ok(());
+    };
+
+    if cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "the certificate of the subscription host '{}' is not verifiable by system CAs; \
+         no certificate is embedded for a dedicated subscription host in the exported \
+         config, so clients would not be able to fetch the subscription from it",
+        host.hostname
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     client: &String,
@@ -130,10 +154,8 @@ pub fn build(
         std::fs::read_to_string(&host.cert_chain_path).expect("Failed to load certificate");
 
     // Check if certificate is system-verifiable
-    let cert_is_system_verifiable = CertificateVerifier::new()
-        .ok()
-        .map(|verifier| verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname))
-        .unwrap_or(false);
+    let cert_is_system_verifiable =
+        cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname);
 
     ClientConfig {
         hostname: host.hostname.clone(),
@@ -713,5 +735,19 @@ omxU7kknZApM\n\
         let hosts = hosts_with(&["vpn.example.com"], &[]);
         assert!(subscription_url_host(&hosts, Some("unknown.example.com")).is_none());
         assert!(subscription_url_host(&hosts, None).is_none());
+    }
+
+    #[test]
+    fn validate_subscription_url_host_accepts_no_subscription_hosts() {
+        let hosts = hosts_with(&["vpn.example.com"], &[]);
+        assert!(validate_subscription_url_host(&hosts).is_ok());
+    }
+
+    #[test]
+    fn validate_subscription_url_host_rejects_unverifiable_certificate() {
+        // The test certificate is self-signed, so it is not system-verifiable.
+        let hosts = hosts_with(&["vpn.example.com"], &["sub.example.com"]);
+        let err = validate_subscription_url_host(&hosts).unwrap_err();
+        assert!(err.contains("sub.example.com"));
     }
 }

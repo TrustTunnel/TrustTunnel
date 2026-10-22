@@ -183,7 +183,7 @@ pub struct Settings {
     /// When enabled, the endpoint serves a per-user JSON configuration over an
     /// existing main TLS host or a dedicated host from
     /// [`TlsHostsSettings::subscription_hosts`]. Hot-reloaded on `SIGHUP` (see
-    /// [`crate::core::Core::reload_subscription_settings`]).
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings`]).
     #[serde(default)]
     pub(crate) subscription: Option<SubscriptionSettings>,
     /// The ICMP forwarding settings.
@@ -259,14 +259,16 @@ pub struct TlsHostInfo {
     /// Path to a file containing the certificate chain.
     /// MUST remain valid until [`crate::core::Core::listen()`] or
     /// [`crate::core::Core::listen_async()`] is running, or
-    /// until the next [`crate::core::Core::reload_tls_hosts_settings()`] call.
+    /// until the next
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings()`] call.
     #[serde(deserialize_with = "deserialize_file_path")]
     pub cert_chain_path: String,
     /// Path to a file containing the private key.
     /// May be equal to `cert_chain_path` if it contains both of them.
     /// MUST remain valid until [`crate::core::Core::listen()`] or
     /// [`crate::core::Core::listen_async()`] is running, or
-    /// until the next [`crate::core::Core::reload_tls_hosts_settings()`] call.
+    /// until the next
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings()`] call.
     #[serde(deserialize_with = "deserialize_file_path")]
     pub private_key_path: String,
     /// List of alternative SNIs that should be accepted for this host.
@@ -567,6 +569,10 @@ impl Settings {
         Self::validate_request_path("speedtest_path", &self.speedtest_path)?;
         Self::validate_request_path_overlaps(&self.ping_path, &self.speedtest_path)?;
 
+        if let Some(subscription) = self.subscription.as_ref() {
+            crate::subscription::validate(subscription, self)?;
+        }
+
         if self.listen_protocols.http1.is_none()
             && self.listen_protocols.http2.is_none()
             && self.listen_protocols.quic.is_none()
@@ -767,32 +773,6 @@ impl TlsHostsSettings {
             .map_err(ValidationError::ReverseProxy)?;
         Self::validate_tls_hosts(self.subscription_hosts.iter(), hosts)
             .map_err(ValidationError::Subscription)?;
-        // Builder users may supply private certificates, e.g. in tests.
-        if !self.built {
-            Self::validate_system_verifiable(&self.subscription_hosts)
-                .map_err(ValidationError::Subscription)?;
-        }
-
-        Ok(())
-    }
-
-    fn validate_system_verifiable(hosts: &[TlsHostInfo]) -> Result<(), String> {
-        if hosts.is_empty() {
-            return Ok(());
-        }
-
-        let verifier = crate::cert_verification::CertificateVerifier::new().ok();
-        for host in hosts {
-            let system_verifiable = verifier.as_ref().is_some_and(|verifier| {
-                verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname)
-            });
-            if !system_verifiable {
-                return Err(format!(
-                    "Certificate is not verifiable by system CAs: hostname='{}'",
-                    host.hostname
-                ));
-            }
-        }
 
         Ok(())
     }
@@ -1968,22 +1948,17 @@ mod tests {
     }
 
     #[test]
-    fn validate_rejects_unverifiable_subscription_host_certificate() {
-        let file = crate::utils::make_test_cert_key_file();
-        let path = file.path().to_str().unwrap();
-        let hosts: TlsHostsSettings = toml::from_str(&format!(
-            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
-             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
-             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
-             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
-        ))
-        .unwrap();
+    fn validate_checks_subscription_section() {
+        let mut settings = Settings::default();
+        settings.listen_address = (Ipv4Addr::LOCALHOST, 8443).into();
+        settings.subscription = Some(SubscriptionSettings {
+            address: Some("no-port".to_string()),
+            ..Default::default()
+        });
 
-        match hosts.validate().unwrap_err() {
-            ValidationError::Subscription(message) => {
-                assert!(message.contains("sub.example.com"));
-            }
-            other => panic!("Unexpected error: {:?}", other),
-        }
+        assert!(matches!(
+            settings.validate().unwrap_err(),
+            ValidationError::Subscription(_)
+        ));
     }
 }

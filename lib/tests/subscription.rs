@@ -675,7 +675,7 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         custom_sni: None,
         client_random_prefix: None,
     };
-    core.reload_subscription_settings(Some(updated), &hosts_for_reload)
+    core.reload_tls_hosts_and_subscription_settings(Some(updated), hosts_for_reload.clone())
         .unwrap();
     assert_eq!(
         fetch_address(&endpoint_address, ALICE_BASIC).await,
@@ -693,7 +693,7 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         client_random_prefix: None,
     };
     assert!(core
-        .reload_subscription_settings(Some(bad), &hosts_for_reload)
+        .reload_tls_hosts_and_subscription_settings(Some(bad), hosts_for_reload)
         .is_err());
     assert_eq!(
         fetch_address(&endpoint_address, ALICE_BASIC).await,
@@ -1120,4 +1120,141 @@ async fn deny_all_rules_do_not_affect_dedicated_host_over_h3() {
         _ = client_task => (),
         _ = tokio::time::sleep(Duration::from_secs(30)) => panic!("Timed out"),
     }
+}
+
+async fn fetch_dedicated_address(endpoint_address: &SocketAddr, auth: &str) -> String {
+    let (parts, body) = fetch_dedicated(endpoint_address, "/subscription", Some(auth), &[]).await;
+    assert_eq!(parts.status, http::StatusCode::OK);
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    body.split("\"address\":\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn reload_accepts_unverifiable_dedicated_host_certificate() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // The dedicated host uses a self-signed certificate, which must not block
+    // the reload: certificate trust is only required when exporting a client
+    // config, not when serving.
+    let parsed_hosts: TlsHostsSettings = toml::from_str(&format!(
+        "[[main_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n\
+         [[subscription_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n",
+        common::MAIN_DOMAIN_NAME,
+        cert_path,
+        cert_path,
+        common::SUBSCRIPTION_DOMAIN_NAME,
+        cert_path,
+        cert_path,
+    ))
+    .unwrap();
+
+    let updated = SubscriptionSettings {
+        enabled: true,
+        hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("198.51.100.7:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+    };
+
+    core.reload_tls_hosts_and_subscription_settings(Some(updated), parsed_hosts)
+        .unwrap();
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "198.51.100.7:443"
+    );
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_with_invalid_subscription_keeps_previous_hosts() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // The new hosts replace the dedicated subscription host, and the new
+    // [subscription] section names a hostname missing from main_hosts. The
+    // reload must be rejected as a whole, keeping the previous hosts.
+    let new_hosts: TlsHostsSettings = toml::from_str(&format!(
+        "[[main_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{cert_path}\"\nprivate_key_path = \"{cert_path}\"\n\
+         [[subscription_hosts]]\nhostname = \"newsub.example.com\"\ncert_chain_path = \"{cert_path}\"\nprivate_key_path = \"{cert_path}\"\n",
+        common::MAIN_DOMAIN_NAME,
+    ))
+    .unwrap();
+
+    let bad = SubscriptionSettings {
+        enabled: true,
+        hostname: Some("nope.invalid".to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("198.51.100.7:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+    };
+
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(Some(bad), new_hosts)
+        .is_err());
+
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+    assert_handshake_dropped("newsub.example.com", &endpoint_address).await;
+
+    listen_task.abort();
 }

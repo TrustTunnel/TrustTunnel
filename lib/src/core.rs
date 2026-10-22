@@ -107,14 +107,11 @@ impl Core {
         tls_hosts_settings: settings::TlsHostsSettings,
         shutdown: Arc<Mutex<Shutdown>>,
     ) -> Result<Self, Error> {
-        if !settings.is_built() {
-            settings.validate().map_err(Error::SettingsValidation)?;
-        }
-        if !tls_hosts_settings.is_built() {
-            tls_hosts_settings
-                .validate()
+        Self::check_settings(&settings, &tls_hosts_settings)?;
+
+        let subscription =
+            crate::subscription::resolve(settings.subscription.as_ref(), &tls_hosts_settings)
                 .map_err(Error::SettingsValidation)?;
-        }
 
         let settings = Arc::new(settings);
 
@@ -136,13 +133,6 @@ impl Core {
             None
         };
 
-        let subscription = match settings.subscription.as_ref() {
-            Some(sub) => Some(
-                crate::subscription::resolve(sub, &settings, &tls_hosts_settings)
-                    .map_err(Error::SettingsValidation)?,
-            ),
-            None => None,
-        };
         let per_client_metrics = settings
             .metrics
             .as_ref()
@@ -232,43 +222,61 @@ impl Core {
         }
     }
 
-    /// Reload the TLS hosts settings
-    pub fn reload_tls_hosts_settings(
-        &self,
-        settings: settings::TlsHostsSettings,
-    ) -> io::Result<()> {
-        let mut demux = self.context.tls_demux.write().unwrap();
-
+    /// Validate the settings without starting the endpoint.
+    ///
+    /// Checks the settings fields, the TLS host lists, and, when the
+    /// `[subscription]` section is present, that its hostname matches a main
+    /// host. [`Core::new`] runs this validation before resolving the
+    /// subscription configuration and constructing the endpoint; the
+    /// client-config export calls it directly because it must not start the
+    /// endpoint.
+    pub fn check_settings(
+        settings: &Settings,
+        tls_hosts_settings: &settings::TlsHostsSettings,
+    ) -> Result<(), Error> {
         if !settings.is_built() {
-            settings
-                .validate()
-                .map_err(|e| io::Error::other(format!("Settings validation failure: {:?}", e)))?;
+            settings.validate().map_err(Error::SettingsValidation)?;
         }
-
-        *demux = TlsDemux::new(&self.context.settings, &settings)?;
+        if !tls_hosts_settings.is_built() {
+            tls_hosts_settings
+                .validate()
+                .map_err(Error::SettingsValidation)?;
+        }
+        if let Some(sub) = settings.subscription.as_ref() {
+            crate::subscription::matching_host(sub, tls_hosts_settings)
+                .map_err(Error::SettingsValidation)?;
+        }
         Ok(())
     }
 
-    /// Reload the subscription settings.
+    /// Reload the TLS hosts and subscription settings atomically.
     ///
     /// `sub` is the freshly parsed `[subscription]` section (or `None` when the
-    /// section is absent). On a validation/resolve failure the previously applied
-    /// configuration is left unchanged and an error is returned.
-    pub fn reload_subscription_settings(
+    /// section is absent). The new hosts and the subscription are validated
+    /// and resolved before anything is applied; on failure the previously
+    /// applied configuration is left unchanged.
+    pub fn reload_tls_hosts_and_subscription_settings(
         &self,
         sub: Option<crate::subscription::SubscriptionSettings>,
-        hosts: &settings::TlsHostsSettings,
+        hosts: settings::TlsHostsSettings,
     ) -> io::Result<()> {
-        let resolved = match sub {
-            Some(sub) => Some(
-                crate::subscription::resolve(&sub, &self.context.settings, hosts).map_err(|e| {
-                    io::Error::other(format!("Subscription resolve failure: {:?}", e))
-                })?,
-            ),
-            None => None,
+        let validation_failure = |e: settings::ValidationError| {
+            io::Error::other(format!("Settings validation failure: {:?}", e))
         };
+        if !hosts.is_built() {
+            hosts.validate().map_err(validation_failure)?;
+        }
+        if let Some(sub) = sub.as_ref() {
+            crate::subscription::validate(sub, &self.context.settings)
+                .map_err(validation_failure)?;
+        }
+        let resolved =
+            crate::subscription::resolve(sub.as_ref(), &hosts).map_err(validation_failure)?;
+        let new_demux = TlsDemux::new(&self.context.settings, &hosts)?;
 
+        let mut demux = self.context.tls_demux.write().unwrap();
         let mut store = self.context.subscription.write().unwrap();
+        *demux = new_demux;
         *store = resolved;
         Ok(())
     }
@@ -887,5 +895,123 @@ impl Default for Context {
             next_tunnel_id: Default::default(),
             connection_limiter: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::{Http1Settings, ListenProtocolSettings, TlsHostInfo, TlsHostsSettings};
+    use crate::subscription::SubscriptionSettings;
+
+    fn settings_with(subscription: Option<SubscriptionSettings>) -> Settings {
+        let mut builder = Settings::builder()
+            .listen_address("127.0.0.1:8443")
+            .unwrap()
+            .listen_protocols(ListenProtocolSettings {
+                http1: Some(Http1Settings::builder().build()),
+                http2: None,
+                quic: None,
+            });
+        if let Some(subscription) = subscription {
+            builder = builder.subscription(subscription);
+        }
+        builder.build().unwrap()
+    }
+
+    fn subscription(hostname: &str) -> SubscriptionSettings {
+        SubscriptionSettings {
+            enabled: true,
+            hostname: Some(hostname.to_string()),
+            address: Some("1.2.3.4:443".to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn host(hostname: &str, path: &str) -> TlsHostInfo {
+        TlsHostInfo {
+            hostname: hostname.to_string(),
+            cert_chain_path: path.to_string(),
+            private_key_path: path.to_string(),
+            allowed_sni: vec![],
+        }
+    }
+
+    #[test]
+    fn check_settings_accepts_subscription_hosts_without_subscription() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts = TlsHostsSettings::builder()
+            .main_hosts(vec![host("vpn.example.com", path)])
+            .subscription_hosts(vec![host("sub.example.com", path)])
+            .build()
+            .unwrap();
+
+        assert!(Core::check_settings(&settings_with(None), &hosts).is_ok());
+    }
+
+    #[test]
+    fn check_settings_rejects_subscription_hostname_missing_in_main_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts = TlsHostsSettings::builder()
+            .main_hosts(vec![host("vpn.example.com", path)])
+            .build()
+            .unwrap();
+        let settings = settings_with(Some(subscription("other.example.com")));
+
+        assert!(matches!(
+            Core::check_settings(&settings, &hosts),
+            Err(Error::SettingsValidation(
+                settings::ValidationError::Subscription(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn check_settings_validates_parsed_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+        let settings = settings_with(Some(subscription("vpn.example.com")));
+
+        assert!(matches!(
+            Core::check_settings(&settings, &hosts),
+            Err(Error::SettingsValidation(
+                settings::ValidationError::Subscription(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn new_validates_parsed_settings_and_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        // Settings::default() is not builder-built, so Core::new must
+        // validate it and resolve the subscription by itself.
+        let mut settings = Settings::default();
+        settings.listen_address = (std::net::Ipv4Addr::LOCALHOST, 8443).into();
+        settings.subscription = Some(subscription("other.example.com"));
+
+        assert!(matches!(
+            Core::new(settings, None, hosts, Shutdown::new()),
+            Err(Error::SettingsValidation(
+                settings::ValidationError::Subscription(_)
+            ))
+        ));
     }
 }
