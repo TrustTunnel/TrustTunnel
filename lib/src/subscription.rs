@@ -2,8 +2,9 @@ use crate::settings::{Settings, TlsHostInfo, TlsHostsSettings, ValidationError};
 
 /// The `[subscription]` settings parsed from `vpn.toml`.
 ///
-/// Served over an existing main TLS host; live connection parameters not listed
-/// here are derived from the endpoint configuration at resolve time.
+/// Served over an existing main TLS host or a dedicated host from
+/// [`TlsHostsSettings::subscription_hosts`]; live connection parameters not
+/// listed here are derived from the endpoint configuration at resolve time.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[cfg_attr(feature = "rt_doc", derive(macros::RuntimeDoc))]
 pub struct SubscriptionSettings {

@@ -179,7 +179,7 @@ impl Downstream for HttpDownstream {
                             http_subscription_handler::listen(
                                 context.clone(),
                                 Box::new(http_codec::stream_into_codec(stream, protocol)),
-                                sni,
+                                Some(sni),
                                 stream_id,
                             )
                             .await

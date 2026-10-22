@@ -272,13 +272,13 @@ fn main() {
     )
     .expect("Couldn't parse the TLS hosts settings file");
 
-    let subscription_host = settings.get_subscription().as_ref().map(|sub| {
+    if let Some(sub) = settings.get_subscription().as_ref() {
         trusttunnel::subscription::validate_with_hosts(sub, &settings, &tls_hosts_settings)
             .unwrap_or_else(|e| {
                 eprintln!("Error: {e:?}");
                 std::process::exit(1);
-            })
-    });
+            });
+    }
 
     if args.contains_id(CLIENT_CONFIG_PARAM_NAME) {
         let username = args.get_one::<String>(CLIENT_CONFIG_PARAM_NAME).unwrap();
@@ -481,7 +481,6 @@ fn main() {
                 .get_clients()
                 .iter()
                 .find(|c| c.username == *username)?;
-            let hostname = sub.hostname.as_deref()?;
             let base: String = match args.get_one::<String>(SUBSCRIPTION_URL_PARAM_NAME) {
                 Some(override_url) => {
                     if let Err(e) = client_config::validate_subscription_url_override(override_url)
@@ -492,10 +491,14 @@ fn main() {
                     override_url.clone()
                 }
                 None => {
+                    let host = client_config::subscription_url_host(
+                        &tls_hosts_settings,
+                        sub.hostname.as_deref(),
+                    )?;
                     let port = client_config::subscription_url_port(sub.address.as_deref())
                         .map(|port| format!(":{port}"))
                         .unwrap_or_default();
-                    format!("https://{hostname}{port}{}", sub.path.as_str())
+                    format!("https://{}{port}{}", host.hostname, sub.path.as_str())
                 }
             };
             Some(client_config::build_subscription_url(
@@ -585,7 +588,10 @@ fn main() {
                 .get_one::<String>(SUBSCRIPTION_URL_PARAM_NAME)
                 .is_none()
         {
-            if let Some(host) = subscription_host {
+            let host = settings.get_subscription().as_ref().and_then(|sub| {
+                client_config::subscription_url_host(&tls_hosts_settings, sub.hostname.as_deref())
+            });
+            if let Some(host) = host {
                 let system_verifiable = trusttunnel::cert_verification::CertificateVerifier::new()
                     .ok()
                     .map(|verifier| {

@@ -103,6 +103,7 @@ pub(crate) struct TlsDemux {
     reverse_proxy_hosts: HashMap<String, Host>,
     ping_hosts: HashMap<String, Host>,
     speedtest_hosts: HashMap<String, Host>,
+    subscription_hosts: HashMap<String, Host>,
     tunnel_protocols: SmallVec<[Protocol; 3]>,
     allowed_sni_to_main_host: HashMap<String, String>,
 }
@@ -220,6 +221,7 @@ impl TlsDemux {
                 None => Default::default(),
                 Some(_) => make_hosts!(tls_settings.reverse_proxy_hosts)?,
             },
+            subscription_hosts: make_hosts!(tls_settings.subscription_hosts)?,
             tunnel_protocols: {
                 let mut x = SmallVec::new();
                 if settings.listen_protocols.http1.is_some() {
@@ -273,7 +275,18 @@ impl TlsDemux {
             ));
         }
 
-        let (protocol, channel, host, auth) = if let Some(h) = self.main_hosts.get(&sni) {
+        let (protocol, channel, host, auth) = if let Some(h) = self.subscription_hosts.get(&sni) {
+            (
+                parsed_alpn
+                    .iter()
+                    .max()
+                    .cloned()
+                    .unwrap_or(DEFAULT_PROTOCOL),
+                Channel::Subscription,
+                h,
+                None,
+            )
+        } else if let Some(h) = self.main_hosts.get(&sni) {
             (
                 self.select_tunnel_channel_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Tunnel,
@@ -766,5 +779,70 @@ mod tests {
         demux
             .select(advertised_alpn.clone(), "unknown.sni".to_string())
             .expect_err("Unknown SNI should fail");
+    }
+
+    #[test]
+    fn subscription_protocol_selection() {
+        const TEST_HOST: &str = "sub.localhost";
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.subscription_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+
+        let meta = demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+        let meta = demux
+            .select(
+                [Protocol::Http2.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http2);
+        let meta = demux
+            .select(
+                [Protocol::Http3.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http3);
+        let meta = demux
+            .select(std::iter::empty(), TEST_HOST.to_string())
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+    }
+
+    #[test]
+    fn subscription_channel_selection_has_priority_over_credential_split() {
+        const MAIN_HOST: &str = "endpoint";
+        const SUBSCRIPTION_HOST: &str = "sub.endpoint";
+        const CREDENTIALS: &str = "creds";
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.main_hosts = vec![make_tls_host(MAIN_HOST.to_string())];
+        tls_settings.subscription_hosts = vec![make_tls_host(SUBSCRIPTION_HOST.to_string())];
+
+        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+        let advertised_alpn = [Protocol::Http1.as_alpn().as_bytes()].into_iter();
+
+        let meta = demux
+            .select(advertised_alpn.clone(), SUBSCRIPTION_HOST.to_string())
+            .unwrap();
+        assert_eq!(meta.channel, Channel::Subscription);
+        assert!(meta.sni_auth_creds.is_none());
+
+        let meta = demux
+            .select(
+                advertised_alpn.clone(),
+                format!("{CREDENTIALS}.{MAIN_HOST}"),
+            )
+            .unwrap();
+        assert_eq!(meta.channel, Channel::Tunnel);
+        assert_eq!(meta.sni_auth_creds.as_deref(), Some(CREDENTIALS));
     }
 }

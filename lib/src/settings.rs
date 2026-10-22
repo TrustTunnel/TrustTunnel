@@ -26,7 +26,8 @@ pub enum ValidationError {
     SpeedTlsHostInfo(String),
     /// Invalid [`Settings.reverse_proxy`]
     ReverseProxy(String),
-    /// Invalid [`Settings.subscription`]
+    /// Invalid [`Settings.subscription`] or
+    /// [`TlsHostsSettings.subscription_hosts`]
     Subscription(String),
     /// Invalid [`Settings.listen_protocols`]
     ListenProtocols(String),
@@ -180,7 +181,8 @@ pub struct Settings {
     pub(crate) reverse_proxy: Option<ReverseProxySettings>,
     /// The subscription endpoint settings.
     /// When enabled, the endpoint serves a per-user JSON configuration over an
-    /// existing main TLS host. Hot-reloaded on `SIGHUP` (see
+    /// existing main TLS host or a dedicated host from
+    /// [`TlsHostsSettings::subscription_hosts`]. Hot-reloaded on `SIGHUP` (see
     /// [`crate::core::Core::reload_subscription_settings`]).
     #[serde(default)]
     pub(crate) subscription: Option<SubscriptionSettings>,
@@ -300,6 +302,12 @@ pub struct TlsHostsSettings {
     /// Only makes sense if the reverse proxy is set up, otherwise it is ignored.
     #[serde(default)]
     pub(crate) reverse_proxy_hosts: Vec<TlsHostInfo>,
+    /// The TLS hosts for serving the subscription JSON
+    /// (see [`Settings::subscription`]).
+    /// Only makes sense if the subscription is set up, otherwise requests are
+    /// answered with `404 Not Found`.
+    #[serde(default)]
+    pub(crate) subscription_hosts: Vec<TlsHostInfo>,
 
     /// Whether an instance was built through a [`TlsSettingsBuilder`].
     /// This flag is a workaround for absence of the ability to validate
@@ -755,8 +763,36 @@ impl TlsHostsSettings {
             .map_err(ValidationError::PingTlsHostInfo)?;
         let hosts = Self::validate_tls_hosts(self.speedtest_hosts.iter(), hosts)
             .map_err(ValidationError::SpeedTlsHostInfo)?;
-        Self::validate_tls_hosts(self.reverse_proxy_hosts.iter(), hosts)
+        let hosts = Self::validate_tls_hosts(self.reverse_proxy_hosts.iter(), hosts)
             .map_err(ValidationError::ReverseProxy)?;
+        Self::validate_tls_hosts(self.subscription_hosts.iter(), hosts)
+            .map_err(ValidationError::Subscription)?;
+        // Builder users may supply private certificates, e.g. in tests.
+        if !self.built {
+            Self::validate_system_verifiable(&self.subscription_hosts)
+                .map_err(ValidationError::Subscription)?;
+        }
+
+        Ok(())
+    }
+
+    fn validate_system_verifiable(hosts: &[TlsHostInfo]) -> Result<(), String> {
+        if hosts.is_empty() {
+            return Ok(());
+        }
+
+        let verifier = crate::cert_verification::CertificateVerifier::new().ok();
+        for host in hosts {
+            let system_verifiable = verifier.as_ref().is_some_and(|verifier| {
+                verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname)
+            });
+            if !system_verifiable {
+                return Err(format!(
+                    "Certificate is not verifiable by system CAs: hostname='{}'",
+                    host.hostname
+                ));
+            }
+        }
 
         Ok(())
     }
@@ -1144,6 +1180,7 @@ impl TlsSettingsBuilder {
                 ping_hosts: Default::default(),
                 speedtest_hosts: Default::default(),
                 reverse_proxy_hosts: Default::default(),
+                subscription_hosts: Default::default(),
                 built: true,
             },
         }
@@ -1188,6 +1225,13 @@ impl TlsSettingsBuilder {
     /// is set up, otherwise it is ignored.
     pub fn reverse_proxy_hosts(mut self, hosts: Vec<TlsHostInfo>) -> Self {
         self.settings.reverse_proxy_hosts = hosts;
+        self
+    }
+
+    /// Set the TLS hosts for serving the subscription JSON.
+    /// Only makes sense if the subscription is set up.
+    pub fn subscription_hosts(mut self, hosts: Vec<TlsHostInfo>) -> Self {
+        self.settings.subscription_hosts = hosts;
         self
     }
 }
@@ -1824,5 +1868,122 @@ mod tests {
             err,
             ValidationError::InvalidAuthFailureStatusCode(200)
         ));
+    }
+
+    fn tls_host(name: &str, path: &str) -> TlsHostInfo {
+        TlsHostInfo {
+            hostname: name.to_string(),
+            cert_chain_path: path.to_string(),
+            private_key_path: path.to_string(),
+            allowed_sni: vec![],
+        }
+    }
+
+    #[test]
+    fn parse_subscription_hosts_absent_is_empty() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+        assert!(hosts.subscription_hosts.is_empty());
+    }
+
+    #[test]
+    fn parse_subscription_hosts_reads_entry() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             allowed_sni = [\"alias.example.com\"]\n"
+        ))
+        .unwrap();
+
+        let host = &hosts.subscription_hosts[0];
+        assert_eq!(host.hostname, "sub.example.com");
+        assert_eq!(host.cert_chain_path, path);
+        assert_eq!(host.private_key_path, path);
+        assert_eq!(host.allowed_sni, vec!["alias.example.com"]);
+    }
+
+    #[test]
+    fn tls_settings_builder_sets_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts = TlsHostsSettings::builder()
+            .main_hosts(vec![tls_host("vpn.example.com", path)])
+            .subscription_hosts(vec![tls_host("sub.example.com", path)])
+            .build()
+            .unwrap();
+
+        assert_eq!(hosts.subscription_hosts.len(), 1);
+        assert_eq!(hosts.subscription_hosts[0].hostname, "sub.example.com");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_hostname_between_main_and_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        match hosts.validate().unwrap_err() {
+            ValidationError::Subscription(message) => {
+                assert!(message.contains("vpn.example.com"));
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_hostname_within_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        match hosts.validate().unwrap_err() {
+            ValidationError::Subscription(message) => {
+                assert!(message.contains("sub.example.com"));
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unverifiable_subscription_host_certificate() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        match hosts.validate().unwrap_err() {
+            ValidationError::Subscription(message) => {
+                assert!(message.contains("sub.example.com"));
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
     }
 }

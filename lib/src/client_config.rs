@@ -1,5 +1,5 @@
 use crate::{
-    authentication::registry_based, cert_verification::CertificateVerifier,
+    authentication::registry_based, cert_verification::CertificateVerifier, settings::TlsHostInfo,
     settings::TlsHostsSettings, utils::ToTomlComment,
 };
 #[cfg(feature = "rt_doc")]
@@ -84,6 +84,23 @@ pub fn validate_subscription_url_override(url: &str) -> Result<(), String> {
 pub fn subscription_url_port(address: Option<&str>) -> Option<u16> {
     let port: u16 = address?.rsplit_once(':')?.1.parse().ok()?;
     (port != 0 && port != 443).then_some(port)
+}
+
+/// Select the host whose hostname is placed in the exported subscription URL.
+///
+/// The first configured subscription host wins; otherwise the main host named
+/// by `main_hostname` is used. Returns `None` when neither exists.
+pub fn subscription_url_host<'a>(
+    hosts: &'a TlsHostsSettings,
+    main_hostname: Option<&str>,
+) -> Option<&'a TlsHostInfo> {
+    hosts.subscription_hosts.first().or_else(|| {
+        let main_hostname = main_hostname?;
+        hosts
+            .main_hosts
+            .iter()
+            .find(|host| host.hostname == main_hostname)
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -656,5 +673,45 @@ omxU7kknZApM\n\
         config.client_random_auth_key = "aabbccdd".into();
         let toml = config.compose_toml();
         assert!(toml.contains("client_random_auth_key = \"aabbccdd\""));
+    }
+
+    fn hosts_with(main: &[&str], subscription: &[&str]) -> TlsHostsSettings {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let to_host = |hostname: &&str| TlsHostInfo {
+            hostname: hostname.to_string(),
+            cert_chain_path: path.to_string(),
+            private_key_path: path.to_string(),
+            allowed_sni: vec![],
+        };
+        TlsHostsSettings::builder()
+            .main_hosts(main.iter().map(to_host).collect())
+            .subscription_hosts(subscription.iter().map(to_host).collect())
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn subscription_url_host_prefers_first_subscription_host() {
+        let hosts = hosts_with(
+            &["vpn.example.com"],
+            &["sub1.example.com", "sub2.example.com"],
+        );
+        let host = subscription_url_host(&hosts, Some("vpn.example.com")).unwrap();
+        assert_eq!(host.hostname, "sub1.example.com");
+    }
+
+    #[test]
+    fn subscription_url_host_falls_back_to_main_host() {
+        let hosts = hosts_with(&["vpn.example.com", "other.example.com"], &[]);
+        let host = subscription_url_host(&hosts, Some("other.example.com")).unwrap();
+        assert_eq!(host.hostname, "other.example.com");
+    }
+
+    #[test]
+    fn subscription_url_host_none_without_any_host() {
+        let hosts = hosts_with(&["vpn.example.com"], &[]);
+        assert!(subscription_url_host(&hosts, Some("unknown.example.com")).is_none());
+        assert!(subscription_url_host(&hosts, None).is_none());
     }
 }

@@ -17,8 +17,8 @@ use crate::tls_demultiplexer::TlsDemux;
 use crate::tls_listener::{TlsAcceptor, TlsListener};
 use crate::tunnel::Tunnel;
 use crate::{
-    authentication, http_ping_handler, http_speedtest_handler, log_id, log_utils, metrics,
-    net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
+    authentication, http_ping_handler, http_speedtest_handler, http_subscription_handler, log_id,
+    log_utils, metrics, net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
 };
 use socket2::{Domain, Protocol as SockProtocol, SockRef, Socket, Type};
 use std::io;
@@ -440,17 +440,6 @@ impl Core {
             "TLS SNI: {}",
             net_utils::scrub_sni(sni.to_string())
         );
-        // Apply connection filtering rules
-        if let Err(deny_reason) = Self::evaluate_connection_rules(
-            &context,
-            Some(client_ip),
-            acceptor.client_random().as_deref(),
-            Some(sni.as_str()),
-            &client_id,
-        ) {
-            return Err((client_id, deny_reason));
-        }
-
         let core_settings = context.settings.clone();
         let tls_connection_meta = match context
             .tls_demux
@@ -472,6 +461,20 @@ impl Core {
                 ))
             }
         };
+
+        // Rules filter tunnel traffic on main hosts; dedicated service hosts
+        // are exempt.
+        if tls_connection_meta.channel == net_utils::Channel::Tunnel {
+            if let Err(deny_reason) = Self::evaluate_connection_rules(
+                &context,
+                Some(client_ip),
+                acceptor.client_random().as_deref(),
+                Some(tls_connection_meta.sni.as_str()),
+                &client_id,
+            ) {
+                return Err((client_id, deny_reason));
+            }
+        }
         log_id!(
             debug,
             client_id,
@@ -607,10 +610,25 @@ impl Core {
                 )
                 .await
             }
-            // TLS-level routing is SNI-based and subscription is
-            // never matched by hostname, only by request path via `HttpDemux`
-            // in `HttpDownstream`.
-            net_utils::Channel::Subscription => unreachable!(),
+            net_utils::Channel::Subscription => {
+                http_subscription_handler::listen(
+                    context.clone(),
+                    match Self::make_tcp_http_codec(
+                        tls_connection_meta.protocol,
+                        core_settings,
+                        stream,
+                        client_id.clone(),
+                    ) {
+                        Ok(x) => x,
+                        Err(e) => {
+                            return Err((client_id, format!("Failed to create HTTP codec: {}", e)))
+                        }
+                    },
+                    None,
+                    client_id,
+                )
+                .await
+            }
         }
 
         Ok(())
@@ -621,7 +639,6 @@ impl Core {
         socket: QuicSocket,
         client_id: log_utils::IdChain<u64>,
     ) {
-        // Apply connection filtering rules
         let client_ip = socket
             .peer_addr()
             .ok()
@@ -629,15 +646,19 @@ impl Core {
         let client_random = Some(socket.client_random());
         let tls_connection_meta = socket.tls_connection_meta();
 
-        if let Err(deny_reason) = Self::evaluate_connection_rules(
-            &context,
-            client_ip,
-            client_random.as_deref(),
-            Some(tls_connection_meta.sni.as_str()),
-            &client_id,
-        ) {
-            log_id!(debug, client_id, "{}", deny_reason);
-            return; // Drop the connection
+        // Rules filter tunnel traffic on main hosts; dedicated service hosts
+        // are exempt.
+        if tls_connection_meta.channel == net_utils::Channel::Tunnel {
+            if let Err(deny_reason) = Self::evaluate_connection_rules(
+                &context,
+                client_ip,
+                client_random.as_deref(),
+                Some(tls_connection_meta.sni.as_str()),
+                &client_id,
+            ) {
+                log_id!(debug, client_id, "{}", deny_reason);
+                return; // Drop the connection
+            }
         }
 
         log_id!(
@@ -698,10 +719,15 @@ impl Core {
                 )
                 .await
             }
-            // TLS-level routing is SNI-based and subscription is
-            // never matched by hostname, only by request path via `HttpDemux`
-            // in `HttpDownstream`.
-            net_utils::Channel::Subscription => unreachable!(),
+            net_utils::Channel::Subscription => {
+                http_subscription_handler::listen(
+                    context.clone(),
+                    Box::new(Http3Codec::new(socket, client_id.clone())),
+                    None,
+                    client_id,
+                )
+                .await
+            }
         }
     }
 

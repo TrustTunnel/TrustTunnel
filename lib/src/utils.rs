@@ -144,6 +144,20 @@ impl ToTomlComment for String {
 }
 
 #[cfg(test)]
+pub(crate) fn make_test_cert_key_file() -> tempfile::NamedTempFile {
+    use std::io::Write;
+
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    file.write_all(
+        b"-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----\n\
+          -----BEGIN PRIVATE KEY-----\nAA==\n-----END PRIVATE KEY-----\n",
+    )
+    .unwrap();
+    file.flush().unwrap();
+    file
+}
+
+#[cfg(test)]
 mod tests {
     use crate::utils::IterJoin;
 
