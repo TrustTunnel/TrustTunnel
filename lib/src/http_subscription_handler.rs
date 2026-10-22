@@ -6,13 +6,7 @@ use bytes::Bytes;
 use http::StatusCode;
 use std::io;
 use std::io::ErrorKind;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-
-#[derive(Default)]
-struct SessionManager {
-    active_requests: AtomicUsize,
-}
 
 /// Serve subscription requests. `sni` is `Some` on the main-host path, where the
 /// request SNI must match the configured hostname, and `None` on a dedicated
@@ -49,7 +43,6 @@ async fn listen_inner(
     sni: Option<String>,
     log_id: &log_utils::IdChain<u64>,
 ) {
-    let manager = Arc::new(SessionManager::default());
     let timeout = context.settings.tls_handshake_timeout;
     loop {
         match tokio::time::timeout(timeout, codec.listen()).await {
@@ -57,14 +50,11 @@ async fn listen_inner(
                 let id = stream.id();
                 tokio::spawn({
                     let context = context.clone();
-                    let manager = manager.clone();
                     let sni = sni.clone();
                     async move {
-                        manager.active_requests.fetch_add(1, Ordering::AcqRel);
                         if let Err(e) = handle_stream(context, stream, sni, &id).await {
                             log_id!(debug, id, "Subscription request failed: {}", e);
                         }
-                        manager.active_requests.fetch_sub(1, Ordering::AcqRel);
                     }
                 });
             }
@@ -80,11 +70,6 @@ async fn listen_inner(
                 log_id!(debug, log_id, "Session error: {}", e);
                 break;
             }
-            Err(_elapsed) if manager.active_requests.load(Ordering::Acquire) > 0 => log_id!(
-                trace,
-                log_id,
-                "Ignoring timeout due to there are some active requests"
-            ),
             Err(_elapsed) => {
                 log_id!(debug, log_id, "Closing due to timeout");
                 if let Err(e) = codec.graceful_shutdown().await {
