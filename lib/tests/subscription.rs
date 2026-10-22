@@ -980,6 +980,50 @@ async fn dedicated_host_returns_404_for_other_path() {
     }
 }
 
+#[tokio::test]
+async fn dedicated_host_handshake_dropped_without_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    // `enabled = false` omits the [subscription] section entirely; the
+    // dedicated host must not be served, mirroring `reverse_proxy_hosts`
+    // without `[reverse_proxy]`.
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", false, alice_bob());
+    let hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+        // The main host is unaffected.
+        let _stream =
+            common::establish_tls_connection(common::MAIN_DOMAIN_NAME, &endpoint_address, None)
+                .await;
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+/// Subscription hosts with a name ending in `.<main host>` fall through to the
+/// SNI-auth credential split, so these use an unrelated name.
+fn make_hosts_with_unrelated_subscription_host(cert_path: &str) -> TlsHostsSettings {
+    TlsHostsSettings::builder()
+        .main_hosts(vec![common::make_tls_host_info(
+            common::MAIN_DOMAIN_NAME,
+            cert_path,
+        )])
+        .subscription_hosts(vec![common::make_tls_host_info(
+            "sub.example.com",
+            cert_path,
+        )])
+        .build()
+        .unwrap()
+}
+
 async fn assert_handshake_dropped(server_name: &str, endpoint_address: &SocketAddr) {
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -1255,6 +1299,94 @@ async fn reload_with_invalid_subscription_keeps_previous_hosts() {
         "203.0.113.1:443"
     );
     assert_handshake_dropped("newsub.example.com", &endpoint_address).await;
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_rejects_adding_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    // No [subscription] section at startup: the dedicated host is not served.
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", false, alice_bob());
+    let hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+
+    // The section is fully valid, so the only possible failure reason is the
+    // presence change, which reload must reject.
+    let new_sub = SubscriptionSettings {
+        enabled: true,
+        hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("203.0.113.1:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+    };
+    let same_hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(Some(new_sub), same_hosts)
+        .is_err());
+
+    assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_rejects_removing_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // Removing the [subscription] section must be rejected; use `enabled`
+    // toggling to disable serving instead.
+    let same_hosts = make_hosts_with_subscription(cert_path);
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(None, same_hosts)
+        .is_err());
+
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
 
     listen_task.abort();
 }
