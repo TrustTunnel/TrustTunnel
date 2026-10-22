@@ -34,6 +34,11 @@ pub struct SubscriptionSettings {
     /// Validated as `hex[/hex]`. Omitted from the JSON when unset or empty.
     #[serde(default)]
     pub client_random_prefix: Option<String>,
+    /// Hex auth key from which the client derives its TLS `client_random` for
+    /// connection filtering. Mutually exclusive with `client_random_prefix`.
+    /// Omitted from the JSON when unset or empty.
+    #[serde(default)]
+    pub client_random_auth_key: Option<String>,
 }
 
 impl SubscriptionSettings {
@@ -53,6 +58,7 @@ impl Default for SubscriptionSettings {
             dns_upstreams: Vec::new(),
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         }
     }
 }
@@ -98,6 +104,54 @@ pub(crate) fn validate(
         }
     }
 
+    let auth_key = sub
+        .client_random_auth_key
+        .as_deref()
+        .filter(|s| !s.is_empty());
+    let has_prefix = sub
+        .client_random_prefix
+        .as_deref()
+        .is_some_and(|s| !s.is_empty());
+    if auth_key.is_some() && has_prefix {
+        return Err(ValidationError::Subscription(
+            "subscription client_random_auth_key and client_random_prefix are mutually exclusive"
+                .to_string(),
+        ));
+    }
+    if let Some(auth_key) = auth_key {
+        // The auth key is a secret, do not log its value
+        if !crate::rules::is_valid_hex(auth_key) {
+            return Err(ValidationError::Subscription(
+                "subscription client_random_auth_key is not valid hex".to_string(),
+            ));
+        }
+        if let Some(rules_engine) = &settings.rules_engine {
+            let matching_rule = rules_engine.config().rule.iter().find(|r| {
+                r.client_random_auth_key
+                    .as_ref()
+                    .map(|s| s.to_lowercase())
+                    .as_deref()
+                    == Some(auth_key.to_lowercase().as_str())
+            });
+            match matching_rule {
+                None => {
+                    return Err(ValidationError::Subscription(
+                        "no rule found in rules.toml with matching client_random_auth_key; \
+                         add the rule first or unset subscription client_random_auth_key"
+                            .to_string(),
+                    ));
+                }
+                Some(rule) if rule.action == crate::rules::RuleAction::Deny => {
+                    return Err(ValidationError::Subscription(
+                        "matched rule in rules.toml for client_random_auth_key has action 'deny'"
+                            .to_string(),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
     check_path_overlap(path, settings.ping_path.as_deref())?;
     check_path_overlap(path, settings.speedtest_path.as_deref())?;
     if let Some(reverse_proxy) = settings.reverse_proxy.as_ref() {
@@ -137,6 +191,9 @@ pub(crate) struct SubscriptionConfig {
     pub(crate) custom_sni: Option<String>,
     /// Client-random hex prefix; `None` when unset/empty (omitted from the JSON).
     pub(crate) client_random_prefix: Option<String>,
+    /// Hex auth key for derived client random; `None` when unset/empty (omitted
+    /// from the JSON).
+    pub(crate) client_random_auth_key: Option<String>,
 }
 
 /// The JSON body served to an authenticated user.
@@ -157,6 +214,8 @@ pub(crate) struct SubscriptionResponse<'a> {
     pub custom_sni: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_random_prefix: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_random_auth_key: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -224,13 +283,17 @@ pub(crate) fn resolve(
         certificate,
         custom_sni: sub.custom_sni.clone().filter(|s| !s.is_empty()),
         client_random_prefix: sub.client_random_prefix.clone().filter(|s| !s.is_empty()),
+        client_random_auth_key: sub.client_random_auth_key.clone().filter(|s| !s.is_empty()),
     }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{Settings, ValidationError};
+    use crate::settings::{
+        Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, Settings,
+        ValidationError,
+    };
 
     fn enabled_sub() -> SubscriptionSettings {
         SubscriptionSettings {
@@ -242,6 +305,7 @@ mod tests {
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         }
     }
 
@@ -340,6 +404,82 @@ mod tests {
         sub.client_random_prefix = Some("aabbcc/ff00ff".to_string());
         let settings = Settings::default();
         assert!(validate(&sub, &settings).is_ok());
+    }
+
+    fn settings_with_auth_key_rule(key: &str, action: crate::rules::RuleAction) -> Settings {
+        Settings::builder()
+            .listen_address(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap()
+            .listen_protocols(ListenProtocolSettings {
+                http1: Some(Http1Settings::builder().build()),
+                http2: Some(Http2Settings::builder().build()),
+                quic: Some(QuicSettings::builder().build()),
+            })
+            .rules_engine(crate::rules::RulesEngine::from_config(
+                crate::rules::RulesConfig {
+                    rule: vec![crate::rules::Rule {
+                        cidr: None,
+                        client_random_prefix: None,
+                        client_random_auth_key: Some(key.to_string()),
+                        action,
+                    }],
+                },
+            ))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_with_prefix() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        sub.client_random_prefix = Some("aabbcc/ff00ff".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_hex_auth_key() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("nothex".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_without_matching_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_auth_key_with_matching_allow_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("AABBCCDD".to_string());
+        let settings = settings_with_auth_key_rule("aabbccdd", crate::rules::RuleAction::Allow);
+        assert!(validate(&sub, &settings).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_with_deny_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        let settings = settings_with_auth_key_rule("aabbccdd", crate::rules::RuleAction::Deny);
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
     }
 
     #[test]

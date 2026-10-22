@@ -44,6 +44,7 @@ fn make_settings(
             dns_upstreams: vec!["tls://1.1.1.1".to_string()],
             custom_sni: Some(common::MAIN_DOMAIN_NAME.to_string()),
             client_random_prefix: Some("aabbcc/ff00ff".to_string()),
+            client_random_auth_key: None,
         });
     }
 
@@ -93,6 +94,7 @@ fn make_settings_with_subscription(
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         })
         .build()
         .unwrap()
@@ -129,6 +131,7 @@ fn make_rules_settings(listen_address: &SocketAddr, users: Vec<Client>) -> Setti
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         })
         .ping_enable(true)
         .ping_path("/ping")
@@ -202,7 +205,58 @@ fn make_minimal_subscription_settings(
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         })
+        .build()
+        .unwrap()
+}
+
+/// Like [`make_minimal_subscription_settings`], but with `client_random_auth_key`
+/// set and a `rules.toml` engine containing the matching allow rule (plus an
+/// allow-all fallback so ordinary connections without a derived client random
+/// are permitted).
+fn make_auth_key_subscription_settings(
+    listen_address: &SocketAddr,
+    subscription_address: &str,
+    users: Vec<Client>,
+) -> Settings {
+    Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+        })
+        .allow_private_network_connections(true)
+        .clients(users)
+        .subscription(SubscriptionSettings {
+            enabled: true,
+            hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+            path: SubscriptionSettings::default_path(),
+            address: Some(subscription_address.to_string()),
+            name: None,
+            dns_upstreams: vec![],
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: Some("00112233445566778899aabbccddeeff".to_string()),
+        })
+        .rules_engine(RulesEngine::from_config(RulesConfig {
+            rule: vec![
+                Rule {
+                    cidr: None,
+                    client_random_prefix: None,
+                    client_random_auth_key: Some("00112233445566778899aabbccddeeff".to_string()),
+                    action: RuleAction::Allow,
+                },
+                Rule {
+                    cidr: Some("0.0.0.0/0".to_string()),
+                    client_random_prefix: None,
+                    client_random_auth_key: None,
+                    action: RuleAction::Allow,
+                },
+            ],
+        }))
         .build()
         .unwrap()
 }
@@ -273,6 +327,31 @@ async fn get_with_valid_credentials_returns_200_and_user_fields() {
         assert!(body.contains("\"dns_upstreams\":[\"tls://1.1.1.1\"]"));
         assert!(body.contains("\"custom_sni\":\"localhost\""));
         assert!(body.contains("\"client_random_prefix\":\"aabbcc/ff00ff\""));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn get_includes_client_random_auth_key_when_set() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_auth_key_subscription_settings(&endpoint_address, "203.0.113.1:443", alice_bob());
+    let hosts = make_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(status, http::StatusCode::OK);
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"client_random_auth_key\":\"00112233445566778899aabbccddeeff\""));
     };
 
     tokio::select! {
@@ -458,6 +537,7 @@ async fn present_disabled_section_returns_403() {
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
         })
         .build()
         .unwrap();
@@ -591,6 +671,7 @@ async fn omits_optional_fields_when_unset() {
         assert!(body.contains("\"has_ipv6\":true"));
         assert!(!body.contains("custom_sni"));
         assert!(!body.contains("client_random_prefix"));
+        assert!(!body.contains("client_random_auth_key"));
         assert!(!body.contains("\"name\""));
         assert!(!body.contains("dns_upstreams"));
     };
@@ -674,6 +755,7 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
     };
     core.reload_tls_hosts_and_subscription_settings(Some(updated), hosts_for_reload.clone())
         .unwrap();
@@ -691,6 +773,7 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
     };
     assert!(core
         .reload_tls_hosts_and_subscription_settings(Some(bad), hosts_for_reload)
@@ -1230,6 +1313,7 @@ async fn reload_accepts_unverifiable_dedicated_host_certificate() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
     };
 
     core.reload_tls_hosts_and_subscription_settings(Some(updated), parsed_hosts)
@@ -1288,6 +1372,7 @@ async fn reload_with_invalid_subscription_keeps_previous_hosts() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
     };
 
     assert!(core
@@ -1338,6 +1423,7 @@ async fn reload_rejects_adding_subscription_section() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
     };
     let same_hosts = make_hosts_with_unrelated_subscription_host(cert_path);
     assert!(core

@@ -450,6 +450,7 @@ client_random_prefix = "a0b0/f0f0"
 | `dns_upstreams` | Array | `[]` | (Optional) DNS upstreams |
 | `custom_sni` | String | - | (Optional) Custom TLS SNI |
 | `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
+| `client_random_auth_key` | String | - | (Optional) Hex auth key for derived client random |
 
 All fields are validated on every endpoint invocation (including the
 `--client_config` export) whenever the `[subscription]` section is present in
