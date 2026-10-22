@@ -226,6 +226,12 @@ private_key_path = "certs/key.pem"
 # hostname = "api.example.com"
 # cert_chain_path = "certs/cert.pem"
 # private_key_path = "certs/key.pem"
+
+# Subscription hosts (optional, requires [subscription] in main settings)
+# [[subscription_hosts]]
+# hostname = "sub.example.com"
+# cert_chain_path = "certs/cert.pem"
+# private_key_path = "certs/key.pem"
 ```
 
 ### Credentials File (credentials.toml)
@@ -419,7 +425,8 @@ per_client_metrics = false
 ### Subscription Settings
 
 Optional. Enables an HTTPS subscription endpoint that serves a per-user JSON
-configuration over an existing main TLS host.
+configuration over an existing main TLS host, or on dedicated hosts from
+`subscription_hosts`.
 
 ```toml
 [subscription]
@@ -457,6 +464,12 @@ credentials. Non-GET requests return `405`; missing or invalid credentials
 return `401`; an authenticated request while subscription is disabled returns
 `403`; otherwise the response is `200` with the per-user JSON body.
 
+The JSON can also be served on dedicated hosts from `subscription_hosts`. When
+`subscription_hosts` is non-empty, the exported `subscription_url` points to
+the first such host; otherwise it uses `[subscription].hostname`. The export
+fails if the first subscription host's certificate cannot be verified by
+system CAs, since no certificate is embedded for it.
+
 ---
 
 ## TLS Hosts Reference
@@ -471,18 +484,25 @@ Each TLS host entry requires:
 
 ### Host Types
 
+Connections to all host types except `main_hosts` are exempt from `rules.toml`
+filtering.
+
 - **`main_hosts`** - Primary hosts for VPN traffic tunneling and service requests
 - **`ping_hosts`** - Respond with `200 OK` to HTTPS GET requests (health checks)
 - **`speedtest_hosts`** - Handle speed test requests:
     - `GET /Nmb.bin` (N=1-100): Download N megabytes
     - `POST /upload.html`: Upload test (up to 120 MB)
 - **`reverse_proxy_hosts`** - Forward to reverse proxy server (requires `[reverse_proxy]`)
+- **`subscription_hosts`** - Serve the subscription JSON on a dedicated host (requires `[subscription]`)
 
 ---
 
 ## Rules Reference
 
-Rules filter incoming connections based on client IP and/or TLS client random data.
+Rules filter connections to main hosts based on client IP and/or TLS client
+random data; dedicated service hosts are exempt. Path handlers served on main
+hosts (`ping_path`, `speedtest_path`, `path_mask`, the subscription path)
+remain filtered.
 
 ### Rule Structure
 
@@ -587,9 +607,11 @@ kill -HUP $(pidof trusttunnel_endpoint)
 ```
 
 This reloads the TLS hosts file and the `[subscription]` section of `vpn.toml`
-specified at startup. If the new `[subscription]` section fails to parse or
-validate, the previously loaded subscription configuration is kept and a
-warning is logged.
+specified at startup. The `[subscription]` section cannot be added or removed
+by reload (toggle its `enabled` flag instead; a restart changes its presence).
+The new TLS hosts and subscription configuration are validated together and
+applied atomically; on failure the previous configuration is kept and an error
+is logged.
 
 ### Systemd Service
 
