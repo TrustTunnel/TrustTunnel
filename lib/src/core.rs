@@ -252,14 +252,22 @@ impl Core {
     /// Reload the TLS hosts and subscription settings atomically.
     ///
     /// `sub` is the freshly parsed `[subscription]` section (or `None` when the
-    /// section is absent). The new hosts and the subscription are validated
-    /// and resolved before anything is applied; on failure the previously
-    /// applied configuration is left unchanged.
+    /// section is absent). The section's presence must match the startup
+    /// configuration: reload changes its fields, not whether it exists. The new
+    /// hosts and the subscription are validated and resolved before anything is
+    /// applied; on failure the previously applied configuration is left
+    /// unchanged.
     pub fn reload_tls_hosts_and_subscription_settings(
         &self,
         sub: Option<crate::subscription::SubscriptionSettings>,
         hosts: settings::TlsHostsSettings,
     ) -> io::Result<()> {
+        if sub.is_some() != self.context.settings.subscription.is_some() {
+            return Err(io::Error::other(
+                "[subscription] section cannot be added or removed by reload; \
+                 Please restart the endpoint",
+            ));
+        }
         let validation_failure = |e: settings::ValidationError| {
             io::Error::other(format!("Settings validation failure: {:?}", e))
         };
