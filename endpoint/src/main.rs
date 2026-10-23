@@ -266,11 +266,11 @@ fn main() {
     let tls_hosts_settings_path = args
         .get_one::<String>(TLS_HOSTS_SETTINGS_PARAM_NAME)
         .unwrap();
-    let tls_hosts_settings: settings::TlsHostsSettings = toml::from_str(
-        &std::fs::read_to_string(tls_hosts_settings_path)
-            .expect("Couldn't read the TLS hosts settings file"),
-    )
-    .expect("Couldn't parse the TLS hosts settings file");
+    let tls_hosts_settings = read_tls_hosts_settings(Path::new(tls_hosts_settings_path))
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
 
     if args.contains_id(CLIENT_CONFIG_PARAM_NAME) {
         // The export path must not start the endpoint, so it validates the
@@ -698,11 +698,17 @@ fn main() {
                 sighup_listener.recv().await;
                 info!("Reloading TLS hosts settings");
 
-                let tls_hosts_settings: settings::TlsHostsSettings = toml::from_str(
-                    &std::fs::read_to_string(&tls_hosts_settings_path)
-                        .expect("Couldn't read the TLS hosts settings file"),
-                )
-                .expect("Couldn't parse the TLS hosts settings file");
+                let tls_hosts_settings =
+                    match read_tls_hosts_settings(Path::new(&tls_hosts_settings_path)) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(
+                                "Failed to reload TLS hosts settings: {}; keeping previous",
+                                e
+                            );
+                            continue;
+                        }
+                    };
 
                 info!("Reloading subscription settings");
                 let subscription = std::fs::read_to_string(&settings_path).and_then(|contents| {
@@ -888,6 +894,16 @@ fn parse_endpoint_address(input: &str, default_port: u16) -> String {
     } else {
         format!("{input}:{default_port}")
     }
+}
+
+/// Reads and parses the TLS hosts settings file.
+fn read_tls_hosts_settings(path: &Path) -> std::io::Result<settings::TlsHostsSettings> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        std::io::Error::other(format!("Couldn't read the TLS hosts settings file: {e}"))
+    })?;
+    toml::from_str(&contents).map_err(|e| {
+        std::io::Error::other(format!("Couldn't parse the TLS hosts settings file: {e}"))
+    })
 }
 
 #[derive(serde::Deserialize)]
@@ -1168,6 +1184,55 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&rules_path);
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_parses_valid_file() {
+        let cert = std::env::temp_dir().join("trusttunnel_read_tls_hosts_cert.pem");
+        std::fs::write(&cert, b"").unwrap();
+        let config = std::env::temp_dir().join("trusttunnel_read_tls_hosts_valid.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[[main_hosts]]\nhostname = \"vpn.example.com\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n",
+                cert.display(),
+                cert.display()
+            ),
+        )
+        .unwrap();
+
+        let hosts = read_tls_hosts_settings(&config).unwrap();
+
+        assert_eq!(hosts.get_main_hosts().len(), 1);
+        assert_eq!(hosts.get_main_hosts()[0].hostname, "vpn.example.com");
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_missing_file_is_read_error() {
+        let path = std::env::temp_dir().join("trusttunnel_read_tls_hosts_missing.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let err = read_tls_hosts_settings(&path)
+            .err()
+            .expect("expected error");
+
+        assert!(err
+            .to_string()
+            .contains("Couldn't read the TLS hosts settings file"));
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_invalid_toml_is_parse_error() {
+        let path = std::env::temp_dir().join("trusttunnel_read_tls_hosts_invalid.toml");
+        std::fs::write(&path, "not [ valid toml").unwrap();
+
+        let err = read_tls_hosts_settings(&path)
+            .err()
+            .expect("expected error");
+
+        assert!(err
+            .to_string()
+            .contains("Couldn't parse the TLS hosts settings file"));
     }
 
     #[test]
