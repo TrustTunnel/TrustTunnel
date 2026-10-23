@@ -10,7 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - [Feature] Dedicated TLS hosts: `ping_hosts`, `speedtest_hosts`, `reverse_proxy_hosts`, and the new `subscription_hosts` are now exempt from `rules.toml` filtering.
     - Dedicated subscription hosts: the new optional `[[subscription_hosts]]` list in `hosts.toml` serves the subscription JSON on hosts with their own domain and certificate; the exported `subscription_url` points at the first configured host.
-    - Endpoints that relied on deny rules to restrict the dedicated hosts must perform actions.
+    - Added the optional `[subscription].client_random_auth_key` key and the matching `client_random_auth_key` field in the served subscription JSON.
+    - Migration: `rules.toml` rules no longer apply to the dedicated hosts. If a deny rule was the only thing keeping a dedicated host private, move that host to `main_hosts`, remove it, or restrict it at the network/firewall layer instead.
 
 ### Changed
 
