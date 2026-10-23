@@ -180,6 +180,7 @@ impl Downstream for HttpDownstream {
                                 context.clone(),
                                 Box::new(http_codec::stream_into_codec(stream, protocol)),
                                 Some(sni),
+                                context.settings.tls_handshake_timeout,
                                 stream_id,
                             )
                             .await

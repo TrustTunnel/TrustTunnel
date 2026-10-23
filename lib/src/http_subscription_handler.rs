@@ -7,6 +7,7 @@ use http::StatusCode;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Serve subscription requests. `sni` is `Some` on the main-host path, where the
 /// request SNI must match the configured hostname, and `None` on a dedicated
@@ -15,6 +16,7 @@ pub(crate) async fn listen(
     context: Arc<core::Context>,
     mut codec: Box<dyn HttpCodec>,
     sni: Option<String>,
+    timeout: Duration,
     log_id: log_utils::IdChain<u64>,
 ) {
     let (mut shutdown_notification, _shutdown_completion) = {
@@ -29,7 +31,7 @@ pub(crate) async fn listen(
                 Err(e) => log_id!(debug, log_id, "Shutdown notification failure: {}", e),
             }
         },
-        _ = listen_inner(context, codec.as_mut(), sni, &log_id) => (),
+        _ = listen_inner(context, codec.as_mut(), sni, timeout, &log_id) => (),
     }
 
     if let Err(e) = codec.graceful_shutdown().await {
@@ -41,9 +43,9 @@ async fn listen_inner(
     context: Arc<core::Context>,
     codec: &mut dyn HttpCodec,
     sni: Option<String>,
+    timeout: Duration,
     log_id: &log_utils::IdChain<u64>,
 ) {
-    let timeout = context.settings.tls_handshake_timeout;
     loop {
         match tokio::time::timeout(timeout, codec.listen()).await {
             Ok(Ok(Some(stream))) => {
