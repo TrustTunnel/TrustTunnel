@@ -304,9 +304,9 @@ This outputs a TOML configuration file suitable for the CLI client.
 The endpoint can serve a per-user subscription URL over HTTPS. When the
 `[subscription]` section is enabled in `vpn.toml`, each client can fetch its own
 JSON configuration — connection parameters, credentials, DNS upstreams, custom
-SNI, and client random prefix — over HTTPS using HTTP Basic Auth against
-`credentials.toml`. This lets a client provision and refresh its configuration
-directly from the endpoint from a single URL, without manual file
+SNI, and a client random prefix or auth key — over HTTPS using HTTP Basic Auth
+against `credentials.toml`. This lets a client provision and refresh its
+configuration directly from the endpoint from a single URL, without manual file
 redistribution.
 
 When `[subscription]` is enabled, the client config export (both
@@ -318,11 +318,15 @@ https://<username>:<password>@<host><path>
 ```
 
 The embedded credentials belong to the client named by `-c <client_name>` (read
-from `credentials.toml`); the host and path come from the `hostname` and `path`
-keys of the `[subscription]` section (`/subscription` by default). Characters
-outside the RFC 3986 unreserved set are percent-encoded, so the URL stays valid
-even when a username or password contains `:`, `@`, `/`, or other reserved
-characters.
+from `credentials.toml`); the path comes from the `path` key of the
+`[subscription]` section (`/subscription` by default). When
+`[[subscription_hosts]]` is configured, the host is the first entry of that
+list; otherwise it is the `hostname` key of the `[subscription]` section. A
+dedicated subscription host's certificate is not embedded in the exported
+config, so the export fails if it is not verifiable by system CAs; the check is
+skipped when `--subscription-url` overrides the URL. Characters outside the
+RFC 3986 unreserved set are percent-encoded, so the URL stays valid even when a
+username or password contains `:`, `@`, `/`, or other reserved characters.
 
 To override the base URL — for example, when the endpoint is reachable through a
 reverse proxy or a different public hostname — pass
@@ -355,8 +359,11 @@ system CAs (the check is skipped when `--subscription-url` overrides the URL).
 Note that a deep link carrying a subscription URL embeds
 HTTP Basic Auth credentials; treat such links as secrets.
 
-The `[subscription]` section is hot-reloaded on `SIGHUP`; if the reloaded
-section fails to parse or validate, the previous configuration is kept. See
+The `[subscription]` section and the TLS hosts are hot-reloaded on `SIGHUP`.
+The `[subscription]` section cannot be added or removed by reload; toggle its
+`enabled` flag instead (a restart changes its presence). The new configuration
+is validated and applied atomically; if it fails to parse or validate, the
+previous configuration is kept. See
 [CONFIGURATION.md](CONFIGURATION.md#subscription-settings) for the full
 reference.
 

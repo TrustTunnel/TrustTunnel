@@ -45,3 +45,8 @@ The endpoint supports dynamic reloading of TLS host settings.
 When the SIGHUP signal is sent to the endpoint process,
 it will update and reload the TLS host settings on-the-fly without requiring a restart
 of the binary.
+
+The optional `[subscription]` section is reloaded together with the TLS hosts.
+It cannot be added or removed by reload; toggle its `enabled` flag instead
+(a restart changes its presence). The new configuration is validated and
+applied atomically; on failure the previous configuration is kept.
