@@ -456,6 +456,11 @@ All fields are validated on every endpoint invocation (including the
 `--client_config` export) whenever the `[subscription]` section is present in
 `vpn.toml`, even when `enabled = false`.
 
+`client_random_auth_key` is mutually exclusive with `client_random_prefix` in
+`[subscription]` (setting both is a validation error) and must match
+the corresponding `allow` rule in `rules.toml`;
+the key is also returned in the subscription JSON.
+
 The `address` value is also reused by the `--client_config` export
 if the `--address` is not specified
 
