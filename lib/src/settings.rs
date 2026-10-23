@@ -306,8 +306,7 @@ pub struct TlsHostsSettings {
     pub(crate) reverse_proxy_hosts: Vec<TlsHostInfo>,
     /// The TLS hosts for serving the subscription JSON
     /// (see [`Settings::subscription`]).
-    /// Only makes sense if the subscription is set up, otherwise requests are
-    /// answered with `404 Not Found`.
+    /// Only makes sense if the subscription is set up, otherwise it is ignored.
     #[serde(default)]
     pub(crate) subscription_hosts: Vec<TlsHostInfo>,
 
