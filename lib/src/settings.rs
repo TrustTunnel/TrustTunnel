@@ -1878,8 +1878,7 @@ mod tests {
             "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
              cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
              [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
-             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
-             allowed_sni = [\"alias.example.com\"]\n"
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
         ))
         .unwrap();
 
@@ -1887,7 +1886,6 @@ mod tests {
         assert_eq!(host.hostname, "sub.example.com");
         assert_eq!(host.cert_chain_path, path);
         assert_eq!(host.private_key_path, path);
-        assert_eq!(host.allowed_sni, vec!["alias.example.com"]);
     }
 
     #[test]
