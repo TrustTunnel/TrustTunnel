@@ -36,6 +36,10 @@ pub(crate) struct QuicMultiplexer {
     /// See [`QuicSocket.mux_tx`]
     mux_tx: Arc<std::sync::Mutex<mpsc::Sender<SocketMessage>>>,
     connections: HashMap<quiche::ConnectionId<'static>, Connection>,
+    /// Active wire CIDs map to the stable connection/deadline key.
+    connection_ids: HashMap<quiche::ConnectionId<'static>, quiche::ConnectionId<'static>>,
+    /// Per connection, the client CIDs of paths the client migrated away from.
+    migrations: HashMap<quiche::ConnectionId<'static>, PeerMigrations>,
     deadlines: HashMap<quiche::ConnectionId<'static>, Instant>,
     closest_deadline: Option<Instant>,
     tls_demux: Arc<std::sync::RwLock<TlsDemux>>,
@@ -44,7 +48,68 @@ pub(crate) struct QuicMultiplexer {
     next_socket_id: Arc<AtomicU64>,
 }
 
+/// See [`retire_left_path_dcid`].
+#[derive(Default)]
+struct PeerMigrations {
+    /// The client CID the connection sends to, when last looked at.
+    active: Option<quiche::ConnectionId<'static>>,
+    /// Migrations to a different client CID seen so far; each left one path behind.
+    migrated: u64,
+    /// Sequence number of the next client CID to retire, which is also the number retired.
+    next_to_retire: u64,
+}
+
+/// Retire a departed path's client CID before receiving a new path's first packet.
+/// quiche keeps paths with a DCID and assigns replacement DCIDs to the first empty path,
+/// so retiring earlier would refill the old path instead of freeing its slot (RFC 9000 §9.5).
+fn retire_left_path_dcid(
+    migrations: &mut PeerMigrations,
+    conn: &mut QuicConnection,
+    peer: &SocketAddr,
+    id: &log_utils::IdChain<u64>,
+) {
+    if !conn.is_established() || conn.is_draining() || conn.is_closed() {
+        return;
+    }
+    // A migration is a validated move to a different client CID; the same CID on a new address
+    // pair is a rebinding that leaves no path behind.
+    while let Some(event) = conn.path_event_next() {
+        if matches!(event, quiche::PathEvent::PeerMigrated(..)) {
+            let active = conn.destination_id().into_owned();
+            if migrations
+                .active
+                .as_ref()
+                .is_some_and(|previous| *previous != active)
+            {
+                migrations.migrated += 1;
+            }
+            migrations.active = Some(active);
+        }
+    }
+    if migrations.active.is_none() {
+        migrations.active = Some(conn.destination_id().into_owned());
+    }
+    // Only a path the client really left may lose its CID: retiring the CID of the path that is
+    // still active would leave it unable to send.
+    if migrations.next_to_retire >= migrations.migrated {
+        return;
+    }
+    if conn.path_stats().any(|path| path.peer_addr == *peer) {
+        return;
+    }
+    match conn.retire_dcid(migrations.next_to_retire) {
+        Ok(()) => migrations.next_to_retire += 1,
+        Err(e) => log_id!(
+            debug,
+            id,
+            "Failed to retire the client CID of a left path: {}",
+            e
+        ),
+    }
+}
+
 pub(crate) struct QuicSocket {
+    conn_id: quiche::ConnectionId<'static>,
     /// Receives messages from [`EstablishedConnection.socket_tx`]
     conn_rx: tokio::sync::Mutex<mpsc::Receiver<MultiplexerMessage>>,
     /// Sends messages to [`QuicMultiplexer.socket_rx`]
@@ -144,6 +209,8 @@ impl QuicMultiplexer {
             socket_rx: rx,
             mux_tx: Arc::new(std::sync::Mutex::new(tx)),
             connections: Default::default(),
+            connection_ids: Default::default(),
+            migrations: Default::default(),
             deadlines: Default::default(),
             closest_deadline: None,
             tls_demux,
@@ -234,9 +301,14 @@ impl QuicMultiplexer {
                             }
                         };
 
+                    let conn_id = self
+                        .connection_ids
+                        .get(&header.dcid)
+                        .unwrap_or(&header.dcid)
+                        .clone();
                     match self.on_quic_packet(&peer, &header, &mut buffer[..n]) {
                         Some(Either::Left(s)) => {
-                            pending.entry(header.dcid).or_insert_with(|| Entry {
+                            pending.entry(conn_id).or_insert_with(|| Entry {
                                 conn: s.quic_conn.clone(),
                                 socket_tx: Default::default(),
                                 messages: Default::default(),
@@ -245,7 +317,7 @@ impl QuicMultiplexer {
                             break;
                         }
                         Some(Either::Right(x)) => {
-                            let entry = pending.entry(header.dcid).or_insert_with(|| Entry {
+                            let entry = pending.entry(conn_id).or_insert_with(|| Entry {
                                 conn: x.quic,
                                 socket_tx: None,
                                 messages: Default::default(),
@@ -284,6 +356,12 @@ impl QuicMultiplexer {
                     quic_conn.close(false, QUIC_CONNECTION_CLOSE_CODE, e.to_string().as_bytes());
             }
 
+            if let Err(e) = self.refresh_connection_ids(&conn_id, &mut quic_conn) {
+                log_id!(debug, self.id, "Failed to update connection IDs: {}", e);
+                let _ =
+                    quic_conn.close(false, QUIC_CONNECTION_CLOSE_CODE, e.to_string().as_bytes());
+            }
+
             if let Some(timeout) = quic_conn.timeout() {
                 self.update_connection_deadline(conn_id, timeout);
             }
@@ -302,7 +380,8 @@ impl QuicMultiplexer {
         header: &quiche::Header<'static>,
         packet: &mut [u8],
     ) -> Option<Either<QuicSocket, BackgroundConnection>> {
-        let (quic_conn, err) = match self.connections.get(&header.dcid) {
+        let conn_id = self.connection_ids.get(&header.dcid).cloned();
+        let (quic_conn, err) = match conn_id.as_ref().and_then(|id| self.connections.get(id)) {
             None => match self.on_unknown_quic_packet(peer, header) {
                 Ok(UnknownPacketStatus::Process) => {
                     match self.on_new_connection(peer, header, packet) {
@@ -341,6 +420,7 @@ impl QuicMultiplexer {
                     }
                     Ok(HandshakeStatus::Complete) => {
                         self.deadlines.remove(&header.dcid);
+                        self.connection_ids.remove(&header.dcid);
                         let conn = self
                             .connections
                             .remove(&header.dcid)
@@ -358,6 +438,14 @@ impl QuicMultiplexer {
                 }
             }
             Some(Connection::Established(conn)) => {
+                if let Some(id) = conn_id.as_ref() {
+                    retire_left_path_dcid(
+                        self.migrations.entry(id.clone()).or_default(),
+                        &mut conn.quic_conn.lock().unwrap(),
+                        peer,
+                        &self.id,
+                    );
+                }
                 match self.proceed_established_connection(conn, peer, packet) {
                     Ok(()) => {
                         return Some(Either::with_right(BackgroundConnection {
@@ -419,17 +507,7 @@ impl QuicMultiplexer {
             .as_ref()
             .ok_or_else(|| io::Error::other("Invalid packet: initial packet must contain token"))?;
 
-        lazy_static! {
-            static ref CONN_ID_SEED: ring::hmac::Key = {
-                let rng = ring::rand::SystemRandom::new();
-                ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap()
-            };
-        }
-
-        let conn_id = ring::hmac::sign(&CONN_ID_SEED, &header.dcid);
-        let conn_id = &conn_id.as_ref()[..quiche::MAX_CONN_ID_LEN];
-
-        let scid = quiche::ConnectionId::from_ref(conn_id);
+        let scid = generate_connection_id(&header.dcid);
 
         if quic_token.is_empty() {
             log_id!(trace, self.id, "Doing stateless retry: {:?}", header);
@@ -542,6 +620,8 @@ impl QuicMultiplexer {
         };
 
         let (tx, rx) = mpsc::channel(1);
+        self.connection_ids
+            .insert(conn_id.clone().into_owned(), conn_id.clone().into_owned());
         self.connections.insert(
             conn_id.clone().into_owned(),
             Connection::Established(EstablishedConnection {
@@ -551,6 +631,7 @@ impl QuicMultiplexer {
         );
 
         Ok(QuicSocket {
+            conn_id: conn_id.clone().into_owned(),
             conn_rx: tokio::sync::Mutex::new(rx),
             mux_tx: self.mux_tx.clone(),
             peer: *peer,
@@ -617,6 +698,10 @@ impl QuicMultiplexer {
                 .map_err(|(e, q)| (e, Some(q)));
         }
 
+        self.connection_ids.insert(
+            header.dcid.clone().into_owned(),
+            header.dcid.clone().into_owned(),
+        );
         self.connections.insert(
             header.dcid.clone().into_owned(),
             Connection::Handshake(conn),
@@ -639,6 +724,51 @@ impl QuicMultiplexer {
             },
             &self.id,
         )
+    }
+
+    fn refresh_connection_ids(
+        &mut self,
+        conn_id: &quiche::ConnectionId<'static>,
+        conn: &mut QuicConnection,
+    ) -> io::Result<()> {
+        while let Some(retired) = conn.retired_scid_next() {
+            self.connection_ids.remove(&retired);
+        }
+        if !conn.is_established()
+            || conn.is_draining()
+            || conn.is_closed()
+            || conn.local_error().is_some()
+        {
+            return Ok(());
+        }
+
+        let limit = conn.peer_transport_params().unwrap().active_conn_id_limit;
+        while (conn.active_scids() as u64) < limit {
+            let random: [u8; quiche::MAX_CONN_ID_LEN] =
+                ring::rand::generate(&ring::rand::SystemRandom::new())
+                    .map_err(|_| io::Error::other("Failed to generate connection ID"))?
+                    .expose();
+            let scid = generate_connection_id(&random);
+            if self.connection_ids.contains_key(&scid) {
+                continue;
+            }
+            let token: [u8; 16] = ring::rand::generate(&ring::rand::SystemRandom::new())
+                .map_err(|_| io::Error::other("Failed to generate reset token"))?
+                .expose();
+            conn.new_scid(&scid, u128::from_be_bytes(token), false)
+                .map_err(|e| io::Error::other(format!("Failed to issue connection ID: {}", e)))?;
+            // Register before any sender can emit the NEW_CONNECTION_ID frame.
+            self.connection_ids.insert(scid, conn_id.clone());
+        }
+        Ok(())
+    }
+
+    fn remove_connection(&mut self, conn_id: &quiche::ConnectionId<'static>) -> Option<Connection> {
+        self.connection_ids.retain(|_, owner| owner != conn_id);
+        self.migrations.remove(conn_id);
+        self.deadlines.remove(conn_id);
+        self.closest_deadline = self.deadlines.values().min().copied();
+        self.connections.remove(conn_id)
     }
 
     fn update_connection_deadline(
@@ -698,7 +828,7 @@ impl QuicMultiplexer {
     fn on_socket_message(&mut self, message: SocketMessage) -> io::Result<()> {
         match message {
             SocketMessage::Close(conn_id) => {
-                self.connections.remove(&conn_id);
+                self.remove_connection(&conn_id);
                 Ok(())
             }
             SocketMessage::RefreshDeadline(conn_id) => {
@@ -747,8 +877,7 @@ impl QuicMultiplexer {
             .collect();
 
         for conn_id in closed {
-            self.deadlines.remove(&conn_id);
-            if let Some(Connection::Established(c)) = self.connections.remove(&conn_id) {
+            if let Some(Connection::Established(c)) = self.remove_connection(&conn_id) {
                 let _ = c.socket_tx.try_send(MultiplexerMessage::Close);
             }
         }
@@ -965,7 +1094,7 @@ impl QuicSocket {
                     .mux_tx
                     .lock()
                     .unwrap()
-                    .try_send(SocketMessage::Close(quic_conn.source_id().into_owned()));
+                    .try_send(SocketMessage::Close(self.conn_id.clone()));
                 return Err(io::Error::from(ErrorKind::UnexpectedEof));
             }
 
@@ -977,17 +1106,16 @@ impl QuicSocket {
     }
 
     fn flush_pending_data(&self) -> io::Result<()> {
-        let (result, conn_id) = {
+        let result = {
             let mut quic_conn = self.quic_conn.lock().unwrap();
-            let r = flush_pending_data(&mut quic_conn, &self.udp_socket, &self.id);
-            (r, quic_conn.source_id().into_owned())
+            flush_pending_data(&mut quic_conn, &self.udp_socket, &self.id)
         };
         // Notify the multiplexer that the loss-detection timer may have changed
         let _ = self
             .mux_tx
             .lock()
             .unwrap()
-            .try_send(SocketMessage::RefreshDeadline(conn_id));
+            .try_send(SocketMessage::RefreshDeadline(self.conn_id.clone()));
         result
     }
 
@@ -1243,6 +1371,17 @@ fn make_quic_config_with_domain_contexts(
     Ok(cfg)
 }
 
+fn generate_connection_id(input: &[u8]) -> quiche::ConnectionId<'static> {
+    lazy_static! {
+        static ref CONN_ID_SEED: ring::hmac::Key = {
+            let rng = ring::rand::SystemRandom::new();
+            ring::hmac::Key::generate(ring::hmac::HMAC_SHA256, &rng).unwrap()
+        };
+    }
+    let id = ring::hmac::sign(&CONN_ID_SEED, input);
+    quiche::ConnectionId::from_ref(&id.as_ref()[..quiche::MAX_CONN_ID_LEN]).into_owned()
+}
+
 fn socket_addr_to_vec(addr: &SocketAddr) -> Vec<u8> {
     match addr.ip() {
         std::net::IpAddr::V4(a) => a
@@ -1282,4 +1421,192 @@ fn validate_token<'a>(
         .strip_prefix(prefix)
         .and_then(|token| token.strip_prefix(socket_addr_to_vec(peer).as_slice()))
         .map(quiche::ConnectionId::from_ref)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use boring::asn1::Asn1Time;
+    use boring::hash::MessageDigest;
+    use boring::pkey::PKey;
+    use boring::rsa::Rsa;
+    use boring::x509::{X509NameBuilder, X509};
+    use quiche::test_utils::Pipe;
+
+    fn pipe() -> Pipe {
+        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+        let mut name = X509NameBuilder::new().unwrap();
+        name.append_entry_by_text("CN", "localhost").unwrap();
+        let name = name.build();
+        let mut cert = X509::builder().unwrap();
+        cert.set_version(2).unwrap();
+        cert.set_subject_name(&name).unwrap();
+        cert.set_issuer_name(&name).unwrap();
+        cert.set_pubkey(&key).unwrap();
+        cert.set_not_before(&Asn1Time::days_from_now(0).unwrap())
+            .unwrap();
+        cert.set_not_after(&Asn1Time::days_from_now(1).unwrap())
+            .unwrap();
+        cert.sign(&key, MessageDigest::sha256()).unwrap();
+        let mut tls = SslContextBuilder::new(SslMethod::tls()).unwrap();
+        tls.set_certificate(&cert.build()).unwrap();
+        tls.set_private_key(&key).unwrap();
+        let mut config =
+            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, tls).unwrap();
+        config.set_application_protos(&[b"h3"]).unwrap();
+        config.verify_peer(false);
+        config.set_initial_max_data(1024);
+        config.set_initial_max_stream_data_bidi_remote(1024);
+        config.set_initial_max_streams_bidi(1);
+        config.set_active_connection_id_limit(2);
+        Pipe::with_config_and_scid_lengths(
+            &mut config,
+            quiche::MAX_CONN_ID_LEN,
+            quiche::MAX_CONN_ID_LEN,
+        )
+        .unwrap()
+    }
+
+    async fn multiplexer() -> QuicMultiplexer {
+        let settings = Arc::new(Settings::default());
+        let tls = TlsDemux::new(&settings, &Default::default()).unwrap();
+        QuicMultiplexer::new(
+            settings,
+            UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+            Arc::new(std::sync::RwLock::new(tls)),
+            Arc::new(AtomicU64::new(0)),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn connection_ids_are_issued_replenished_and_removed() {
+        let mut mux = multiplexer().await;
+        let mut pipe = pipe();
+        let conn_id = pipe.server.source_id().into_owned();
+        mux.connection_ids.insert(conn_id.clone(), conn_id.clone());
+        mux.refresh_connection_ids(&conn_id, &mut pipe.server)
+            .unwrap();
+        assert_eq!(mux.connection_ids.len(), 1);
+        pipe.handshake().unwrap();
+        pipe.advance().unwrap();
+        mux.refresh_connection_ids(&conn_id, &mut pipe.server)
+            .unwrap();
+        assert_eq!(pipe.server.active_scids(), 2);
+        assert_eq!(mux.connection_ids.len(), 2);
+        assert!(mux.connection_ids.values().all(|owner| *owner == conn_id));
+        pipe.advance().unwrap();
+
+        // Retire the initial wire CID; the connection/deadline key must survive.
+        pipe.client.retire_dcid(0).unwrap();
+        pipe.advance().unwrap();
+        mux.refresh_connection_ids(&conn_id, &mut pipe.server)
+            .unwrap();
+        assert_eq!(pipe.server.active_scids(), 2);
+        assert_eq!(mux.connection_ids.len(), 2);
+        assert!(!mux.connection_ids.contains_key(&conn_id));
+        assert!(mux.connection_ids.values().all(|owner| *owner == conn_id));
+        pipe.advance().unwrap();
+        assert_eq!(pipe.client.available_dcids(), 1);
+
+        let other_id = quiche::ConnectionId::from_vec(vec![42; quiche::MAX_CONN_ID_LEN]);
+        mux.connection_ids
+            .insert(other_id.clone(), other_id.clone());
+        mux.update_connection_deadline(other_id.clone(), Duration::from_secs(20));
+        mux.update_connection_deadline(conn_id.clone(), Duration::from_secs(10));
+        mux.migrations
+            .insert(conn_id.clone(), PeerMigrations::default());
+        let (socket_tx, _socket_rx) = mpsc::channel(1);
+        mux.connections.insert(
+            conn_id.clone(),
+            Connection::Established(EstablishedConnection {
+                socket_tx,
+                quic_conn: Arc::new(std::sync::Mutex::new(pipe.server)),
+            }),
+        );
+        mux.on_socket_message(SocketMessage::Close(conn_id.clone()))
+            .unwrap();
+        assert!(!mux.connections.contains_key(&conn_id));
+        assert!(!mux.migrations.contains_key(&conn_id));
+        assert!(!mux.deadlines.contains_key(&conn_id));
+        assert_eq!(mux.connection_ids.len(), 1);
+        assert_eq!(mux.connection_ids.get(&other_id), Some(&other_id));
+        assert_eq!(mux.closest_deadline, mux.deadlines.get(&other_id).copied());
+    }
+
+    #[tokio::test]
+    async fn closing_connection_does_not_issue_connection_ids() {
+        let mut mux = multiplexer().await;
+        let mut pipe = pipe();
+        pipe.handshake().unwrap();
+        pipe.advance().unwrap();
+        let conn_id = pipe.server.source_id().into_owned();
+        pipe.server.close(false, 0, b"").unwrap();
+        mux.refresh_connection_ids(&conn_id, &mut pipe.server)
+            .unwrap();
+        assert_eq!(pipe.server.active_scids(), 1);
+        assert!(mux.connection_ids.is_empty());
+    }
+
+    #[tokio::test]
+    async fn departed_path_cid_is_retired_only_before_a_new_path() {
+        let mut mux = multiplexer().await;
+        let mut pipe = pipe();
+        pipe.handshake().unwrap();
+        pipe.advance().unwrap();
+        let conn_id = pipe.server.source_id().into_owned();
+        mux.refresh_connection_ids(&conn_id, &mut pipe.server)
+            .unwrap();
+        pipe.client
+            .new_scid(&generate_connection_id(b"client-1"), 1, false)
+            .unwrap();
+        pipe.advance().unwrap();
+        let mut migrations = PeerMigrations::default();
+        let peer = SocketAddr::from(([127, 0, 0, 1], 1235));
+        let next_peer = SocketAddr::from(([127, 0, 0, 1], 1236));
+        retire_left_path_dcid(&mut migrations, &mut pipe.server, &peer, &mux.id);
+        assert_eq!(migrations.next_to_retire, 0);
+
+        pipe.client.probe_path(peer, Pipe::server_addr()).unwrap();
+        pipe.advance().unwrap();
+        assert_eq!(
+            pipe.client.is_path_validated(peer, Pipe::server_addr()),
+            Ok(true)
+        );
+        retire_left_path_dcid(&mut migrations, &mut pipe.server, &next_peer, &mux.id);
+        assert_eq!(migrations.migrated, 0, "probing is not migration");
+        assert_eq!(migrations.next_to_retire, 0);
+
+        pipe.client.migrate(peer, Pipe::server_addr()).unwrap();
+        pipe.client.stream_send(0, b"data", false).unwrap();
+        pipe.advance().unwrap();
+        retire_left_path_dcid(&mut migrations, &mut pipe.server, &peer, &mux.id);
+        assert_eq!(migrations.migrated, 1);
+        assert_eq!(migrations.next_to_retire, 0, "known paths keep their CID");
+        assert!(pipe
+            .server
+            .path_stats()
+            .any(|path| path.active && path.peer_addr == peer));
+        let active = pipe.server.destination_id().into_owned();
+        let original = pipe
+            .client
+            .source_ids()
+            .find(|cid| **cid != active)
+            .unwrap()
+            .clone()
+            .into_owned();
+        retire_left_path_dcid(&mut migrations, &mut pipe.server, &next_peer, &mux.id);
+        assert_eq!(migrations.next_to_retire, 1);
+        assert_eq!(pipe.server.destination_id(), active);
+        retire_left_path_dcid(&mut migrations, &mut pipe.server, &next_peer, &mux.id);
+        assert_eq!(
+            migrations.next_to_retire, 1,
+            "do not retire the active path CID"
+        );
+        pipe.advance().unwrap();
+        assert_eq!(pipe.client.retired_scid_next(), Some(original));
+        let mut data = [0; 4];
+        assert_eq!(pipe.server.stream_recv(0, &mut data).unwrap(), (4, false));
+        assert_eq!(&data, b"data");
+    }
 }
