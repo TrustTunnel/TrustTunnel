@@ -126,7 +126,7 @@ async fn fetch(
     endpoint_address: &SocketAddr,
     auth: Option<&str>,
     extra: &[(&str, &str)],
-) -> (http::StatusCode, bytes::Bytes) {
+) -> (http::response::Parts, bytes::Bytes) {
     let stream =
         common::establish_tls_connection(common::MAIN_DOMAIN_NAME, endpoint_address, None).await;
     let url = format!(
@@ -139,9 +139,16 @@ async fn fetch(
         headers.push(("authorization", a));
     }
     headers.extend_from_slice(extra);
-    let (parts, body) =
-        common::do_get_request(stream, http::Version::HTTP_11, &url, &headers).await;
-    (parts.status, body)
+    common::do_get_request(stream, http::Version::HTTP_11, &url, &headers).await
+}
+
+fn assert_content_length_zero(headers: &http::HeaderMap) {
+    assert_eq!(
+        headers
+            .get(http::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok()),
+        Some("0")
+    );
 }
 
 #[tokio::test]
@@ -155,8 +162,8 @@ async fn get_with_valid_credentials_returns_200_and_user_fields() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
-        assert_eq!(status, http::StatusCode::OK);
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("\"version\":1"));
         assert!(body.contains("\"hostname\":\"localhost\""));
@@ -186,8 +193,9 @@ async fn get_without_credentials_returns_401() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, None, &[]).await;
-        assert_eq!(status, http::StatusCode::UNAUTHORIZED);
+        let (parts, body) = fetch(&endpoint_address, None, &[]).await;
+        assert_eq!(parts.status, http::StatusCode::UNAUTHORIZED);
+        assert_content_length_zero(&parts.headers);
         assert!(!body.windows(6).any(|w| w == b"secret"));
     };
 
@@ -208,8 +216,8 @@ async fn get_as_bob_returns_bobs_credentials_not_alices() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(BOB_BASIC), &[]).await;
-        assert_eq!(status, http::StatusCode::OK);
+        let (parts, body) = fetch(&endpoint_address, Some(BOB_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("\"username\":\"bob\""));
         assert!(body.contains("\"password\":\"passwd\""));
@@ -245,6 +253,7 @@ async fn post_without_credentials_returns_401() {
         // Auth runs before the method check, so an unauthenticated non-GET
         // request gets 401 (not 405) and does not confirm the path.
         assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_content_length_zero(response.headers());
     };
 
     tokio::select! {
@@ -290,6 +299,7 @@ async fn post_with_credentials_returns_405() {
             future::Either::Right((response, _)) => response,
         };
         assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+        assert_content_length_zero(response.headers());
     };
 
     tokio::select! {
@@ -311,8 +321,8 @@ async fn disabled_subscription_does_not_serve_data() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
-        assert_ne!(status, http::StatusCode::OK);
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_ne!(parts.status, http::StatusCode::OK);
         assert!(!body.windows(6).any(|w| w == b"secret"));
     };
 
@@ -359,8 +369,9 @@ async fn present_disabled_section_returns_403() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
-        assert_eq!(status, http::StatusCode::FORBIDDEN);
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::FORBIDDEN);
+        assert_content_length_zero(&parts.headers);
         assert!(!body.windows(6).any(|w| w == b"secret"));
     };
 
@@ -467,6 +478,58 @@ async fn get_h2_authenticated_returns_json() {
 }
 
 #[tokio::test]
+async fn get_h2_without_credentials_returns_401_with_content_length() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let stream = common::establish_tls_connection(
+            common::MAIN_DOMAIN_NAME,
+            &endpoint_address,
+            Some(net_utils::HTTP2_ALPN.as_bytes()),
+        )
+        .await;
+        let url = format!(
+            "https://{}:{}/subscription",
+            common::MAIN_DOMAIN_NAME,
+            endpoint_address.port()
+        );
+        let (mut request_sender, conn) = hyper::client::conn::Builder::new()
+            .http2_only(true)
+            .handshake(stream)
+            .await
+            .unwrap();
+        let exchange = async {
+            let req = hyper::Request::builder()
+                .method("GET")
+                .uri(&url)
+                .version(http::Version::HTTP_2)
+                .body(hyper::Body::empty())
+                .unwrap();
+            request_sender.send_request(req).await.unwrap()
+        };
+        futures::pin_mut!(exchange);
+        let response = match future::select(conn, exchange).await {
+            future::Either::Left((_r, exchange)) => exchange.await,
+            future::Either::Right((response, _)) => response,
+        };
+        assert_eq!(response.status(), http::StatusCode::UNAUTHORIZED);
+        assert_content_length_zero(response.headers());
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
 async fn omits_optional_fields_when_unset() {
     common::set_up_logger();
     let endpoint_address = common::make_endpoint_address();
@@ -478,8 +541,8 @@ async fn omits_optional_fields_when_unset() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
-        assert_eq!(status, http::StatusCode::OK);
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("\"version\":1"));
         assert!(body.contains("\"has_ipv6\":true"));
@@ -522,6 +585,7 @@ async fn get_sni_mismatch_returns_404() {
         )
         .await;
         assert_eq!(parts.status, http::StatusCode::NOT_FOUND);
+        assert_content_length_zero(&parts.headers);
         assert!(!body.windows(6).any(|w| w == b"secret"));
     };
 

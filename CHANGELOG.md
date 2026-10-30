@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
+
 ### Security
 
 ## [1.3.0-beta.2] - 2026-10-09
