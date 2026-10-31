@@ -37,7 +37,7 @@ jobs:
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
     uses: AdGuardSoftwareLimited/actions/.github/workflows/tag-from-changelog.yml@master
     with:
-      team: corelibs
+      team: libs
       ref: ${{ inputs.ref || github.event.pull_request.merge_commit_sha || '' }}
     secrets: inherit
 
@@ -195,7 +195,7 @@ jobs:
     name: Collect release artifacts
     needs: [build, build-macos]
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
-    runs-on: [team-corelibs]
+    runs-on: [team-libs]
     permissions:
       contents: read
     steps:
@@ -219,7 +219,7 @@ jobs:
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
     uses: AdGuardSoftwareLimited/actions/.github/workflows/create-gh-release.yml@master
     with:
-      team: corelibs
+      team: libs
       target_repo: TrustTunnel/TrustTunnel
       tag_name: ${{ needs.tag.outputs.tag }}
       body: ${{ needs.tag.outputs.changelog }}

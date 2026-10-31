@@ -19,7 +19,7 @@ jobs:
     if: github.repository == 'AdGuardSoftwareLimited/trusttunnel-endpoint'
     uses: AdGuardSoftwareLimited/actions/.github/workflows/mirror.yml@master
     with:
-      team: corelibs
+      team: libs
       target_repo: 'git@github.com:TrustTunnel/TrustTunnel.git'
       disable_workflows_target: all -bench.yml -lint-md.yml -lint-rust.yml -run-tests-public.yml -security-audit.yml
       disable_workflows_source: bench.yml lint-md.yml lint-rust.yml run-tests-public.yml security-audit.yml

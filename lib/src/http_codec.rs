@@ -123,16 +123,19 @@ pub(crate) trait PendingRespond: Send {
         status: StatusCode,
         extra_headers: Vec<(String, String)>,
     ) -> io::Result<()> {
-        let response = {
+        let mut response = {
             let mut b = Response::builder().status(status);
             for (n, v) in extra_headers {
                 b = b.header(n, v);
             }
-            b.body(()).unwrap()
+            b.body(()).unwrap().into_parts().0
         };
+        response.headers.insert(
+            http::header::CONTENT_LENGTH,
+            http::HeaderValue::from_static("0"),
+        );
 
-        self.send_response(response.into_parts().0, true)
-            .map(|_| ())
+        self.send_response(response, true).map(|_| ())
     }
 }
 
