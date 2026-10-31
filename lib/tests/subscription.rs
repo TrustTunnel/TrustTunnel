@@ -355,8 +355,8 @@ async fn get_includes_client_random_auth_key_when_set() {
 
     let client_task = async {
         tokio::time::sleep(Duration::from_secs(1)).await;
-        let (status, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
-        assert_eq!(status, http::StatusCode::OK);
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
         let body = String::from_utf8(body.to_vec()).unwrap();
         assert!(body.contains("\"client_random_auth_key\":\"00112233445566778899aabbccddeeff\""));
     };
