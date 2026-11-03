@@ -17,6 +17,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
+- [Fix] HTTP/3 responses no longer stall without EOF when packet loss occurs near the end of the response. The endpoint now keeps the final stream close pending until send capacity is available.
+- [Fix] Responses with status `205 Reset Content` are now treated as bodyless on HTTP/1.1, HTTP/2 and HTTP/3.
 
 ### Security
 

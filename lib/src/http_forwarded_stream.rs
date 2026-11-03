@@ -596,11 +596,7 @@ impl SinkWaitingResponse {
             }
         }
 
-        if self.request_method == http::Method::HEAD
-            || response
-                .code
-                .is_some_and(|x| (100..200).contains(&x) || x == 204 || x == 304)
-        {
+        if http_codec::response_has_no_body(&self.request_method, response.code) {
             body_length = Some(BodyLength::Determined(0));
         }
 

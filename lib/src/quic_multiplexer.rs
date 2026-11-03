@@ -54,6 +54,12 @@ pub(crate) struct QuicSocket {
     quic_conn: Arc<std::sync::Mutex<QuicConnection>>,
     h3_conn: Arc<std::sync::Mutex<h3::Connection>>,
     waiting_writable_streams: std::sync::Mutex<HashSet<u64>>,
+    /// Streams whose graceful FIN is waiting for send capacity.
+    ///
+    /// Works around <https://github.com/cloudflare/quiche/issues/2800>.
+    /// TODO: remove after <https://github.com/cloudflare/quiche/pull/2804> is merged
+    /// and the dependency is updated.
+    pending_fin_streams: std::sync::Mutex<HashSet<u64>>,
     id: log_utils::IdChain<u64>,
     tls_connection_meta: tls_demultiplexer::ConnectionMeta,
     /// TLS client_random extracted from QUIC handshake
@@ -558,6 +564,7 @@ impl QuicMultiplexer {
             quic_conn,
             h3_conn,
             waiting_writable_streams: Default::default(),
+            pending_fin_streams: Default::default(),
             id: self.id.extended(log_utils::IdItem::new(
                 SOCKET_ID_FMT,
                 self.next_socket_id.fetch_add(1, Ordering::Relaxed),
@@ -899,6 +906,16 @@ impl QuicSocket {
         let _ = self.flush_pending_data();
     }
 
+    /// Queues a graceful FIN for a stream that may have no send capacity yet.
+    ///
+    /// An empty DATA frame is used instead of a zero-length FIN because quiche
+    /// can drop a pending zero-length FIN while retransmitting data.
+    /// See the `pending_fin_streams` comment for the removal condition.
+    pub fn finish_stream(&self, stream_id: u64) {
+        self.pending_fin_streams.lock().unwrap().insert(stream_id);
+        let _ = self.flush_pending_data();
+    }
+
     pub fn graceful_shutdown(&self) -> io::Result<()> {
         {
             let mut quic_conn = self.quic_conn.lock().unwrap();
@@ -979,6 +996,29 @@ impl QuicSocket {
     fn flush_pending_data(&self) -> io::Result<()> {
         let (result, conn_id) = {
             let mut quic_conn = self.quic_conn.lock().unwrap();
+            {
+                let mut pending = self.pending_fin_streams.lock().unwrap();
+                pending.retain(|&stream_id| match quic_conn.stream_capacity(stream_id) {
+                    Ok(capacity) if capacity >= 2 => {
+                        match quic_conn.stream_send(stream_id, &[0, 0], true) {
+                            Ok(2) => false,
+                            Ok(_) | Err(quiche::Error::Done) => true,
+                            Err(e) => {
+                                log_id!(
+                                    debug,
+                                    self.id,
+                                    "Failed to send pending FIN: stream id={}, error={}",
+                                    stream_id,
+                                    e
+                                );
+                                false
+                            }
+                        }
+                    }
+                    Ok(_) => true,
+                    Err(_) => false,
+                });
+            }
             let r = flush_pending_data(&mut quic_conn, &self.udp_socket, &self.id);
             (r, quic_conn.source_id().into_owned())
         };
@@ -999,6 +1039,10 @@ impl QuicSocket {
     }
 
     fn process_pending_h3_events(&self) -> io::Result<Option<QuicSocketEvent>> {
+        if !self.pending_fin_streams.lock().unwrap().is_empty() {
+            self.flush_pending_data()?;
+        }
+
         match self.poll_h3_connection() {
             Ok((stream_id, h3::Event::Headers { list, .. })) => {
                 match self.on_request(stream_id, list) {

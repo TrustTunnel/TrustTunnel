@@ -23,6 +23,7 @@ pub(crate) struct Http3Codec {
 
 enum StreamMessage {
     WaitingWritable(/* stream ID */ u64),
+    Fin(/* stream ID */ u64),
     /// stream ID, shutdown direction (`None` means both directions)
     Shutdown(u64, Option<quiche::Shutdown>),
 }
@@ -68,6 +69,9 @@ struct StreamSink {
     /// `StreamBlocked`. Consumed on the first `wait_writable()` cycle.
     /// The second boolean parameter represents EOF.
     pending_response: Option<(ResponseHeaders, bool)>,
+    request_method: http::Method,
+    is_body_allowed: bool,
+    is_closed: bool,
 }
 
 impl Http3Codec {
@@ -89,10 +93,33 @@ impl Http3Codec {
                 self.socket.notify_stream_waiting_writable(stream_id);
                 Ok(())
             }
+            StreamMessage::Fin(stream_id) => self.on_stream_fin(stream_id),
             StreamMessage::Shutdown(stream_id, direction) => {
                 self.on_stream_shutdown(stream_id, direction)
             }
         }
+    }
+
+    fn on_stream_fin(&mut self, stream_id: u64) -> io::Result<()> {
+        let remove = {
+            let stream = self
+                .streams
+                .get_mut(&stream_id)
+                .ok_or_else(|| io::Error::from(ErrorKind::NotFound))?;
+            if stream.write_shutdown {
+                return Ok(());
+            }
+            stream.write_shutdown = true;
+            stream.read_shutdown
+        };
+
+        self.socket.finish_stream(stream_id);
+
+        if remove {
+            self.streams.remove(&stream_id);
+        }
+
+        Ok(())
     }
 
     fn on_stream_shutdown(
@@ -159,6 +186,7 @@ impl Http3Codec {
     ) -> io::Result<Box<dyn http_codec::Stream>> {
         let (readable_tx, readable_rx) = mpsc::channel(1);
         let (writable_tx, writable_rx) = mpsc::channel(1);
+        let request_method = request.method.clone();
 
         let id = self.parent_id_chain.extended(log_utils::IdItem::new(
             log_utils::CONNECTION_ID_FMT,
@@ -192,6 +220,9 @@ impl Http3Codec {
                 data_frame_overhead: net_utils::MIN_USABLE_QUIC_STREAM_CAPACITY,
                 id,
                 pending_response: None,
+                request_method,
+                is_body_allowed: false,
+                is_closed: false,
             },
         }))
     }
@@ -317,6 +348,7 @@ impl StreamMessage {
     fn stream_id(&self) -> u64 {
         match self {
             StreamMessage::WaitingWritable(stream_id) => *stream_id,
+            StreamMessage::Fin(stream_id) => *stream_id,
             StreamMessage::Shutdown(stream_id, _) => *stream_id,
         }
     }
@@ -402,6 +434,14 @@ impl Drop for StreamSource {
 }
 
 impl StreamSink {
+    fn close_message(&self) -> StreamMessage {
+        if self.is_body_allowed && self.pending_response.is_none() {
+            StreamMessage::Fin(self.stream_id)
+        } else {
+            StreamMessage::Shutdown(self.stream_id, Some(quiche::Shutdown::Write))
+        }
+    }
+
     fn try_send_pending_response(&mut self) -> io::Result<()> {
         if let Some((ref response, eof)) = self.pending_response {
             match self.socket.send_response(self.stream_id, response, false) {
@@ -465,6 +505,12 @@ impl http_codec::PendingRespond for StreamSink {
             eof
         );
 
+        self.is_body_allowed = !eof
+            && !http_codec::response_has_no_body(
+                &self.request_method,
+                Some(response.status.as_u16()),
+            );
+
         self.pending_response = Some((response, eof));
         self.try_send_pending_response()?;
 
@@ -489,6 +535,12 @@ impl pipe::Sink for StreamSink {
     }
 
     fn write(&mut self, data: Bytes) -> io::Result<Bytes> {
+        // Temporary: the FIN is queued asynchronously, so reject writes after eof.
+        // See `pending_fin_streams` in quic_multiplexer.rs.
+        if self.is_closed {
+            return Err(io::Error::from(ErrorKind::BrokenPipe));
+        }
+
         if self.pending_response.is_some() {
             log_id!(
                 error,
@@ -516,9 +568,10 @@ impl pipe::Sink for StreamSink {
     }
 
     fn eof(&mut self) -> io::Result<()> {
-        self.socket
-            .shutdown_stream(self.stream_id, quiche::Shutdown::Write);
-        Ok(())
+        self.is_closed = true;
+        self.codec_tx
+            .send(self.close_message())
+            .map_err(|_| io::Error::from(ErrorKind::UnexpectedEof))
     }
 
     async fn wait_writable(&mut self) -> io::Result<()> {
@@ -558,10 +611,11 @@ impl http_codec::DroppingSink for StreamSink {
 
 impl Drop for StreamSink {
     fn drop(&mut self) {
-        match self.codec_tx.send(StreamMessage::Shutdown(
-            self.stream_id,
-            Some(quiche::Shutdown::Write),
-        )) {
+        if self.is_closed {
+            return;
+        }
+
+        match self.codec_tx.send(self.close_message()) {
             Ok(_) => (),
             Err(e) => log_id!(debug, self.id, "Failed to notify of write shutdown: {}", e),
         }

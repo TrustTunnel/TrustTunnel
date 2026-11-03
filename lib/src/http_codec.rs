@@ -10,6 +10,14 @@ use std::net::IpAddr;
 pub(crate) type RequestHeaders = http::request::Parts;
 pub(crate) type ResponseHeaders = http::response::Parts;
 
+/// Returns true when an HTTP response must not contain a body.
+pub(crate) fn response_has_no_body(method: &http::Method, status: Option<u16>) -> bool {
+    *method == http::Method::HEAD
+        || status.is_some_and(|code| {
+            (100..200).contains(&code) || code == 204 || code == 205 || code == 304
+        })
+}
+
 /// Encapsulates an HTTP stream implementation
 pub(crate) trait Stream: Send {
     /// Get the request ID for logging
@@ -199,5 +207,23 @@ impl HttpCodec for SingleRequestCodec {
 
     fn protocol(&self) -> Protocol {
         self.protocol
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_has_no_body_for_head_and_empty_statuses() {
+        assert!(!response_has_no_body(&http::Method::GET, Some(200)));
+
+        assert!(response_has_no_body(&http::Method::HEAD, Some(200)));
+
+        for status in [100, 204, 205, 304] {
+            assert!(response_has_no_body(&http::Method::GET, Some(status)));
+        }
+
+        assert!(!response_has_no_body(&http::Method::GET, None));
     }
 }
