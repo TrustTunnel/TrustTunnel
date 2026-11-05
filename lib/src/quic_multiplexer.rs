@@ -998,25 +998,31 @@ impl QuicSocket {
             let mut quic_conn = self.quic_conn.lock().unwrap();
             {
                 let mut pending = self.pending_fin_streams.lock().unwrap();
-                pending.retain(|&stream_id| match quic_conn.stream_capacity(stream_id) {
-                    Ok(capacity) if capacity >= 2 => {
-                        match quic_conn.stream_send(stream_id, &[0, 0], true) {
-                            Ok(2) => false,
-                            Ok(_) | Err(quiche::Error::Done) => true,
-                            Err(e) => {
-                                log_id!(
-                                    debug,
-                                    self.id,
-                                    "Failed to send pending FIN: stream id={}, error={}",
-                                    stream_id,
-                                    e
-                                );
-                                false
-                            }
+                pending.retain(|&stream_id| {
+                    let capacity = match quic_conn.stream_capacity(stream_id) {
+                        Ok(capacity) => capacity,
+                        Err(_) => return false,
+                    };
+
+                    if capacity < 2 {
+                        return true;
+                    }
+
+                    // [0, 0] is an empty HTTP/3 DATA frame: type 0, length 0.
+                    match quic_conn.stream_send(stream_id, &[0, 0], true) {
+                        Ok(2) => false,
+                        Err(quiche::Error::Done) => true,
+                        other => {
+                            log_id!(
+                                warn,
+                                self.id,
+                                "Dropping pending FIN: stream id={}, result={:?}",
+                                stream_id,
+                                other
+                            );
+                            false
                         }
                     }
-                    Ok(_) => true,
-                    Err(_) => false,
                 });
             }
             let r = flush_pending_data(&mut quic_conn, &self.udp_socket, &self.id);

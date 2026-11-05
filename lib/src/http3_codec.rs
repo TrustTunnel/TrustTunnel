@@ -433,13 +433,25 @@ impl Drop for StreamSource {
     }
 }
 
+fn close_message(
+    is_body_allowed: bool,
+    has_pending_response: bool,
+    stream_id: u64,
+) -> StreamMessage {
+    if is_body_allowed && !has_pending_response {
+        StreamMessage::Fin(stream_id)
+    } else {
+        StreamMessage::Shutdown(stream_id, Some(quiche::Shutdown::Write))
+    }
+}
+
 impl StreamSink {
     fn close_message(&self) -> StreamMessage {
-        if self.is_body_allowed && self.pending_response.is_none() {
-            StreamMessage::Fin(self.stream_id)
-        } else {
-            StreamMessage::Shutdown(self.stream_id, Some(quiche::Shutdown::Write))
-        }
+        close_message(
+            self.is_body_allowed,
+            self.pending_response.is_some(),
+            self.stream_id,
+        )
     }
 
     fn try_send_pending_response(&mut self) -> io::Result<()> {
@@ -448,11 +460,32 @@ impl StreamSink {
                 Ok(()) => {
                     self.pending_response = None;
                     if eof {
-                        self.codec_tx
-                            .send(StreamMessage::Shutdown(self.stream_id, None))
-                            .map_err(|e| {
-                                io::Error::other(format!("Failed to send shutdown message: {}", e))
-                            })?;
+                        self.is_closed = true;
+
+                        if self.is_body_allowed {
+                            self.codec_tx
+                                .send(StreamMessage::Shutdown(
+                                    self.stream_id,
+                                    Some(quiche::Shutdown::Read),
+                                ))
+                                .map_err(|e| {
+                                    io::Error::other(format!("Failed to send read shutdown: {}", e))
+                                })?;
+                            self.codec_tx
+                                .send(StreamMessage::Fin(self.stream_id))
+                                .map_err(|e| {
+                                    io::Error::other(format!("Failed to send FIN message: {}", e))
+                                })?;
+                        } else {
+                            self.codec_tx
+                                .send(StreamMessage::Shutdown(self.stream_id, None))
+                                .map_err(|e| {
+                                    io::Error::other(format!(
+                                        "Failed to send shutdown message: {}",
+                                        e
+                                    ))
+                                })?;
+                        }
                     }
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -505,11 +538,8 @@ impl http_codec::PendingRespond for StreamSink {
             eof
         );
 
-        self.is_body_allowed = !eof
-            && !http_codec::response_has_no_body(
-                &self.request_method,
-                Some(response.status.as_u16()),
-            );
+        self.is_body_allowed =
+            !http_codec::response_has_no_body(&self.request_method, Some(response.status.as_u16()));
 
         self.pending_response = Some((response, eof));
         self.try_send_pending_response()?;
@@ -619,5 +649,30 @@ impl Drop for StreamSink {
             Ok(_) => (),
             Err(e) => log_id!(debug, self.id, "Failed to notify of write shutdown: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn close_message_uses_fin_for_body_responses() {
+        assert!(matches!(
+            close_message(true, false, 4),
+            StreamMessage::Fin(4)
+        ));
+    }
+
+    #[test]
+    fn close_message_uses_shutdown_for_bodyless_or_pending_headers() {
+        assert!(matches!(
+            close_message(false, false, 4),
+            StreamMessage::Shutdown(4, Some(quiche::Shutdown::Write))
+        ));
+        assert!(matches!(
+            close_message(true, true, 4),
+            StreamMessage::Shutdown(4, Some(quiche::Shutdown::Write))
+        ));
     }
 }

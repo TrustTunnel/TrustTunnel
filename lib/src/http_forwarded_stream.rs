@@ -553,6 +553,12 @@ impl SinkWaitingResponse {
         let mut body_length = None;
         let mut drop_headers =
             HashSet::from(["proxy-connection", "keep-alive", "upgrade"].map(|h| h.to_string()));
+
+        if response.code == Some(205) {
+            drop_headers.insert("content-length".to_string());
+            drop_headers.insert("transfer-encoding".to_string());
+        }
+
         for h in response.headers {
             match (h.name.to_ascii_lowercase().as_str(), self.request_version) {
                 (x, _) if drop_headers.contains(x) => (),
