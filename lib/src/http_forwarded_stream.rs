@@ -554,11 +554,6 @@ impl SinkWaitingResponse {
         let mut drop_headers =
             HashSet::from(["proxy-connection", "keep-alive", "upgrade"].map(|h| h.to_string()));
 
-        if response.code == Some(205) {
-            drop_headers.insert("content-length".to_string());
-            drop_headers.insert("transfer-encoding".to_string());
-        }
-
         for h in response.headers {
             match (h.name.to_ascii_lowercase().as_str(), self.request_version) {
                 (x, _) if drop_headers.contains(x) => (),
@@ -602,15 +597,24 @@ impl SinkWaitingResponse {
             }
         }
 
-        if http_codec::response_has_no_body(&self.request_method, response.code) {
-            body_length = Some(BodyLength::Determined(0));
-        }
-
-        let response = builder
+        let mut response = builder
             .body(())
             .map_err(|e| io::Error::other(format!("Invalid response: {}", e)))?
             .into_parts()
             .0;
+
+        if response.status == http::StatusCode::RESET_CONTENT {
+            // 205 is not self-delimiting in HTTP/1.1; use an explicit zero length.
+            response.headers.insert(
+                http::header::CONTENT_LENGTH,
+                http::HeaderValue::from_static("0"),
+            );
+            response.headers.remove(http::header::TRANSFER_ENCODING);
+        }
+
+        if http_codec::response_has_no_body(&self.request_method, Some(response.status.as_u16())) {
+            body_length = Some(BodyLength::Determined(0));
+        }
 
         Ok((response, body_length))
     }
