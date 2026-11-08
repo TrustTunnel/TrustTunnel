@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] SOCKS5 forwarder (`forward_protocol.socks5`): UDP replies are no longer dropped when a client has more than one UDP association. Previously only the first association of a session received replies, which broke e.g. DNS over UDP shortly after connecting.
 - [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
 
 ### Security

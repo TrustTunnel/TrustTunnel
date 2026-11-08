@@ -362,10 +362,15 @@ impl DatagramSource {
         };
 
         let mut buffer = BytesMut::zeroed(net_utils::MAX_UDP_PAYLOAD_SIZE);
-        let (n, peer) = socket
-            .recv_from(buffer.as_mut())
-            .await
-            .map_err(socks_to_io_error)?;
+        // A stale readiness reported by `listen_socket_read` must not block here, otherwise
+        // datagrams of all the other associations would never be read.
+        let (n, peer) = match socket.try_recv_from(buffer.as_mut()) {
+            Ok(x) => x,
+            Err(socks5_client::Error::Io(e)) if e.kind() == ErrorKind::WouldBlock => {
+                return Ok(None)
+            }
+            Err(e) => return Err(socks_to_io_error(e)),
+        };
         buffer.truncate(n);
 
         Ok(Some(forwarder::UdpDatagramReadStatus::Read(
