@@ -16,6 +16,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] SOCKS5 forwarder (`forward_protocol.socks5`): UDP replies are no longer dropped when a client has more than one UDP association. Previously only the first association of a session received replies, which broke e.g. DNS over UDP shortly after connecting.
+
 ### Security
 
 ## [1.3.1] - 2026-11-19
