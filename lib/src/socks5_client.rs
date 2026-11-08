@@ -605,11 +605,13 @@ impl<S> UdpAssociation<S> {
         self.socket.send(&buf).await.map(|_| ()).map_err(Error::Io)
     }
 
-    pub async fn recv_from(&self, data: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
+    /// Non-blocking: returns [`Error::Io`] with [`std::io::ErrorKind::WouldBlock`] if no datagram
+    /// is queued.
+    pub fn try_recv_from(&self, data: &mut [u8]) -> Result<(usize, SocketAddr), Error> {
         const MIN_UDP_PACKET_SIZE: usize = udp_buffer_size(net_utils::IPV4_WIRE_LENGTH, 0);
 
         let mut buf = vec![0; udp_buffer_size(net_utils::IPV6_WIRE_LENGTH, data.len())];
-        let n = self.socket.recv(&mut buf).await.map_err(Error::Io)?;
+        let n = self.socket.try_recv(&mut buf).map_err(Error::Io)?;
         buf.truncate(n);
         if n < MIN_UDP_PACKET_SIZE {
             return Err(Error::Protocol("Too short packet".to_string()));
