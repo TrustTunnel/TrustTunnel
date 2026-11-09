@@ -165,6 +165,11 @@ cd /opt/trusttunnel/
 ./trusttunnel_endpoint_setup_wizard -h
 ```
 
+> [!NOTE]
+> The old `setup_wizard` name is deprecated. Release archives and the installer
+> keep a compatibility entry point for existing scripts. Use
+> `trusttunnel_endpoint_setup_wizard`.
+
 The setup wizard supports interactive mode, so you could run it and it will ask
 for data required for endpoint configuration.
 
@@ -432,6 +437,11 @@ in your installation directory.
 
 The installation directory contains `trusttunnel_client_setup_wizard` binary
 that helps generate the config files required for the client to run.
+
+> [!NOTE]
+> The old `setup_wizard` name is deprecated. Release archives and the installer
+> keep a compatibility entry point for existing scripts. Use
+> `trusttunnel_client_setup_wizard`.
 
 ##### Linux / macOS
 

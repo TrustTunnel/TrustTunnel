@@ -10,9 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Renamed the endpoint setup wizard binary from `setup_wizard` to
+- Renamed the endpoint setup wizard binary to
   `trusttunnel_endpoint_setup_wizard` so it cannot collide with the client
-  wizard or with other packages.
+  wizard or other packages. The old `setup_wizard` name is deprecated and
+  remains as a compatibility entry point for existing scripts.
 
 ### Deprecated
 

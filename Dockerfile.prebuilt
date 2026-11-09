@@ -19,7 +19,8 @@ RUN set -eux; \
         cp /tmp/release/*/trusttunnel_endpoint_setup_wizard /bin/; \
     else \
         cp /tmp/release/*/setup_wizard /bin/trusttunnel_endpoint_setup_wizard; \
-    fi
+    fi; \
+    ln -sf /bin/trusttunnel_endpoint_setup_wizard /bin/setup_wizard
 COPY --chmod=755 /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint
 VOLUME /trusttunnel_endpoint/

@@ -74,6 +74,7 @@ Build on Linux:
               llvm-objcopy --only-keep-debug trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.debug
               llvm-strip trusttunnel_endpoint_setup_wizard
               llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint_setup_wizard.debug trusttunnel_endpoint_setup_wizard
+              ln -sf trusttunnel_endpoint_setup_wizard setup_wizard
               cp ${ENDPOINT_ROOT}/LICENSE .
               cp ${ENDPOINT_ROOT}/scripts/trusttunnel.service.template .
               # Sign binaries with GPG
@@ -87,8 +88,13 @@ Build on Linux:
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
                   trusttunnel_endpoint_setup_wizard
+              gpg --default-key "${GPG_KEY}" \
+                  --detach-sig \
+                  --passphrase "${bamboo.gpgPassword}" \
+                  --pinentry-mode loopback \
+                  setup_wizard
               NAME=trusttunnel-v${VERSION}-linux-aarch64
-              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE trusttunnel.service.template
+              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig setup_wizard setup_wizard.sig LICENSE trusttunnel.service.template
               mv ${NAME}.tar.gz ${ENDPOINT_ROOT}/build_linux
 
               NAME_DBG=${NAME}-dbgsym
@@ -103,6 +109,7 @@ Build on Linux:
               llvm-objcopy --only-keep-debug trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.debug
               llvm-strip trusttunnel_endpoint_setup_wizard
               llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint_setup_wizard.debug trusttunnel_endpoint_setup_wizard
+              ln -sf trusttunnel_endpoint_setup_wizard setup_wizard
               cp ${ENDPOINT_ROOT}/LICENSE .
               cp ${ENDPOINT_ROOT}/scripts/trusttunnel.service.template .
               # Sign binaries with GPG
@@ -116,8 +123,13 @@ Build on Linux:
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
                   trusttunnel_endpoint_setup_wizard
+              gpg --default-key "${GPG_KEY}" \
+                  --detach-sig \
+                  --passphrase "${bamboo.gpgPassword}" \
+                  --pinentry-mode loopback \
+                  setup_wizard
               NAME=trusttunnel-v${VERSION}-linux-x86_64
-              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE trusttunnel.service.template
+              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig setup_wizard setup_wizard.sig LICENSE trusttunnel.service.template
               mv ${NAME}.tar.gz ${ENDPOINT_ROOT}/build_linux
 
               NAME_DBG=${NAME}-dbgsym
@@ -199,6 +211,7 @@ Build on macOS:
 
             pushd build_macos
               cp ${ENDPOINT_ROOT}/LICENSE .
+              ln -sf trusttunnel_endpoint_setup_wizard setup_wizard
               gpg --default-key "${GPG_KEY}" \
                   --detach-sig \
                   --passphrase "${bamboo.gpgPassword}" \
@@ -209,8 +222,13 @@ Build on macOS:
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
                   trusttunnel_endpoint_setup_wizard
+              gpg --default-key "${GPG_KEY}" \
+                  --detach-sig \
+                  --passphrase "${bamboo.gpgPassword}" \
+                  --pinentry-mode loopback \
+                  setup_wizard
               NAME=trusttunnel-v${VERSION}-macos-universal
-              tar zcf ${NAME}.tar.gz -s ",^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE
+              tar zcf ${NAME}.tar.gz -s ",^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig setup_wizard setup_wizard.sig LICENSE
               NAME_DBG=${NAME}-dbgsym
               tar zcf ${NAME_DBG}.tar.gz -s ",^,${NAME_DBG}/," trusttunnel_endpoint.dSYM trusttunnel_endpoint_setup_wizard.dSYM
             popd

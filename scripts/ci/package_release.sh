@@ -34,6 +34,7 @@ for ARCH in x86_64 aarch64; do
     llvm-objcopy --only-keep-debug trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.debug
     llvm-strip trusttunnel_endpoint_setup_wizard
     llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint_setup_wizard.debug trusttunnel_endpoint_setup_wizard
+    ln -sf trusttunnel_endpoint_setup_wizard setup_wizard
 
     cp "${OLDPWD}/LICENSE" .
     cp "${OLDPWD}/scripts/trusttunnel.service.template" .
@@ -48,11 +49,17 @@ for ARCH in x86_64 aarch64; do
         --passphrase "${GPG_PASSWORD}" \
         --pinentry-mode loopback \
         trusttunnel_endpoint_setup_wizard
+    gpg --default-key "${GPG_KEY}" \
+        --detach-sig \
+        --passphrase "${GPG_PASSWORD}" \
+        --pinentry-mode loopback \
+        setup_wizard
 
     NAME="trusttunnel-v${VERSION}-linux-${ARCH}"
     tar zcf "${NAME}.tar.gz" --transform "s,^,${NAME}/," \
       trusttunnel_endpoint trusttunnel_endpoint.sig \
       trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig \
+      setup_wizard setup_wizard.sig \
       LICENSE trusttunnel.service.template
     mv "${NAME}.tar.gz" "${OLDPWD}/artifacts/"
 

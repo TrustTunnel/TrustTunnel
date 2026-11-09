@@ -372,6 +372,16 @@ unpack() {
   fi
 }
 
+# Function ensure_setup_wizard_compat keeps the deprecated setup_wizard name
+# working for existing scripts.
+ensure_setup_wizard_compat() {
+  if [ -x "${output_dir}/trusttunnel_endpoint_setup_wizard" ]; then
+    ln -sf trusttunnel_endpoint_setup_wizard "${output_dir}/setup_wizard"
+  elif [ -x "${output_dir}/setup_wizard" ]; then
+    ln -sf setup_wizard "${output_dir}/trusttunnel_endpoint_setup_wizard"
+  fi
+}
+
 # Function unpack unpacks the passed archive depending on it's extension.
 check_package() {
   if [ "$uninstall" -eq '1' ]; then
@@ -651,5 +661,7 @@ check_package
 handle_existing
 
 unpack
+
+ensure_setup_wizard_compat
 
 report_success
