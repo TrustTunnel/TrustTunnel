@@ -204,6 +204,10 @@ Required in non-interactive mode."#,
         return 1;
     }
 
+    if *MODE.lock().unwrap() == Mode::Interactive {
+        user_interaction::install_interrupt_handler();
+    }
+
     let credentials = args
         .get_one::<String>(CREDENTIALS_PARAM_NAME)
         .map(|x| x.splitn(2, ':'))
