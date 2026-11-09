@@ -79,10 +79,22 @@ fn increase_fd_limit() {
 fn increase_fd_limit() {}
 
 fn main() {
-    if std::env::args().nth(1).as_deref() == Some("--setup-wizard") {
+    let mut args = std::env::args_os();
+    let _program = args.next();
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("--setup-wizard")) {
+        let wizard_args = args
+            .map(std::ffi::OsString::into_string)
+            .collect::<Result<Vec<_>, _>>();
+        let wizard_args = match wizard_args {
+            Ok(args) => args,
+            Err(_) => {
+                eprintln!("Setup wizard arguments must be valid UTF-8.");
+                std::process::exit(2);
+            }
+        };
         let code = trusttunnel_endpoint_tools::run_from_args(
             "trusttunnel_endpoint --setup-wizard",
-            std::env::args().skip(2).collect(),
+            wizard_args,
         );
         std::process::exit(code);
     }

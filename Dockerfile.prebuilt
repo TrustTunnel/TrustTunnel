@@ -14,6 +14,10 @@ RUN set -eux; \
     curl -fsSL "${TT_RELEASE_BASE_URL}/v${TT_VERSION}/${RELEASE_FILE}" -o /tmp/release.tar.gz; \
     mkdir -p /tmp/release; \
     tar -xzf /tmp/release.tar.gz -C /tmp/release; \
+    if [ -f /tmp/release/*/setup_wizard ] || [ -f /tmp/release/*/trusttunnel_endpoint_setup_wizard ]; then \
+        echo "Release ${TT_VERSION} contains a standalone setup wizard and does not support --setup-wizard" >&2; \
+        exit 1; \
+    fi; \
     cp /tmp/release/*/trusttunnel_endpoint /bin/
 COPY --chmod=755 /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint

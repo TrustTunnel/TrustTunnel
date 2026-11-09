@@ -157,7 +157,8 @@ protocol/deep-link format, library API) when relevant.
       forwarding (TCP, UDP, ICMP), settings parsing, authentication, and
       metrics. All shared types live here.
     - **`endpoint`** (`trusttunnel_endpoint`): binary crate with the CLI
-      entrypoint for running the VPN endpoint. Thin wrapper around `lib`.
+      entrypoint for running the VPN endpoint. It wraps `lib` for service mode
+      and links `trusttunnel_endpoint_tools` to expose `--setup-wizard`.
     - **`tools`** (`trusttunnel_endpoint_tools`): library crate providing an interactive
       configuration wizard with ACME/Let's Encrypt support for certificate
       provisioning. The endpoint binary links it and exposes it as
