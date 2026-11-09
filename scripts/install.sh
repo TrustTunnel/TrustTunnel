@@ -520,6 +520,8 @@ remove_existing() {
   log "'trusttunnel_endpoint' has been removed from '${output_dir}'"
   rm -f "${output_dir}/setup_wizard"
   log "'setup_wizard' has been removed from '${output_dir}'"
+  rm -f "${output_dir}/trusttunnel_endpoint_setup_wizard"
+  log "'trusttunnel_endpoint_setup_wizard' has been removed from '${output_dir}'"
   rm -f "${output_dir}/trusttunnel.service.template"
   log "'trusttunnel.service.template' has been removed from '${output_dir}'"
   rm -f "${output_dir}/LICENSE"
@@ -601,7 +603,7 @@ report_success() {
   echo "Run the Setup Wizard to continue the endpoint setup:"
   echo
   echo "    cd ${output_dir}"
-  echo "    sudo ./setup_wizard"
+  echo "    sudo ./trusttunnel_endpoint_setup_wizard"
   echo
 
   if [ "$os" != 'linux' ]

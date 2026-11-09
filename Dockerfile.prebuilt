@@ -15,7 +15,11 @@ RUN set -eux; \
     mkdir -p /tmp/release; \
     tar -xzf /tmp/release.tar.gz -C /tmp/release; \
     cp /tmp/release/*/trusttunnel_endpoint /bin/; \
-    cp /tmp/release/*/setup_wizard /bin/
+    if [ -f /tmp/release/*/trusttunnel_endpoint_setup_wizard ]; then \
+        cp /tmp/release/*/trusttunnel_endpoint_setup_wizard /bin/; \
+    else \
+        cp /tmp/release/*/setup_wizard /bin/trusttunnel_endpoint_setup_wizard; \
+    fi
 COPY --chmod=755 /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint
 VOLUME /trusttunnel_endpoint/

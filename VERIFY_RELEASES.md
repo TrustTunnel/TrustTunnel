@@ -22,7 +22,7 @@ Since TrustTunnel v0.9.126 we sign the executable files we build so that you can
 3. Verify. On Unix:
 
    ```text
-   gpg --verify trusttunnel/setup_wizard.sig
+   gpg --verify trusttunnel/trusttunnel_endpoint_setup_wizard.sig
    gpg --verify trusttunnel/trusttunnel_endpoint.sig
    ```
 

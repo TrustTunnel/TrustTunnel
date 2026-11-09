@@ -71,9 +71,9 @@ Build on Linux:
               llvm-objcopy --only-keep-debug trusttunnel_endpoint trusttunnel_endpoint.debug
               llvm-strip trusttunnel_endpoint
               llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint.debug trusttunnel_endpoint
-              llvm-objcopy --only-keep-debug setup_wizard setup_wizard.debug
-              llvm-strip setup_wizard
-              llvm-objcopy --add-gnu-debuglink=setup_wizard.debug setup_wizard
+              llvm-objcopy --only-keep-debug trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.debug
+              llvm-strip trusttunnel_endpoint_setup_wizard
+              llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint_setup_wizard.debug trusttunnel_endpoint_setup_wizard
               cp ${ENDPOINT_ROOT}/LICENSE .
               cp ${ENDPOINT_ROOT}/scripts/trusttunnel.service.template .
               # Sign binaries with GPG
@@ -86,13 +86,13 @@ Build on Linux:
                   --detach-sig \
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
-                  setup_wizard
+                  trusttunnel_endpoint_setup_wizard
               NAME=trusttunnel-v${VERSION}-linux-aarch64
-              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig setup_wizard setup_wizard.sig LICENSE trusttunnel.service.template
+              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE trusttunnel.service.template
               mv ${NAME}.tar.gz ${ENDPOINT_ROOT}/build_linux
 
               NAME_DBG=${NAME}-dbgsym
-              tar zcf ${NAME_DBG}.tar.gz --transform "s,^,${NAME_DBG}/," trusttunnel_endpoint.debug setup_wizard.debug
+              tar zcf ${NAME_DBG}.tar.gz --transform "s,^,${NAME_DBG}/," trusttunnel_endpoint.debug trusttunnel_endpoint_setup_wizard.debug
               mv ${NAME_DBG}.tar.gz ${ENDPOINT_ROOT}/build_linux
             popd
 
@@ -100,9 +100,9 @@ Build on Linux:
               llvm-objcopy --only-keep-debug trusttunnel_endpoint trusttunnel_endpoint.debug
               llvm-strip trusttunnel_endpoint
               llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint.debug trusttunnel_endpoint
-              llvm-objcopy --only-keep-debug setup_wizard setup_wizard.debug
-              llvm-strip setup_wizard
-              llvm-objcopy --add-gnu-debuglink=setup_wizard.debug setup_wizard
+              llvm-objcopy --only-keep-debug trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.debug
+              llvm-strip trusttunnel_endpoint_setup_wizard
+              llvm-objcopy --add-gnu-debuglink=trusttunnel_endpoint_setup_wizard.debug trusttunnel_endpoint_setup_wizard
               cp ${ENDPOINT_ROOT}/LICENSE .
               cp ${ENDPOINT_ROOT}/scripts/trusttunnel.service.template .
               # Sign binaries with GPG
@@ -115,13 +115,13 @@ Build on Linux:
                   --detach-sig \
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
-                  setup_wizard
+                  trusttunnel_endpoint_setup_wizard
               NAME=trusttunnel-v${VERSION}-linux-x86_64
-              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig setup_wizard setup_wizard.sig LICENSE trusttunnel.service.template
+              tar zcf ${NAME}.tar.gz --transform "s,^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE trusttunnel.service.template
               mv ${NAME}.tar.gz ${ENDPOINT_ROOT}/build_linux
 
               NAME_DBG=${NAME}-dbgsym
-              tar zcf ${NAME_DBG}.tar.gz --transform "s,^,${NAME_DBG}/," trusttunnel_endpoint.debug setup_wizard.debug
+              tar zcf ${NAME_DBG}.tar.gz --transform "s,^,${NAME_DBG}/," trusttunnel_endpoint.debug trusttunnel_endpoint_setup_wizard.debug
               mv ${NAME_DBG}.tar.gz ${ENDPOINT_ROOT}/build_linux
             popd
   requirements:
@@ -177,24 +177,24 @@ Build on macOS:
               target/aarch64-apple-darwin/release/trusttunnel_endpoint
 
             lipo -create \
-              -output build_macos/setup_wizard \
-              target/x86_64-apple-darwin/release/setup_wizard \
-              target/aarch64-apple-darwin/release/setup_wizard
+              -output build_macos/trusttunnel_endpoint_setup_wizard \
+              target/x86_64-apple-darwin/release/trusttunnel_endpoint_setup_wizard \
+              target/aarch64-apple-darwin/release/trusttunnel_endpoint_setup_wizard
 
             lipo -info build_macos/trusttunnel_endpoint
-            lipo -info build_macos/setup_wizard
+            lipo -info build_macos/trusttunnel_endpoint_setup_wizard
 
             dsymutil build_macos/trusttunnel_endpoint -o build_macos/trusttunnel_endpoint.dSYM
-            dsymutil build_macos/setup_wizard -o build_macos/setup_wizard.dSYM
+            dsymutil build_macos/trusttunnel_endpoint_setup_wizard -o build_macos/trusttunnel_endpoint_setup_wizard.dSYM
 
             strip build_macos/trusttunnel_endpoint
-            strip build_macos/setup_wizard
+            strip build_macos/trusttunnel_endpoint_setup_wizard
 
             codesign -f -s "${CODESIGN_IDENTITY}" -i "${CODESIGN_IDENTIFIER}" --options=runtime build_macos/trusttunnel_endpoint
-            codesign -f -s "${CODESIGN_IDENTITY}" -i "${CODESIGN_IDENTIFIER}" --options=runtime build_macos/setup_wizard
+            codesign -f -s "${CODESIGN_IDENTITY}" -i "${CODESIGN_IDENTIFIER}" --options=runtime build_macos/trusttunnel_endpoint_setup_wizard
 
             bundle exec fastlane notari id:"${CODESIGN_IDENTIFIER}" bundle:"${ENDPOINT_ROOT}/build_macos/trusttunnel_endpoint"
-            bundle exec fastlane notari id:"${CODESIGN_IDENTIFIER}" bundle:"${ENDPOINT_ROOT}/build_macos/setup_wizard"
+            bundle exec fastlane notari id:"${CODESIGN_IDENTIFIER}" bundle:"${ENDPOINT_ROOT}/build_macos/trusttunnel_endpoint_setup_wizard"
             bundle exec fastlane remove_certs || true
 
             pushd build_macos
@@ -208,11 +208,11 @@ Build on macOS:
                   --detach-sig \
                   --passphrase "${bamboo.gpgPassword}" \
                   --pinentry-mode loopback \
-                  setup_wizard
+                  trusttunnel_endpoint_setup_wizard
               NAME=trusttunnel-v${VERSION}-macos-universal
-              tar zcf ${NAME}.tar.gz -s ",^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig setup_wizard setup_wizard.sig LICENSE
+              tar zcf ${NAME}.tar.gz -s ",^,${NAME}/," trusttunnel_endpoint trusttunnel_endpoint.sig trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig LICENSE
               NAME_DBG=${NAME}-dbgsym
-              tar zcf ${NAME_DBG}.tar.gz -s ",^,${NAME_DBG}/," trusttunnel_endpoint.dSYM setup_wizard.dSYM
+              tar zcf ${NAME_DBG}.tar.gz -s ",^,${NAME_DBG}/," trusttunnel_endpoint.dSYM trusttunnel_endpoint_setup_wizard.dSYM
             popd
   requirements:
     - ephemeral

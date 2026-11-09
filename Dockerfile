@@ -26,7 +26,7 @@ FROM debian:bookworm-slim AS trusttunnel-endpoint
 ARG ENDPOINT_DIR_NAME="TrustTunnel"
 ARG LOG_LEVEL="info"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 && rm -rf /var/lib/apt/lists/*
-COPY --from=build /home/$ENDPOINT_DIR_NAME/target/release/setup_wizard /bin/
+COPY --from=build /home/$ENDPOINT_DIR_NAME/target/release/trusttunnel_endpoint_setup_wizard /bin/
 COPY --from=build /home/$ENDPOINT_DIR_NAME/target/release/trusttunnel_endpoint /bin/
 COPY --chmod=755  /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint

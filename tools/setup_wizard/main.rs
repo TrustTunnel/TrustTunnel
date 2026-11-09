@@ -69,10 +69,10 @@ fn main() {
         .after_help(
             r#"EXAMPLES:
     # Interactive setup (recommended for first-time users)
-    sudo ./setup_wizard
+    sudo ./trusttunnel_endpoint_setup_wizard
 
     # Non-interactive setup (for scripting/CI)
-    sudo ./setup_wizard -m non-interactive \
+    sudo ./trusttunnel_endpoint_setup_wizard -m non-interactive \
         -a 0.0.0.0:443 \
         -c admin:secretpass \
         -n vpn.example.com \
@@ -187,7 +187,7 @@ Required in non-interactive mode."#,
 
     if *MODE.lock().unwrap() == Mode::Interactive && !std::io::stdin().is_terminal() {
         eprintln!("Error: Interactive mode requires a terminal (TTY).");
-        eprintln!("Please run setup_wizard from a terminal, or use non-interactive mode:");
+        eprintln!("Please run trusttunnel_endpoint_setup_wizard from a terminal, or use non-interactive mode:");
         eprintln!("  {} --help", std::env::args().next().unwrap_or_default());
         std::process::exit(1);
     }
@@ -344,7 +344,9 @@ fn print_setup_complete_summary(
     println!("   where <address> is ip, ip:port, domain, or domain:port");
     println!();
     println!("3. Use the exported config with:");
-    println!("   • TrustTunnel CLI Client - Pass to setup_wizard --endpoint_config");
+    println!(
+        "   • TrustTunnel CLI Client - Pass to trusttunnel_client_setup_wizard --endpoint_config"
+    );
     println!("   • TrustTunnel Flutter Client - Enter the config manually");
     println!();
     const CONFIG_URL: &str =

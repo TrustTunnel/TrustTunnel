@@ -23,12 +23,12 @@ init:
 .PHONY: endpoint/build-wizard
 ## Build the setup wizard
 endpoint/build-wizard:
-	cargo build $(CARGO_BUILD_TYPE) --bin setup_wizard
+	cargo build $(CARGO_BUILD_TYPE) --bin trusttunnel_endpoint_setup_wizard
 
 .PHONY: endpoint/setup
 ## Run the setup wizard to create all the required configuration files
 endpoint/setup: endpoint/build-wizard
-	cargo run $(CARGO_BUILD_TYPE) --bin setup_wizard -- \
+	cargo run $(CARGO_BUILD_TYPE) --bin trusttunnel_endpoint_setup_wizard -- \
 		--hostname "$(ENDPOINT_HOSTNAME)" \
 		--address "$(LISTEN_ADDRESS):$(LISTEN_PORT)" \
 		--lib-settings "$(CONFIG_FILE)" \

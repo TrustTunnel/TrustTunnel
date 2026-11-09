@@ -35,7 +35,7 @@ configuration is split into:
 3. **Credentials file** - Client authentication credentials
 4. **Rules file** - Connection filtering rules
 
-The `setup_wizard` tool can generate these files interactively.
+The `trusttunnel_endpoint_setup_wizard` tool can generate these files interactively.
 
 ---
 
