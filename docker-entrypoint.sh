@@ -67,15 +67,15 @@ run_setup_wizard_noninteractive() {
             ;;
     esac
 
-    echo "Missing configuration file(s). Running trusttunnel_endpoint_setup_wizard in non-interactive mode"
-    trusttunnel_endpoint_setup_wizard "${args[@]}"
+    echo "Missing configuration file(s). Running trusttunnel_endpoint --setup-wizard in non-interactive mode"
+    trusttunnel_endpoint --setup-wizard "${args[@]}"
 }
 
 main() {
     if ! verify_configs; then
         if [ -t 0 ]; then
             echo "Missing configuration file(s). Launching setup wizard in interactive mode"
-            trusttunnel_endpoint_setup_wizard
+            trusttunnel_endpoint --setup-wizard
         else
             run_setup_wizard_noninteractive
         fi

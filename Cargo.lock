@@ -3581,6 +3581,7 @@ dependencies = [
  "toml",
  "toml_edit 0.19.15",
  "trusttunnel",
+ "trusttunnel_endpoint_tools",
 ]
 
 [[package]]

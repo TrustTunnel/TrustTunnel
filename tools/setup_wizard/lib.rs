@@ -62,17 +62,21 @@ pub fn get_predefined_params() -> MutexGuard<'static, PredefinedParameters> {
     PREDEFINED_PARAMS.lock().unwrap()
 }
 
-fn main() {
+pub fn run_from_args(program: &str, args: Vec<String>) -> i32 {
+    *MODE.lock().unwrap() = Mode::Interactive;
+    *PREDEFINED_PARAMS.lock().unwrap() = PredefinedParameters::default();
+
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
-    let args = clap::Command::new("VPN endpoint setup wizard")
+    let command = clap::Command::new("VPN endpoint setup wizard")
+        .bin_name(program.to_string())
         .about("Generate configuration files for TrustTunnel endpoint")
-        .after_help(
+        .after_help(format!(
             r#"EXAMPLES:
     # Interactive setup (recommended for first-time users)
-    sudo ./trusttunnel_endpoint_setup_wizard
+    sudo {program}
 
     # Non-interactive setup (for scripting/CI)
-    sudo ./trusttunnel_endpoint_setup_wizard -m non-interactive \
+    sudo {program} -m non-interactive \
         -a 0.0.0.0:443 \
         -c admin:secretpass \
         -n vpn.example.com \
@@ -85,7 +89,7 @@ fn main() {
 For detailed configuration options, see:
 https://github.com/TrustTunnel/TrustTunnel/blob/master/CONFIGURATION.md
 "#,
-        )
+        ))
         .disable_colored_help(false)
         .args(&[
             clap::Arg::new(MODE_PARAM_NAME)
@@ -176,7 +180,15 @@ Required in non-interactive mode."#,
                 .action(clap::ArgAction::SetTrue)
                 .help("Use Let's Encrypt staging environment (for testing)"),
         ])
-        .get_matches();
+        .try_get_matches_from(std::iter::once(program.to_string()).chain(args));
+    let args = match command {
+        Ok(args) => args,
+        Err(error) => {
+            let exit_code = error.exit_code();
+            let _ = error.print();
+            return exit_code;
+        }
+    };
 
     *MODE.lock().unwrap() = match args.get_one::<String>(MODE_PARAM_NAME).map(String::as_str) {
         None => Mode::Interactive,
@@ -187,29 +199,30 @@ Required in non-interactive mode."#,
 
     if *MODE.lock().unwrap() == Mode::Interactive && !std::io::stdin().is_terminal() {
         eprintln!("Error: Interactive mode requires a terminal (TTY).");
-        eprintln!("Please run trusttunnel_endpoint_setup_wizard from a terminal, or use non-interactive mode:");
-        eprintln!("  {} --help", std::env::args().next().unwrap_or_default());
-        std::process::exit(1);
+        eprintln!("Please run {program} from a terminal, or use non-interactive mode:");
+        eprintln!("  {program} --help");
+        return 1;
+    }
+
+    let credentials = args
+        .get_one::<String>(CREDENTIALS_PARAM_NAME)
+        .map(|x| x.splitn(2, ':'))
+        .and_then(|mut x| x.next().zip(x.next()))
+        .map(|(a, b)| (a.to_string(), b.to_string()));
+    if let Some((username, password)) = &credentials {
+        if username.is_empty() {
+            eprintln!("Error: Username cannot be empty");
+            return 1;
+        }
+        if password.is_empty() {
+            eprintln!("Error: Password cannot be empty");
+            return 1;
+        }
     }
 
     *PREDEFINED_PARAMS.lock().unwrap() = PredefinedParameters {
         listen_address: args.get_one::<String>(LISTEN_ADDRESS_PARAM_NAME).cloned(),
-        credentials: args
-            .get_one::<String>(CREDENTIALS_PARAM_NAME)
-            .map(|x| x.splitn(2, ':'))
-            .and_then(|mut x| x.next().zip(x.next()))
-            .map(|(a, b)| (a.to_string(), b.to_string()))
-            .map(|(username, password)| {
-                if username.is_empty() {
-                    eprintln!("Error: Username cannot be empty");
-                    std::process::exit(1);
-                }
-                if password.is_empty() {
-                    eprintln!("Error: Password cannot be empty");
-                    std::process::exit(1);
-                }
-                (username, password)
-            }),
+        credentials,
         hostname: args.get_one::<String>(HOSTNAME_PARAM_NAME).cloned(),
         library_settings_file: args
             .get_one::<String>(LIBRARY_SETTINGS_FILE_PARAM_NAME)
@@ -296,6 +309,8 @@ Required in non-interactive mode."#,
         println!("To see the full set of available options, run the following command:");
         println!("\ttrusttunnel_endpoint -h");
     }
+
+    0
 }
 
 fn print_setup_complete_summary(
@@ -345,7 +360,7 @@ fn print_setup_complete_summary(
     println!();
     println!("3. Use the exported config with:");
     println!(
-        "   • TrustTunnel CLI Client - Pass to trusttunnel_client_setup_wizard --endpoint_config"
+        "   • TrustTunnel CLI Client - Pass to trusttunnel_client --setup-wizard --endpoint_config"
     );
     println!("   • TrustTunnel Flutter Client - Enter the config manually");
     println!();
@@ -375,4 +390,27 @@ fn find_existent_settings<T: serde::de::DeserializeOwned>(path: &str) -> Option<
                 .find_map(|(content, fname)| toml::from_str::<T>(&content).map(|_| fname).ok())
         })
         .flatten()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_exits_successfully() {
+        let code = run_from_args(
+            "trusttunnel_endpoint --setup-wizard",
+            vec!["--help".to_string()],
+        );
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn invalid_mode_returns_nonzero() {
+        let code = run_from_args(
+            "trusttunnel_endpoint --setup-wizard",
+            vec!["--mode".to_string(), "invalid".to_string()],
+        );
+        assert_ne!(code, 0);
+    }
 }

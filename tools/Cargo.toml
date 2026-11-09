@@ -4,9 +4,9 @@ version = "0.1.0"
 authors = ["Sergei Gunchenko <s.gunchenko@adguard.com>"]
 edition = "2021"
 
-[[bin]]
-name = "trusttunnel_endpoint_setup_wizard"
-path = "setup_wizard/main.rs"
+[lib]
+name = "trusttunnel_endpoint_tools"
+path = "setup_wizard/lib.rs"
 
 [dependencies]
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }

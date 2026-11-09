@@ -151,37 +151,21 @@ jobs:
             target/x86_64-apple-darwin/release/trusttunnel_endpoint \
             target/aarch64-apple-darwin/release/trusttunnel_endpoint
 
-          lipo -create \
-            -output trusttunnel_endpoint_setup_wizard \
-            target/x86_64-apple-darwin/release/trusttunnel_endpoint_setup_wizard \
-            target/aarch64-apple-darwin/release/trusttunnel_endpoint_setup_wizard
-
           dsymutil trusttunnel_endpoint -o trusttunnel_endpoint.dSYM
-          dsymutil trusttunnel_endpoint_setup_wizard -o trusttunnel_endpoint_setup_wizard.dSYM
 
           strip trusttunnel_endpoint
-          strip trusttunnel_endpoint_setup_wizard
-          ln -sf trusttunnel_endpoint_setup_wizard setup_wizard
 
           gpg --default-key "${GPG_KEY}" --detach-sig \
               --passphrase "${GPG_PASSWORD}" --pinentry-mode loopback \
               trusttunnel_endpoint
-          gpg --default-key "${GPG_KEY}" --detach-sig \
-              --passphrase "${GPG_PASSWORD}" --pinentry-mode loopback \
-              trusttunnel_endpoint_setup_wizard
-          gpg --default-key "${GPG_KEY}" --detach-sig \
-              --passphrase "${GPG_PASSWORD}" --pinentry-mode loopback \
-              setup_wizard
 
           tar zcf "${NAME}.tar.gz" -s ",^,${NAME}/," \
-            trusttunnel_endpoint trusttunnel_endpoint.sig \
-            trusttunnel_endpoint_setup_wizard trusttunnel_endpoint_setup_wizard.sig \
-            setup_wizard setup_wizard.sig LICENSE
+            trusttunnel_endpoint trusttunnel_endpoint.sig LICENSE
           mv "${NAME}.tar.gz" artifacts/
 
           NAME_DBG="${NAME}-dbgsym"
           tar zcf "${NAME_DBG}.tar.gz" -s ",^,${NAME_DBG}/," \
-            trusttunnel_endpoint.dSYM trusttunnel_endpoint_setup_wizard.dSYM
+            trusttunnel_endpoint.dSYM
           mv "${NAME_DBG}.tar.gz" artifacts/
 
       - name: Upload artifacts

@@ -33,10 +33,10 @@ vpn-libs-endpoint/
 │   │   └── authentication/    # Authentication module
 │   └── tests/                 # Integration tests (tunnel, auth, ping, speedtest, reverse proxy)
 │       └── common/            # Shared test helpers and fixtures
-├── endpoint/                  # Binary crate (`trusttunnel_endpoint`)
+├── endpoint/                  # Binary crate (`trusttunnel_endpoint`) with `--setup-wizard`
 │   └── src/main.rs            # CLI entrypoint for the VPN endpoint
-├── tools/                     # Binary crate (`trusttunnel_endpoint_tools`)
-│   └── setup_wizard/          # Interactive config generator (`trusttunnel_endpoint_setup_wizard`) with ACME support
+├── tools/                     # Library crate (`trusttunnel_endpoint_tools`)
+│   └── setup_wizard/          # Setup wizard library with ACME support
 ├── deeplink/                  # Library crate (`trusttunnel-deeplink`)
 │   └── src/                   # Deep-link URI encoding/decoding for client configs
 ├── macros/                    # Proc-macro crate (derive helpers)
@@ -125,7 +125,7 @@ their members.
   (`make test`, linters), and config/CLI impacts.
 
 - Always check that changes in `lib/` or `deeplink/` are synchronized with
-  `trusttunnel_endpoint_setup_wizard` behavior and flags.
+  `trusttunnel_endpoint --setup-wizard` behavior and flags.
 
 ## Changelog
 
@@ -158,9 +158,10 @@ protocol/deep-link format, library API) when relevant.
       metrics. All shared types live here.
     - **`endpoint`** (`trusttunnel_endpoint`): binary crate with the CLI
       entrypoint for running the VPN endpoint. Thin wrapper around `lib`.
-    - **`tools`** (`trusttunnel_endpoint_setup_wizard`): binary crate providing an interactive
+    - **`tools`** (`trusttunnel_endpoint_tools`): library crate providing an interactive
       configuration wizard with ACME/Let's Encrypt support for certificate
-      provisioning.
+      provisioning. The endpoint binary links it and exposes it as
+      `trusttunnel_endpoint --setup-wizard`.
     - **`deeplink`** (`trusttunnel-deeplink`): library crate for encoding and
       decoding `tt://` deep-link URIs used in client configuration
       distribution.

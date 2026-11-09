@@ -14,13 +14,7 @@ RUN set -eux; \
     curl -fsSL "${TT_RELEASE_BASE_URL}/v${TT_VERSION}/${RELEASE_FILE}" -o /tmp/release.tar.gz; \
     mkdir -p /tmp/release; \
     tar -xzf /tmp/release.tar.gz -C /tmp/release; \
-    cp /tmp/release/*/trusttunnel_endpoint /bin/; \
-    if [ -f /tmp/release/*/trusttunnel_endpoint_setup_wizard ]; then \
-        cp /tmp/release/*/trusttunnel_endpoint_setup_wizard /bin/; \
-    else \
-        cp /tmp/release/*/setup_wizard /bin/trusttunnel_endpoint_setup_wizard; \
-    fi; \
-    ln -sf /bin/trusttunnel_endpoint_setup_wizard /bin/setup_wizard
+    cp /tmp/release/*/trusttunnel_endpoint /bin/
 COPY --chmod=755 /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint
 VOLUME /trusttunnel_endpoint/

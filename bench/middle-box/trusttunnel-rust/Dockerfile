@@ -11,11 +11,11 @@ WORKDIR /bench/endpoint
 COPY . .
 RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/bench/endpoint/target \
-    cargo build --release --bin trusttunnel_endpoint_setup_wizard --bin trusttunnel_endpoint && \
-    cp ./target/release/trusttunnel_endpoint_setup_wizard ./target/release/trusttunnel_endpoint /bench/
+    cargo build --release --bin trusttunnel_endpoint && \
+    cp ./target/release/trusttunnel_endpoint /bench/
 
 WORKDIR /bench
-RUN ./trusttunnel_endpoint_setup_wizard --mode non-interactive  \
+RUN ./trusttunnel_endpoint --setup-wizard --mode non-interactive  \
     --address [::]:4433 \
     --creds premium:premium  \
     --hostname "$ENDPOINT_HOSTNAME"  \

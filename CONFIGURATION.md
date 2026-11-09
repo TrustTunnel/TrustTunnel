@@ -35,7 +35,7 @@ configuration is split into:
 3. **Credentials file** - Client authentication credentials
 4. **Rules file** - Connection filtering rules
 
-The `trusttunnel_endpoint_setup_wizard` tool can generate these files interactively.
+The `trusttunnel_endpoint --setup-wizard` tool can generate these files interactively.
 
 ---
 
@@ -46,6 +46,7 @@ The endpoint binary accepts the following command line arguments:
 | Argument | Short | Description | Default |
 | -------- | ------- | ----------- | ------- |
 | `--version` | `-v` | Print version and exit | - |
+| `--setup-wizard` | - | Run the setup wizard and exit. Must be the first argument | - |
 | `--loglvl` | `-l` | Logging level (`info`, `debug`, `trace`) | `info` |
 | `--logfile` | - | File path for storing logs (stdout if not specified) | stdout |
 | `--sentry_dsn` | - | Sentry DSN for error reporting | - |

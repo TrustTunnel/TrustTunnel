@@ -6,7 +6,6 @@ This directory contains the fastlane automation used for macOS release signing
 and notarization of:
 
 - `trusttunnel_endpoint`
-- `trusttunnel_endpoint_setup_wizard`
 
 The flow was adapted from `trusttunnel-client` to fit the Cargo-based endpoint
 repository.

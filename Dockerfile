@@ -19,15 +19,12 @@ COPY tools/ ./tools
 COPY Cargo.toml Cargo.lock rust-toolchain.toml Makefile ./
 # Build
 RUN make endpoint/build
-RUN make endpoint/build-wizard
 
 # Copy binaries
 FROM debian:bookworm-slim AS trusttunnel-endpoint
 ARG ENDPOINT_DIR_NAME="TrustTunnel"
 ARG LOG_LEVEL="info"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates iproute2 && rm -rf /var/lib/apt/lists/*
-COPY --from=build /home/$ENDPOINT_DIR_NAME/target/release/trusttunnel_endpoint_setup_wizard /bin/
-RUN ln -sf /bin/trusttunnel_endpoint_setup_wizard /bin/setup_wizard
 COPY --from=build /home/$ENDPOINT_DIR_NAME/target/release/trusttunnel_endpoint /bin/
 COPY --chmod=755  /docker-entrypoint.sh /scripts/
 WORKDIR /trusttunnel_endpoint
