@@ -19,6 +19,18 @@ fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
     prop::option::of("([0-9a-f]{2}){1,16}")
 }
 
+fn arbitrary_tls_profile() -> impl Strategy<Value = Option<String>> {
+    prop::option::of(prop_oneof![
+        Just("chrome".to_string()),
+        Just("chrome_canary".to_string()),
+        Just("safari".to_string()),
+        Just("firefox".to_string()),
+        Just("okhttp".to_string()),
+        Just("openssl".to_string()),
+        Just("boringssl".to_string()),
+    ])
+}
+
 fn arbitrary_subscription_url() -> impl Strategy<Value = Option<String>> {
     prop::option::of(
         (
@@ -50,6 +62,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
         prop::option::of("[a-z]{3,20}"),
         prop::collection::vec("[a-z0-9:/._-]{5,40}", 0..3),
         arbitrary_subscription_url(),
+        arbitrary_tls_profile(),
     )
         .prop_map(
             |(
@@ -70,6 +83,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                 name,
                 dns_upstreams,
                 subscription_url,
+                tls_profile,
             )| {
                 DeepLinkConfig {
                     hostname,
@@ -78,6 +92,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     password,
                     client_random_prefix,
                     client_random_auth_key,
+                    tls_profile,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -113,6 +128,7 @@ proptest! {
         prop_assert_eq!(decoded.username, config.username);
         prop_assert_eq!(decoded.password, config.password);
         prop_assert_eq!(decoded.client_random_auth_key, config.client_random_auth_key);
+        prop_assert_eq!(decoded.tls_profile, config.tls_profile);
         prop_assert_eq!(decoded.custom_sni, config.custom_sni);
         prop_assert_eq!(decoded.has_ipv6, config.has_ipv6);
         prop_assert_eq!(decoded.skip_verification, config.skip_verification);

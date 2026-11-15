@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- [Feature] Added the optional `tls_profile` field to the deep-link format (tag `0x10`). Clients that do not know the tag ignore it and use `chrome`.
+
 ### Changed
 
 ### Deprecated

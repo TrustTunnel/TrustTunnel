@@ -250,6 +250,7 @@ impl ClientConfig {
             } else {
                 Some(self.client_random_auth_key.clone())
             },
+            tls_profile: None,
             custom_sni: if self.custom_sni.is_empty() {
                 None
             } else {
