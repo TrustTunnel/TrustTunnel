@@ -18,6 +18,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] `scripts/config_to_deeplink.py` and `scripts/deeplink_to_config.py` now encode and decode `client_random_auth_key` (tag `0x0F`) instead of dropping it on round-trip.
 - [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
 
 ### Security

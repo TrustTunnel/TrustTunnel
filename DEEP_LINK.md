@@ -7,10 +7,14 @@ Status: version 2
 
 - version 2: Added the subscription_url field; static connection parameters
   are optional when it is present.
-- version 2: Added the tls_profile field.
 - version 1: Added fields for version, server display name, and DNS upstreams.
 - draft 2: Changed format to tt://? to use case-sensitive URL part (query) instead of case-insensitive (host)
 - draft 1: Initial specification
+
+Version 2 shipped with `subscription_url`. The optional tags `0x0F`
+(`client_random_auth_key`) and `0x10` (`tls_profile`) were added later
+without changing the version. Clients that predate them ignore the tags
+and fall back to their default behavior.
 
 ---
 

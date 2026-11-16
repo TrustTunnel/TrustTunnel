@@ -13,7 +13,7 @@ pub enum DeepLinkError {
         "Truncated TLV entry: tag {tag:#04x} expects {expected} bytes but only {got} remaining"
     )]
     TruncatedTlv {
-        tag: u8,
+        tag: u64,
         expected: usize,
         got: usize,
     },

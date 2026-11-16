@@ -77,7 +77,7 @@ impl<'a> TlvParser<'a> {
         };
         self.offset = new_offset;
 
-        let tag = TlvTag::from_u8(tag_u64 as u8);
+        let tag = u8::try_from(tag_u64).ok().and_then(TlvTag::from_u8);
 
         // Decode length
         let (length, new_offset) = match decode_varint(self.data, self.offset) {
@@ -91,7 +91,7 @@ impl<'a> TlvParser<'a> {
         // Check if we have enough data
         if self.offset + length > self.data.len() {
             return Some(Err(DeepLinkError::TruncatedTlv {
-                tag: tag_u64 as u8,
+                tag: tag_u64,
                 expected: length,
                 got: self.data.len() - self.offset,
             }));
@@ -329,6 +329,17 @@ mod tests {
         let (tag, value) = parser.next_field().unwrap().unwrap();
         assert_eq!(tag, None); // Unknown tag
         assert_eq!(value, vec![0x01, 0x02, 0x03]);
+    }
+
+    #[test]
+    fn test_tlv_parser_does_not_truncate_multibyte_tag() {
+        // Tag 0x110 is a two-byte varint; its low byte is the TlsProfile tag.
+        let data = vec![0x41, 0x10, 0x01, 0x00];
+        let mut parser = TlvParser::new(&data);
+
+        let (tag, value) = parser.next_field().unwrap().unwrap();
+        assert_eq!(tag, None);
+        assert_eq!(value, vec![0x00]);
     }
 
     #[test]
