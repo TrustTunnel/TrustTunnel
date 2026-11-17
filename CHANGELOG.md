@@ -8,8 +8,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- [Feature] Added the optional `tls_profile` field to the deep-link format (tag `0x10`). Clients that do not know the tag ignore it and use `chrome`.
-
 ### Changed
 
 ### Deprecated
@@ -18,10 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+### Security
+
+## [1.3.0-rc.3] - 2026-11-17
+
+### Added
+
+- [Feature] Added the optional `tls_profile` field to the deep-link format (tag `0x10`). Clients that do not know the tag ignore it and use `chrome`.
+
+### Fixed
+
 - [Fix] `scripts/config_to_deeplink.py` and `scripts/deeplink_to_config.py` now encode and decode `client_random_auth_key` (tag `0x0F`) instead of dropping it on round-trip.
 - [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
-
-### Security
 
 ## [1.3.0-beta.2] - 2026-10-09
 
@@ -319,7 +325,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...HEAD
+[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-rc.3...HEAD
+[1.3.0-rc.3]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...v1.3.0-rc.3
 [1.3.0-beta.2]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...v1.3.0-beta.2
 [1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
 [1.1.0]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.41...v1.1.0
