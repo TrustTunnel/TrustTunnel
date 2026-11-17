@@ -22,6 +22,7 @@ pub enum TlvTag {
     DnsUpstreams = 0x0D,
     SubscriptionUrl = 0x0E,
     ClientRandomAuthKey = 0x0F,
+    TlsProfile = 0x10,
 }
 
 impl TlvTag {
@@ -47,6 +48,7 @@ impl TlvTag {
             0x0D => Some(TlvTag::DnsUpstreams),
             0x0E => Some(TlvTag::SubscriptionUrl),
             0x0F => Some(TlvTag::ClientRandomAuthKey),
+            0x10 => Some(TlvTag::TlsProfile),
             _ => None,
         }
     }
@@ -116,6 +118,9 @@ pub struct DeepLinkConfig {
     pub password: Option<String>,
     pub client_random_prefix: Option<String>,
     pub client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tls_profile: Option<String>,
     pub custom_sni: Option<String>,
     pub has_ipv6: bool,
     pub skip_verification: bool,
@@ -171,6 +176,7 @@ pub struct DeepLinkConfigBuilder {
     password: Option<String>,
     client_random_prefix: Option<String>,
     client_random_auth_key: Option<String>,
+    tls_profile: Option<String>,
     custom_sni: Option<String>,
     has_ipv6: Option<bool>,
     skip_verification: Option<bool>,
@@ -243,6 +249,11 @@ impl DeepLinkConfigBuilder {
         self
     }
 
+    pub fn tls_profile(mut self, tls_profile: Option<String>) -> Self {
+        self.tls_profile = tls_profile;
+        self
+    }
+
     pub fn name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
@@ -290,6 +301,7 @@ impl DeepLinkConfigBuilder {
             password: self.password,
             client_random_prefix: self.client_random_prefix,
             client_random_auth_key: self.client_random_auth_key,
+            tls_profile: self.tls_profile,
             custom_sni: self.custom_sni,
             has_ipv6: self.has_ipv6.unwrap_or(true),
             skip_verification: self.skip_verification.unwrap_or(false),
@@ -314,6 +326,8 @@ mod tests {
         assert_eq!(TlvTag::Hostname.as_u8(), 0x01);
         assert_eq!(TlvTag::from_u8(0x01), Some(TlvTag::Hostname));
         assert_eq!(TlvTag::from_u8(0x00), Some(TlvTag::Version));
+        assert_eq!(TlvTag::TlsProfile.as_u8(), 0x10);
+        assert_eq!(TlvTag::from_u8(0x10), Some(TlvTag::TlsProfile));
         assert_eq!(TlvTag::from_u8(0xFF), None);
     }
 
@@ -403,6 +417,31 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_tls_profile() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .tls_profile(Some("firefox".to_string()))
+            .build()
+            .unwrap();
+        assert_eq!(config.tls_profile.as_deref(), Some("firefox"));
+    }
+
+    #[test]
+    fn test_builder_tls_profile_defaults_to_none() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+        assert_eq!(config.tls_profile, None);
+    }
+
+    #[test]
     fn test_validate_empty_hostname() {
         let config = DeepLinkConfig {
             hostname: Some(String::new()),
@@ -417,6 +456,7 @@ mod tests {
             anti_dpi: false,
             client_random_prefix: None,
             client_random_auth_key: None,
+            tls_profile: None,
             name: None,
             dns_upstreams: vec![],
             subscription_url: None,

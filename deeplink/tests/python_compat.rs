@@ -230,6 +230,74 @@ client_random_prefix = "aabbccddee"
 }
 
 #[test]
+fn test_client_random_auth_key_matches_python() {
+    let toml = r#"
+hostname = "crak.example.com"
+addresses = ["10.20.30.40:8443"]
+username = "testuser"
+password = "testpass"
+client_random_auth_key = "0011223344556677"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .hostname("crak.example.com".to_string())
+        .addresses(vec!["10.20.30.40:8443".to_string()])
+        .username("testuser".to_string())
+        .password("testpass".to_string())
+        .client_random_auth_key(Some("0011223344556677".to_string()))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Rust and Python encoders produced different URIs for client_random_auth_key"
+    );
+
+    let python_config_str = python_decode(&rust_uri);
+    assert!(
+        python_config_str.contains("client_random_auth_key = \"0011223344556677\""),
+        "Python decoder did not preserve client_random_auth_key"
+    );
+}
+
+#[test]
+fn test_tls_profile_matches_python() {
+    let toml = r#"
+hostname = "profile.example.com"
+addresses = ["10.20.30.40:8443"]
+username = "testuser"
+password = "testpass"
+tls_profile = "firefox"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .hostname("profile.example.com".to_string())
+        .addresses(vec!["10.20.30.40:8443".to_string()])
+        .username("testuser".to_string())
+        .password("testpass".to_string())
+        .tls_profile(Some("firefox".to_string()))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Rust and Python encoders produced different URIs for tls_profile"
+    );
+
+    let python_config_str = python_decode(&rust_uri);
+    assert!(
+        python_config_str.contains("tls_profile = \"firefox\""),
+        "Python decoder did not preserve tls_profile"
+    );
+}
+
+#[test]
 fn test_roundtrip_through_both_implementations() {
     // Start with Rust config
     let original_config = DeepLinkConfig::builder()

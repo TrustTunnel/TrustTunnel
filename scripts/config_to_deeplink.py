@@ -86,6 +86,8 @@ TAG_CLIENT_RANDOM_PREFIX = 0x0B
 TAG_NAME                 = 0x0C
 TAG_DNS_UPSTREAMS        = 0x0D
 TAG_SUBSCRIPTION_URL     = 0x0E
+TAG_CLIENT_RANDOM_AUTH_KEY = 0x0F
+TAG_TLS_PROFILE            = 0x10
 
 CURRENT_VERSION = 2
 
@@ -144,6 +146,14 @@ def encode_config(cfg: dict) -> bytes:
     # client_random_prefix (optional hex-encoded string)
     if "client_random_prefix" in cfg and cfg["client_random_prefix"]:
         buf += tlv(TAG_CLIENT_RANDOM_PREFIX, cfg["client_random_prefix"].encode())
+
+    # client_random_auth_key (optional hex-encoded string)
+    if "client_random_auth_key" in cfg and cfg["client_random_auth_key"]:
+        buf += tlv(TAG_CLIENT_RANDOM_AUTH_KEY, cfg["client_random_auth_key"].encode())
+
+    # tls_profile (optional client-defined profile name)
+    if "tls_profile" in cfg and cfg["tls_profile"]:
+        buf += tlv(TAG_TLS_PROFILE, cfg["tls_profile"].encode())
 
     # Optional string fields
     if "custom_sni" in cfg:

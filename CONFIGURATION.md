@@ -61,6 +61,9 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
 | `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
 
+The exported client configuration and deep-link do not set `tls_profile`.
+Clients use `chrome` unless the profile is set separately.
+
 ### Examples
 
 ```bash

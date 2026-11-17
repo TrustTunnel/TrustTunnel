@@ -11,6 +11,11 @@ Status: version 2
 - draft 2: Changed format to tt://? to use case-sensitive URL part (query) instead of case-insensitive (host)
 - draft 1: Initial specification
 
+Version 2 shipped with `subscription_url`. The optional tags `0x0F`
+(`client_random_auth_key`) and `0x10` (`tls_profile`) were added later
+without changing the version. Clients that predate them ignore the tags
+and fall back to their default behavior.
+
 ---
 
 ## URI Format
@@ -97,11 +102,18 @@ in one or two bytes.
 | `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
 | `0x0E` | `subscription_url` | String | HTTPS subscription URL; may embed HTTP Basic Auth credentials in the userinfo component | no |
 | `0x0F` | `client_random_auth_key` | String | UTF-8 hex-encoded auth key; the client derives its TLS `client_random` from it and the SNI | no |
+| `0x10` | `tls_profile` | String | TLS ClientHello fingerprint profile name, defined by the TrustTunnel client. Known values: `chrome` (default), `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl` (no mimicry). `default` is a deprecated alias of `boringssl` | no (default `chrome`) |
 
 \* Required unless the `subscription_url` tag (`0x0E`) is present. When
 `subscription_url` is present, all static connection parameters are OPTIONAL
 and serve as a fallback for the initial connection attempt if the first
 subscription fetch fails.
+
+The `tls_profile` value names are client-defined and are not part of this
+format. The list in the field table matches
+[`TrustTunnelClient`](https://github.com/TrustTunnel/TrustTunnelClient), and a
+newer client may accept more values. When the tag is absent, the client uses
+`chrome`.
 
 ### Encoding Rules
 

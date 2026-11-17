@@ -85,6 +85,13 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
         }
     }
 
+    // tls_profile: include if present and non-empty
+    if let Some(ref profile) = config.tls_profile {
+        if !profile.is_empty() {
+            payload.extend(encode_string_field(TlvTag::TlsProfile, profile)?);
+        }
+    }
+
     // Optional fields (omit if default value or None) - order matches Python
     if let Some(custom_sni) = &config.custom_sni {
         payload.extend(encode_string_field(TlvTag::CustomSni, custom_sni)?);
@@ -233,6 +240,48 @@ mod tests {
 
         // Should contain all fields
         assert!(!payload.is_empty());
+    }
+
+    #[test]
+    fn test_encode_tls_profile_field() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .tls_profile(Some("firefox".to_string()))
+            .build()
+            .unwrap();
+
+        let payload = encode_tlv_payload(&config).unwrap();
+
+        assert!(payload
+            .windows(9)
+            .any(|w| w == [0x10, 0x07, b'f', b'i', b'r', b'e', b'f', b'o', b'x']));
+    }
+
+    #[test]
+    fn test_encode_tls_profile_empty_omitted() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .tls_profile(Some(String::new()))
+            .build()
+            .unwrap();
+
+        let payload = encode_tlv_payload(&config).unwrap();
+
+        let mut tags = Vec::new();
+        let mut offset = 0;
+        while offset < payload.len() {
+            let (tag, after_tag) = crate::varint::decode_varint(&payload, offset).unwrap();
+            let (len, after_len) = crate::varint::decode_varint(&payload, after_tag).unwrap();
+            tags.push(tag);
+            offset = after_len + len as usize;
+        }
+        assert!(!tags.contains(&0x10));
     }
 
     #[test]
