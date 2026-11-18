@@ -13,8 +13,13 @@ Status: version 2
 
 Version 2 shipped with `subscription_url`. The optional tags `0x0F`
 (`client_random_auth_key`) and `0x10` (`tls_profile`) were added later
-without changing the version. Clients that predate them ignore the tags
+without changing the version. Clients that do not implement a tag ignore it
 and fall back to their default behavior.
+
+`0x10` (`tls_profile`) carries a numeric `TlsProfile` identifier. A
+profile-name string form of this tag existed only in the withdrawn
+`1.3.0-rc.3` pre-release. This specification rejects that string form, and a
+client that implements it must be updated to read the numeric form.
 
 ---
 
@@ -77,6 +82,7 @@ in one or two bytes.
 | Type | Description |
 | --- | --- |
 | VarInt | TLS variable-length integer (see encoding above) |
+| Byte | 1 byte: an unsigned integer in the range `0x00`..`0xFF` |
 | Bool | 1 byte: `0x01` = true, `0x00` = false |
 | String | UTF-8 encoded bytes |
 | Bytes | Raw binary data |
@@ -95,25 +101,25 @@ in one or two bytes.
 | `0x06` | `password` | String | UTF-8 string | yes * |
 | `0x07` | `skip_verification` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
 | `0x08` | `certificate` | Bytes | Concatenated DER-encoded certificates (raw binary); omit if the chain is verified by system CAs | no |
-| `0x09` | `upstream_protocol` | VarInt | `0x01` = `http2`, `0x02` = `http3` | no (default `http2`) |
+| `0x09` | `upstream_protocol` | Byte | 1 byte: `0x01` = `http2`, `0x02` = `http3` | no (default `http2`) |
 | `0x0A` | `anti_dpi` | Bool | 1 byte: `0x01` = true, `0x00` = false | no (default `false`) |
 | `0x0B` | `client_random_prefix` | String | UTF-8 hex-encoded string in the following format: `prefix[/mask]` | no |
 | `0x0C` | `name` | String | Human-readable server name for display in the client UI | no |
 | `0x0D` | `dns_upstreams` | String[] | List of DNS upstream addresses (e.g. `"1.1.1.1"`, `"tls://dns.example.com"`, `"https://dns.example.com/dns-query"`) | no |
 | `0x0E` | `subscription_url` | String | HTTPS subscription URL; may embed HTTP Basic Auth credentials in the userinfo component | no |
 | `0x0F` | `client_random_auth_key` | String | UTF-8 hex-encoded auth key; the client derives its TLS `client_random` from it and the SNI | no |
-| `0x10` | `tls_profile` | String | TLS ClientHello fingerprint profile name, defined by the TrustTunnel client. Known values: `chrome` (default), `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl` (no mimicry). `default` is a deprecated alias of `boringssl` | no (default `chrome`) |
+| `0x10` | `tls_profile` | Byte | 1 byte: `0x00` = `chrome`, `0x01` = `chrome_canary`, `0x02` = `safari`, `0x03` = `firefox`, `0x04` = `okhttp`, `0x05` = `openssl`, `0x06` = `boringssl` (no mimicry) | no (default `chrome`) |
 
 \* Required unless the `subscription_url` tag (`0x0E`) is present. When
 `subscription_url` is present, all static connection parameters are OPTIONAL
 and serve as a fallback for the initial connection attempt if the first
 subscription fetch fails.
 
-The `tls_profile` value names are client-defined and are not part of this
-format. The list in the field table matches
-[`TrustTunnelClient`](https://github.com/TrustTunnel/TrustTunnelClient), and a
-newer client may accept more values. When the tag is absent, the client uses
-`chrome`.
+The `tls_profile` values are defined by this format and match
+[`VpnTlsProfile`](https://github.com/TrustTunnel/TrustTunnelClient/blob/main/common/include/vpn/utils.h)
+in TrustTunnelClient. The client configuration uses names for the same
+profiles. A parser MUST reject a `tls_profile` value it does not know. When the
+tag is absent, the client uses `chrome`.
 
 ### Encoding Rules
 
@@ -195,8 +201,9 @@ The deep link format carries an explicit version number in tag `0x00`.
 - The first explicitly versioned format is **version 1**.
 - A client MUST reject a deep link whose version is higher than the maximum
   version it supports.
-- A client MUST accept deep links with a version equal to or lower than the
-  maximum version it supports (backward compatibility).
+- A client MUST accept deep links that conform to this specification with a
+  version equal to or lower than the maximum version it supports (backward
+  compatibility).
 
 ---
 

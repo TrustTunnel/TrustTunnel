@@ -1,5 +1,5 @@
 use crate::error::{DeepLinkError, Result};
-use crate::types::{DeepLinkConfig, Protocol, TlvTag, CURRENT_VERSION};
+use crate::types::{DeepLinkConfig, Protocol, TlsProfile, TlvTag, CURRENT_VERSION};
 use crate::varint::decode_varint;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -50,6 +50,16 @@ fn decode_protocol(data: &[u8]) -> Result<Protocol> {
         ));
     }
     Protocol::from_u8(data[0])
+}
+
+/// Decode a TLS profile from a single byte.
+fn decode_tls_profile(data: &[u8]) -> Result<TlsProfile> {
+    if data.len() != 1 {
+        return Err(DeepLinkError::InvalidTlsProfile(
+            data.first().copied().unwrap_or(0xFF),
+        ));
+    }
+    TlsProfile::from_u8(data[0])
 }
 
 /// TLV parser with stateful offset tracking.
@@ -121,7 +131,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
     let mut anti_dpi: bool = false; // default
     let mut client_random_prefix: Option<String> = None;
     let mut client_random_auth_key: Option<String> = None;
-    let mut tls_profile: Option<String> = None;
+    let mut tls_profile: Option<TlsProfile> = None;
     let mut name: Option<String> = None;
     let mut dns_upstreams: Vec<String> = Vec::new();
     let mut subscription_url: Option<String> = None;
@@ -204,7 +214,7 @@ pub fn decode_tlv_payload(payload: &[u8]) -> Result<DeepLinkConfig> {
                 client_random_auth_key = Some(auth_key);
             }
             TlvTag::TlsProfile => {
-                tls_profile = Some(decode_string(&value)?);
+                tls_profile = Some(decode_tls_profile(&value)?);
             }
             TlvTag::Name => {
                 name = Some(decode_string(&value)?);
@@ -293,6 +303,25 @@ mod tests {
         assert_eq!(decode_protocol(&[0x01]).unwrap(), Protocol::Http2);
         assert_eq!(decode_protocol(&[0x02]).unwrap(), Protocol::Http3);
         assert!(decode_protocol(&[0x03]).is_err());
+    }
+
+    #[test]
+    fn test_decode_tls_profile() {
+        for (value, profile) in [
+            (0x00, TlsProfile::Chrome),
+            (0x01, TlsProfile::ChromeCanary),
+            (0x02, TlsProfile::Safari),
+            (0x03, TlsProfile::Firefox),
+            (0x04, TlsProfile::OkHttp),
+            (0x05, TlsProfile::OpenSsl),
+            (0x06, TlsProfile::BoringSsl),
+        ] {
+            assert_eq!(decode_tls_profile(&[value]).unwrap(), profile);
+        }
+
+        assert!(decode_tls_profile(&[0x07]).is_err());
+        assert!(decode_tls_profile(&[]).is_err());
+        assert!(decode_tls_profile(&[0x00, 0x01]).is_err());
     }
 
     #[test]
@@ -525,13 +554,13 @@ mod tests {
             .addresses(vec!["1.2.3.4:443".to_string()])
             .username("alice".to_string())
             .password("secret".to_string())
-            .tls_profile(Some("safari".to_string()))
+            .tls_profile(Some(TlsProfile::Safari))
             .build()
             .unwrap();
 
         let uri = crate::encode::encode(&config).unwrap();
         let decoded = crate::decode(&uri).unwrap();
-        assert_eq!(decoded.tls_profile.as_deref(), Some("safari"));
+        assert_eq!(decoded.tls_profile, Some(TlsProfile::Safari));
     }
 
     #[test]
@@ -550,7 +579,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tls_profile_unknown_value_passed_through() {
+    fn test_tls_profile_unknown_byte_rejected() {
         let config = DeepLinkConfig::builder()
             .hostname("vpn.example.com".to_string())
             .addresses(vec!["1.2.3.4:443".to_string()])
@@ -560,11 +589,25 @@ mod tests {
             .unwrap();
 
         let mut payload = crate::encode::encode_tlv_payload(&config).unwrap();
-        payload.extend_from_slice(&[0x10, 6]);
-        payload.extend_from_slice(b"future");
+        payload.extend_from_slice(&[0x10, 0x01, 0x07]);
 
-        let decoded = decode_tlv_payload(&payload).unwrap();
-        assert_eq!(decoded.tls_profile.as_deref(), Some("future"));
+        assert!(decode_tlv_payload(&payload).is_err());
+    }
+
+    #[test]
+    fn test_tls_profile_empty_value_rejected() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+
+        let mut payload = crate::encode::encode_tlv_payload(&config).unwrap();
+        payload.extend_from_slice(&[0x10, 0x00]);
+
+        assert!(decode_tlv_payload(&payload).is_err());
     }
 
     #[test]
@@ -585,7 +628,7 @@ mod tests {
             password: Some("secret".to_string()),
             client_random_prefix: Some(String::new()),
             client_random_auth_key: Some(String::new()),
-            tls_profile: Some(String::new()),
+            tls_profile: None,
             custom_sni: Some(String::new()),
             has_ipv6: true,
             skip_verification: false,
@@ -600,9 +643,8 @@ mod tests {
         let uri = crate::encode::encode(&config).unwrap();
         let decoded = crate::decode(&uri).unwrap();
 
-        // Some("") encodes as "field omitted" (empty strings are skipped for
-        // prefix, auth key, and profile), so decode returns None. This documents
-        // that behavior.
+        // Some("") encodes as "field omitted" for prefix and auth key, so
+        // decode returns None. This documents that behavior.
         assert_eq!(decoded.client_random_prefix, None);
         assert_eq!(decoded.client_random_auth_key, None);
         assert_eq!(decoded.tls_profile, None);

@@ -65,6 +65,16 @@ CURRENT_VERSION = 2
 
 PROTOCOL_RMAP = {0x01: "http2", 0x02: "http3"}
 
+TLS_PROFILE_RMAP = {
+    0x00: "chrome",
+    0x01: "chrome_canary",
+    0x02: "safari",
+    0x03: "firefox",
+    0x04: "okhttp",
+    0x05: "openssl",
+    0x06: "boringssl",
+}
+
 DEFAULTS = {
     "has_ipv6": True,
     "skip_verification": False,
@@ -199,7 +209,9 @@ def decode_config(data: bytes) -> dict:
         elif tag == TAG_CLIENT_RANDOM_AUTH_KEY:
             cfg["client_random_auth_key"] = value.decode()
         elif tag == TAG_TLS_PROFILE:
-            cfg["tls_profile"] = value.decode()
+            if len(value) != 1 or value[0] not in TLS_PROFILE_RMAP:
+                raise ValueError(f"unknown tls_profile byte: {value!r}")
+            cfg["tls_profile"] = TLS_PROFILE_RMAP[value[0]]
         elif tag == TAG_NAME:
             cfg["name"] = value.decode()
         elif tag == TAG_DNS_UPSTREAMS:
@@ -260,9 +272,9 @@ _FIELD_ORDER: list[tuple[str, str]] = [
                           "# If not specified, the endpoint certificate is verified "
                           "using the system storage."),
     ("upstream_protocol", "Protocol to be used to communicate with the endpoint [http2, http3]"),
-    ("tls_profile",       "TLS ClientHello fingerprint profile name defined by the client "
-                          "[chrome, chrome_canary, safari, firefox, okhttp, openssl, boringssl; "
-                          "default is a deprecated alias of boringssl]. chrome is used when unset."),
+    ("tls_profile",       "TLS ClientHello fingerprint profile "
+                          "[chrome, chrome_canary, safari, firefox, okhttp, openssl, boringssl]. "
+                          "chrome is used when unset."),
     ("anti_dpi",          "Is anti-DPI measures should be enabled"),
     ("name",              "Human-readable server display name"),
     ("dns_upstreams",     "DNS upstreams to use when connected to this endpoint"),

@@ -3562,6 +3562,7 @@ dependencies = [
  "rand 0.10.2",
  "rustls-pemfile 1.0.4",
  "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

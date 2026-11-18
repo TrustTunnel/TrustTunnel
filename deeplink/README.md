@@ -72,11 +72,14 @@ The `DeepLinkConfig` struct supports the following fields:
 | `client_random_auth_key` | `Option<String>` | No | None | TLS client random auth key (hex) |
 | `name` | `Option<String>` | No | None | Human-readable server name |
 | `dns_upstreams` | `Vec<String>` | No | `[]` | DNS upstream addresses |
-| `tls_profile` | `Option<String>` | No | None | TLS ClientHello fingerprint; value names are defined by [TrustTunnelClient](https://github.com/TrustTunnel/TrustTunnelClient) (`chrome` when absent) |
+| `tls_profile` | `Option<TlsProfile>` | No | None | TLS ClientHello fingerprint profile (`chrome` when absent) |
 | `subscription_url` | `Option<String>` | No | None | HTTPS subscription URL (v2) |
 
 \* Required unless `subscription_url` is present (format version 2); when it
 is, the static connection parameters are optional fallback.
+
+The reference script `scripts/config_to_deeplink.py` also accepts the
+deprecated client-config alias `default` for `boringssl`.
 
 ## Advanced Usage
 

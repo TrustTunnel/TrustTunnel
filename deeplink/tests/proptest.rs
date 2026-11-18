@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol};
+use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol, TlsProfile};
 
 fn arbitrary_address_string() -> impl Strategy<Value = String> {
     prop_oneof![
@@ -19,15 +19,15 @@ fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
     prop::option::of("([0-9a-f]{2}){1,16}")
 }
 
-fn arbitrary_tls_profile() -> impl Strategy<Value = Option<String>> {
+fn arbitrary_tls_profile() -> impl Strategy<Value = Option<TlsProfile>> {
     prop::option::of(prop_oneof![
-        Just("chrome".to_string()),
-        Just("chrome_canary".to_string()),
-        Just("safari".to_string()),
-        Just("firefox".to_string()),
-        Just("okhttp".to_string()),
-        Just("openssl".to_string()),
-        Just("boringssl".to_string()),
+        Just(TlsProfile::Chrome),
+        Just(TlsProfile::ChromeCanary),
+        Just(TlsProfile::Safari),
+        Just(TlsProfile::Firefox),
+        Just(TlsProfile::OkHttp),
+        Just(TlsProfile::OpenSsl),
+        Just(TlsProfile::BoringSsl),
     ])
 }
 

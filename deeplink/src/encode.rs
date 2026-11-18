@@ -85,11 +85,9 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
         }
     }
 
-    // tls_profile: include if present and non-empty
-    if let Some(ref profile) = config.tls_profile {
-        if !profile.is_empty() {
-            payload.extend(encode_string_field(TlvTag::TlsProfile, profile)?);
-        }
+    // tls_profile: include if present
+    if let Some(profile) = config.tls_profile {
+        payload.extend(encode_tlv(TlvTag::TlsProfile, &[profile.as_u8()])?);
     }
 
     // Optional fields (omit if default value or None) - order matches Python
@@ -156,6 +154,7 @@ pub fn encode(config: &DeepLinkConfig) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TlsProfile;
 
     #[test]
     fn test_encode_tlv() {
@@ -249,25 +248,22 @@ mod tests {
             .addresses(vec!["1.2.3.4:443".to_string()])
             .username("alice".to_string())
             .password("secret".to_string())
-            .tls_profile(Some("firefox".to_string()))
+            .tls_profile(Some(TlsProfile::Firefox))
             .build()
             .unwrap();
 
         let payload = encode_tlv_payload(&config).unwrap();
 
-        assert!(payload
-            .windows(9)
-            .any(|w| w == [0x10, 0x07, b'f', b'i', b'r', b'e', b'f', b'o', b'x']));
+        assert!(payload.windows(3).any(|w| w == [0x10, 0x01, 0x03]));
     }
 
     #[test]
-    fn test_encode_tls_profile_empty_omitted() {
+    fn test_encode_tls_profile_omitted_when_unset() {
         let config = DeepLinkConfig::builder()
             .hostname("vpn.example.com".to_string())
             .addresses(vec!["1.2.3.4:443".to_string()])
             .username("alice".to_string())
             .password("secret".to_string())
-            .tls_profile(Some(String::new()))
             .build()
             .unwrap();
 

@@ -93,6 +93,17 @@ CURRENT_VERSION = 2
 
 PROTOCOL_MAP = {"http2": 0x01, "http3": 0x02}
 
+TLS_PROFILE_MAP = {
+    "chrome": 0x00,
+    "chrome_canary": 0x01,
+    "safari": 0x02,
+    "firefox": 0x03,
+    "okhttp": 0x04,
+    "openssl": 0x05,
+    "boringssl": 0x06,
+    "default": 0x06,  # deprecated alias of "boringssl"
+}
+
 DEFAULTS = {
     "has_ipv6": True,
     "skip_verification": False,
@@ -151,9 +162,12 @@ def encode_config(cfg: dict) -> bytes:
     if "client_random_auth_key" in cfg and cfg["client_random_auth_key"]:
         buf += tlv(TAG_CLIENT_RANDOM_AUTH_KEY, cfg["client_random_auth_key"].encode())
 
-    # tls_profile (optional client-defined profile name)
-    if "tls_profile" in cfg and cfg["tls_profile"]:
-        buf += tlv(TAG_TLS_PROFILE, cfg["tls_profile"].encode())
+    # tls_profile (optional)
+    profile = cfg.get("tls_profile")
+    if profile:
+        if profile not in TLS_PROFILE_MAP:
+            raise ValueError(f"unknown tls_profile: {profile}")
+        buf += tlv(TAG_TLS_PROFILE, bytes([TLS_PROFILE_MAP[profile]]))
 
     # Optional string fields
     if "custom_sni" in cfg:
