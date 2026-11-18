@@ -533,7 +533,7 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 [FireTunnel](https://github.com/pnsrc/firetunnel) - A cross-platform client written in QT used modified [TrustTunnel Client](https://github.com/pnsrc/TrustTunnelClient/)
 
-[FreeTunnel](https://github.com/dimmmmmmmer/freetunnel) — A free, open-source desktop client for Windows, macOS, and Linux with a native Qt 6 interface, built on the official [TrustTunnel Client][trusttunnel-client]. One-click connect, split tunneling, kill switch, system tray, and signed auto-updates.
+[FreeTunnel](https://github.com/dimmmmmmmer/freetunnel) — A free, open-source client for Windows, macOS, Linux, Android, and Android TV, built on the official [TrustTunnel Client][trusttunnel-client]. One-click connect, configuration import via links or TOML files, split tunneling with domain and IP lists, and kill switch. Desktop apps include system tray controls; Android TV supports remote-friendly navigation and configuration transfer from a phone.
 
 [Shadowrocket](https://shadowlaunch.com) — Rule based proxy utility client for iPhone/iPad with TrustTunnel support. (Commercial)
 
