@@ -20,9 +20,9 @@ bytes = "1.4.0"
 chrono = { version = "0.4.26", default-features = false, features = ["clock"] }
 dynfmt = { version = "0.1.5", features = ["curly"], default-features = false }
 futures = "0.3.28"
-h2 = "0.3.26"
+h2 = "0.4.16"
 hex = "0.4.3"
-http = "0.2.9"
+http = "1.0"
 httparse = "1.8.0"
 ipnet = "2.9"
 lazy_static = "1.4.0"

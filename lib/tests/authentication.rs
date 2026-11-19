@@ -1,7 +1,7 @@
 use base64::engine::general_purpose::STANDARD as BASE64_ENGINE;
 use base64::Engine;
 use futures::future;
-use http::Request;
+use hyper::http::{self, Request};
 use log::info;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
