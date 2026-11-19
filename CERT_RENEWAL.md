@@ -14,7 +14,7 @@
 - [Test renewal](#test-renewal)
 - [Troubleshooting](#troubleshooting)
 
-TrustTunnel endpoint needs a valid TLS certificate to work. TrustTunnel's `setup_wizard` can help you generate a certificate automatically, but for a long-lived setup you should use Let's Encrypt with [Certbot][certbot] and enable automated renewal.
+TrustTunnel endpoint needs a valid TLS certificate to work. The `trusttunnel_endpoint --setup-wizard` command can help you generate a certificate automatically, but for a long-lived setup you should use Let's Encrypt with [Certbot][certbot] and enable automated renewal.
 
 If you previously generated a Let's Encrypt certificate without Certbot, re-issue it with Certbot so it can be renewed automatically.
 
@@ -76,7 +76,7 @@ These files are symlinks managed by Certbot and are updated automatically on ren
 
 ## Configure TrustTunnel to use the Certbot certificate
 
-If you haven't generated TrustTunnel configuration yet, choose "Provide path to existing certificate" during the `setup_wizard` and provide these paths in any order, separated by space.
+If you haven't generated TrustTunnel configuration yet, choose "Provide path to existing certificate" during the setup wizard (`trusttunnel_endpoint --setup-wizard`) and provide these paths in any order, separated by space.
 
 ```console
 ? How would you like to create a certificate? ›

@@ -16,6 +16,7 @@ use trusttunnel::{log_utils, settings};
 
 const VERSION_STRING: &str = env!("TRUSTTUNNEL_VERSION");
 const VERSION_PARAM_NAME: &str = "v_e_r_s_i_o_n_do_not_change_this_name_it_will_break";
+const SETUP_WIZARD_PARAM_NAME: &str = "setup-wizard";
 const LOG_LEVEL_PARAM_NAME: &str = "log_level";
 const LOG_FILE_PARAM_NAME: &str = "log_file";
 const SETTINGS_PARAM_NAME: &str = "settings";
@@ -78,6 +79,26 @@ fn increase_fd_limit() {
 fn increase_fd_limit() {}
 
 fn main() {
+    let mut args = std::env::args_os();
+    let _program = args.next();
+    if args.next().as_deref() == Some(std::ffi::OsStr::new("--setup-wizard")) {
+        let wizard_args = args
+            .map(std::ffi::OsString::into_string)
+            .collect::<Result<Vec<_>, _>>();
+        let wizard_args = match wizard_args {
+            Ok(args) => args,
+            Err(_) => {
+                eprintln!("Setup wizard arguments must be valid UTF-8.");
+                std::process::exit(2);
+            }
+        };
+        let code = trusttunnel_endpoint_tools::run_from_args(
+            "trusttunnel_endpoint --setup-wizard",
+            wizard_args,
+        );
+        std::process::exit(code);
+    }
+
     let args = clap::Command::new("VPN endpoint")
         .args(&[
             // Built-in version parameter handling is deficient in that it
@@ -88,6 +109,10 @@ fn main() {
                 .long("version")
                 .action(clap::ArgAction::SetTrue)
                 .help("Print the version of this software and exit"),
+            clap::Arg::new(SETUP_WIZARD_PARAM_NAME)
+                .long("setup-wizard")
+                .action(clap::ArgAction::SetTrue)
+                .help("Run the setup wizard and exit (must be the first argument)"),
             clap::Arg::new(LOG_LEVEL_PARAM_NAME)
                 .short('l')
                 .long("loglvl")
@@ -110,11 +135,11 @@ fn main() {
                 .help("The number of worker threads. If not specified, set to the number of CPUs on the machine."),
             clap::Arg::new(SETTINGS_PARAM_NAME)
                 .action(clap::ArgAction::Set)
-                .required_unless_present(VERSION_PARAM_NAME)
+                .required_unless_present_any([VERSION_PARAM_NAME, SETUP_WIZARD_PARAM_NAME])
                 .help("Path to a settings file"),
             clap::Arg::new(TLS_HOSTS_SETTINGS_PARAM_NAME)
                 .action(clap::ArgAction::Set)
-                .required_unless_present(VERSION_PARAM_NAME)
+                .required_unless_present_any([VERSION_PARAM_NAME, SETUP_WIZARD_PARAM_NAME])
                 .help("Path to a file containing TLS hosts settings. Sending SIGHUP to the process causes reloading the settings."),
             clap::Arg::new(CLIENT_CONFIG_PARAM_NAME)
                 .action(clap::ArgAction::Set)
@@ -206,6 +231,11 @@ fn main() {
         ])
         .disable_version_flag(true)
         .get_matches();
+
+    if args.get_flag(SETUP_WIZARD_PARAM_NAME) {
+        eprintln!("--setup-wizard must be the first argument");
+        std::process::exit(1);
+    }
 
     if args.contains_id(VERSION_PARAM_NAME)
         && Some(true) == args.get_one::<bool>(VERSION_PARAM_NAME).copied()

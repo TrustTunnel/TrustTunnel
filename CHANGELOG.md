@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- Added the setup wizard to the main endpoint binary as
+  `trusttunnel_endpoint --setup-wizard` and removed the standalone setup wizard
+  binary. Wizard options are unchanged.
+
 ### Deprecated
 
 ### Removed
