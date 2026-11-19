@@ -1,6 +1,6 @@
 use bytes::BufMut;
 use futures::{future, FutureExt, StreamExt};
-use http::Request;
+use hyper::http::{self, Request};
 use log::info;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
