@@ -10,10 +10,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Added the setup wizard to the main endpoint binary as
-  `trusttunnel_endpoint --setup-wizard` and removed the standalone setup wizard
-  binary. Wizard options are unchanged.
-
 ### Deprecated
 
 ### Removed
@@ -21,6 +17,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 ### Security
+
+## [1.3.1] - 2026-11-19
+
+### Changed
+
+- Added the setup wizard to the main endpoint binary as
+  `trusttunnel_endpoint --setup-wizard` and removed the standalone setup wizard
+  binary. Wizard options are unchanged.
 
 ## [1.3.1-rc.1] - 2026-11-18
 
@@ -329,7 +333,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.1-rc.1...HEAD
+[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.1-rc.1...v1.3.1
 [1.3.1-rc.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...v1.3.1-rc.1
 [1.3.0-beta.2]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...v1.3.0-beta.2
 [1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
