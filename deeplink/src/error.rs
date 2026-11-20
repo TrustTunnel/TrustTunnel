@@ -13,7 +13,7 @@ pub enum DeepLinkError {
         "Truncated TLV entry: tag {tag:#04x} expects {expected} bytes but only {got} remaining"
     )]
     TruncatedTlv {
-        tag: u8,
+        tag: u64,
         expected: usize,
         got: usize,
     },
@@ -26,6 +26,12 @@ pub enum DeepLinkError {
 
     #[error("Invalid protocol byte: {0:#04x} (expected 0x01 for http2 or 0x02 for http3)")]
     InvalidProtocol(u8),
+
+    #[error("Invalid TLS profile byte: {0:#04x} (expected 0x00..=0x06)")]
+    InvalidTlsProfile(u8),
+
+    #[error("Unknown tls_profile value: {0}")]
+    UnknownTlsProfile(String),
 
     #[error("Unsupported deep link version: {found} (max supported: {max_supported})")]
     UnsupportedVersion { found: u64, max_supported: u64 },

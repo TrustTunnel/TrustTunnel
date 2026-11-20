@@ -1,5 +1,5 @@
 use std::process::Command;
-use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol};
+use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol, TlsProfile};
 
 /// Get the workspace root directory
 fn workspace_root() -> std::path::PathBuf {
@@ -226,6 +226,120 @@ client_random_prefix = "aabbccddee"
     assert!(
         python_config_str.contains("client_random_prefix = \"aabbccddee\""),
         "Python decoder did not preserve client_random_prefix"
+    );
+}
+
+#[test]
+fn test_client_random_auth_key_matches_python() {
+    let toml = r#"
+hostname = "crak.example.com"
+addresses = ["10.20.30.40:8443"]
+username = "testuser"
+password = "testpass"
+client_random_auth_key = "0011223344556677"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .hostname("crak.example.com".to_string())
+        .addresses(vec!["10.20.30.40:8443".to_string()])
+        .username("testuser".to_string())
+        .password("testpass".to_string())
+        .client_random_auth_key(Some("0011223344556677".to_string()))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Rust and Python encoders produced different URIs for client_random_auth_key"
+    );
+
+    let python_config_str = python_decode(&rust_uri);
+    assert!(
+        python_config_str.contains("client_random_auth_key = \"0011223344556677\""),
+        "Python decoder did not preserve client_random_auth_key"
+    );
+}
+
+#[test]
+fn test_tls_profile_table_matches_python() {
+    for (name, profile) in [
+        ("chrome", TlsProfile::Chrome),
+        ("chrome_canary", TlsProfile::ChromeCanary),
+        ("safari", TlsProfile::Safari),
+        ("firefox", TlsProfile::Firefox),
+        ("okhttp", TlsProfile::OkHttp),
+        ("openssl", TlsProfile::OpenSsl),
+        ("boringssl", TlsProfile::BoringSsl),
+    ] {
+        let toml = format!(
+            r#"
+hostname = "profile.example.com"
+addresses = ["10.20.30.40:8443"]
+username = "testuser"
+password = "testpass"
+tls_profile = "{name}"
+"#
+        );
+
+        let config = DeepLinkConfig::builder()
+            .hostname("profile.example.com".to_string())
+            .addresses(vec!["10.20.30.40:8443".to_string()])
+            .username("testuser".to_string())
+            .password("testpass".to_string())
+            .tls_profile(Some(profile))
+            .build()
+            .unwrap();
+
+        let rust_uri = encode(&config).unwrap();
+
+        assert_eq!(
+            rust_uri,
+            python_encode(&toml),
+            "Python encoder disagrees with Rust for tls_profile {name}"
+        );
+
+        let python_config_str = python_decode(&rust_uri);
+        assert!(
+            python_config_str.contains(&format!("tls_profile = \"{name}\"")),
+            "Python decoder did not return tls_profile {name}"
+        );
+    }
+}
+
+#[test]
+fn test_tls_profile_deprecated_alias_matches_python() {
+    let toml = r#"
+hostname = "profile.example.com"
+addresses = ["10.20.30.40:8443"]
+username = "testuser"
+password = "testpass"
+tls_profile = "default"
+"#;
+
+    let config = DeepLinkConfig::builder()
+        .hostname("profile.example.com".to_string())
+        .addresses(vec!["10.20.30.40:8443".to_string()])
+        .username("testuser".to_string())
+        .password("testpass".to_string())
+        .tls_profile(Some(TlsProfile::BoringSsl))
+        .build()
+        .unwrap();
+
+    let rust_uri = encode(&config).unwrap();
+    let python_uri = python_encode(toml);
+
+    assert_eq!(
+        rust_uri, python_uri,
+        "Python encoder did not map the default alias to boringssl"
+    );
+
+    let python_config_str = python_decode(&rust_uri);
+    assert!(
+        python_config_str.contains("tls_profile = \"boringssl\""),
+        "Python decoder did not canonicalize the default alias"
     );
 }
 

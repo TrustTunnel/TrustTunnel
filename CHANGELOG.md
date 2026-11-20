@@ -21,9 +21,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
-
 ### Security
+
+## [1.3.1] - 2026-11-19
+
+### Changed
+
+- Added the setup wizard to the main endpoint binary as
+  `trusttunnel_endpoint --setup-wizard` and removed the standalone setup wizard
+  binary. Wizard options are unchanged.
+
+## [1.3.1-rc.1] - 2026-11-18
+
+### Added
+
+- [Feature] Added the optional `tls_profile` field to the deep-link format (tag `0x10`) as a numeric `TlsProfile` identifier (`0x00`..`0x06`); parsers reject unknown values. This replaces the profile-name string form from the withdrawn `v1.3.0-rc.3`. `DeepLinkConfig::tls_profile` is now `Option<TlsProfile>`, the builder takes the same type, and decode reports `InvalidTlsProfile`; parsing an unknown profile name returns `UnknownTlsProfile`. Clients that do not implement the tag ignore it and use `chrome`.
+
+### Fixed
+
+- [Fix] `scripts/config_to_deeplink.py` and `scripts/deeplink_to_config.py` now encode and decode `client_random_auth_key` (tag `0x0F`) instead of dropping it on round-trip.
+- [Fix] HTTP error responses (subscription, tunnel auth/proxy, metrics, speedtest) now include `Content-Length: 0` on HTTP/1.1, HTTP/2 and HTTP/3. Subscription refusals over HTTP/1.1 no longer depend on the client observing the connection close.
 
 ## [1.3.0-beta.2] - 2026-10-09
 
@@ -321,7 +338,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Test changelog entry please ignore
 
-[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...HEAD
+[Unreleased]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.1-rc.1...v1.3.1
+[1.3.1-rc.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.2...v1.3.1-rc.1
 [1.3.0-beta.2]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.3.0-beta.1...v1.3.0-beta.2
 [1.3.0-beta.1]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.1.0...v1.3.0-beta.1
 [1.1.0]: https://github.com/TrustTunnel/TrustTunnel/compare/v1.0.41...v1.1.0

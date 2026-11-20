@@ -69,12 +69,17 @@ The `DeepLinkConfig` struct supports the following fields:
 | `upstream_protocol` | `Protocol` | No | `Http2` | Upstream protocol (HTTP/2 or HTTP/3) |
 | `anti_dpi` | `bool` | No | `false` | Anti-DPI measures enabled |
 | `client_random_prefix` | `Option<String>` | No | None | TLS client random hex prefix |
+| `client_random_auth_key` | `Option<String>` | No | None | TLS client random auth key (hex) |
 | `name` | `Option<String>` | No | None | Human-readable server name |
 | `dns_upstreams` | `Vec<String>` | No | `[]` | DNS upstream addresses |
+| `tls_profile` | `Option<TlsProfile>` | No | None | TLS ClientHello fingerprint profile (`chrome` when absent) |
 | `subscription_url` | `Option<String>` | No | None | HTTPS subscription URL (v2) |
 
 \* Required unless `subscription_url` is present (format version 2); when it
 is, the static connection parameters are optional fallback.
+
+The reference script `scripts/config_to_deeplink.py` also accepts the
+deprecated client-config alias `default` for `boringssl`.
 
 ## Advanced Usage
 

@@ -22,6 +22,7 @@ pub enum TlvTag {
     DnsUpstreams = 0x0D,
     SubscriptionUrl = 0x0E,
     ClientRandomAuthKey = 0x0F,
+    TlsProfile = 0x10,
 }
 
 impl TlvTag {
@@ -47,6 +48,7 @@ impl TlvTag {
             0x0D => Some(TlvTag::DnsUpstreams),
             0x0E => Some(TlvTag::SubscriptionUrl),
             0x0F => Some(TlvTag::ClientRandomAuthKey),
+            0x10 => Some(TlvTag::TlsProfile),
             _ => None,
         }
     }
@@ -56,6 +58,7 @@ impl TlvTag {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
 #[derive(Default)]
 pub enum Protocol {
     #[default]
@@ -101,6 +104,78 @@ impl fmt::Display for Protocol {
     }
 }
 
+/// TLS ClientHello fingerprint profile.
+///
+/// The discriminants are the tag `0x10` values and match `VpnTlsProfile` in
+/// TrustTunnelClient.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum TlsProfile {
+    Chrome = 0x00,
+    ChromeCanary = 0x01,
+    Safari = 0x02,
+    Firefox = 0x03,
+    #[cfg_attr(feature = "serde", serde(rename = "okhttp"))]
+    OkHttp = 0x04,
+    #[cfg_attr(feature = "serde", serde(rename = "openssl"))]
+    OpenSsl = 0x05,
+    #[cfg_attr(feature = "serde", serde(rename = "boringssl"))]
+    BoringSsl = 0x06,
+}
+
+impl TlsProfile {
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub fn from_u8(value: u8) -> Result<Self> {
+        match value {
+            0x00 => Ok(TlsProfile::Chrome),
+            0x01 => Ok(TlsProfile::ChromeCanary),
+            0x02 => Ok(TlsProfile::Safari),
+            0x03 => Ok(TlsProfile::Firefox),
+            0x04 => Ok(TlsProfile::OkHttp),
+            0x05 => Ok(TlsProfile::OpenSsl),
+            0x06 => Ok(TlsProfile::BoringSsl),
+            _ => Err(DeepLinkError::InvalidTlsProfile(value)),
+        }
+    }
+}
+
+impl FromStr for TlsProfile {
+    type Err = DeepLinkError;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "chrome" => Ok(TlsProfile::Chrome),
+            "chrome_canary" => Ok(TlsProfile::ChromeCanary),
+            "safari" => Ok(TlsProfile::Safari),
+            "firefox" => Ok(TlsProfile::Firefox),
+            "okhttp" => Ok(TlsProfile::OkHttp),
+            "openssl" => Ok(TlsProfile::OpenSsl),
+            "boringssl" => Ok(TlsProfile::BoringSsl),
+            _ => Err(DeepLinkError::UnknownTlsProfile(s.to_string())),
+        }
+    }
+}
+
+impl fmt::Display for TlsProfile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self {
+            TlsProfile::Chrome => "chrome",
+            TlsProfile::ChromeCanary => "chrome_canary",
+            TlsProfile::Safari => "safari",
+            TlsProfile::Firefox => "firefox",
+            TlsProfile::OkHttp => "okhttp",
+            TlsProfile::OpenSsl => "openssl",
+            TlsProfile::BoringSsl => "boringssl",
+        };
+        write!(f, "{name}")
+    }
+}
+
 pub const CURRENT_VERSION: u64 = 2;
 
 /// TrustTunnel deep-link configuration.
@@ -116,6 +191,9 @@ pub struct DeepLinkConfig {
     pub password: Option<String>,
     pub client_random_prefix: Option<String>,
     pub client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub tls_profile: Option<TlsProfile>,
     pub custom_sni: Option<String>,
     pub has_ipv6: bool,
     pub skip_verification: bool,
@@ -171,6 +249,7 @@ pub struct DeepLinkConfigBuilder {
     password: Option<String>,
     client_random_prefix: Option<String>,
     client_random_auth_key: Option<String>,
+    tls_profile: Option<TlsProfile>,
     custom_sni: Option<String>,
     has_ipv6: Option<bool>,
     skip_verification: Option<bool>,
@@ -243,6 +322,11 @@ impl DeepLinkConfigBuilder {
         self
     }
 
+    pub fn tls_profile(mut self, tls_profile: Option<TlsProfile>) -> Self {
+        self.tls_profile = tls_profile;
+        self
+    }
+
     pub fn name(mut self, name: Option<String>) -> Self {
         self.name = name;
         self
@@ -290,6 +374,7 @@ impl DeepLinkConfigBuilder {
             password: self.password,
             client_random_prefix: self.client_random_prefix,
             client_random_auth_key: self.client_random_auth_key,
+            tls_profile: self.tls_profile,
             custom_sni: self.custom_sni,
             has_ipv6: self.has_ipv6.unwrap_or(true),
             skip_verification: self.skip_verification.unwrap_or(false),
@@ -314,6 +399,8 @@ mod tests {
         assert_eq!(TlvTag::Hostname.as_u8(), 0x01);
         assert_eq!(TlvTag::from_u8(0x01), Some(TlvTag::Hostname));
         assert_eq!(TlvTag::from_u8(0x00), Some(TlvTag::Version));
+        assert_eq!(TlvTag::TlsProfile.as_u8(), 0x10);
+        assert_eq!(TlvTag::from_u8(0x10), Some(TlvTag::TlsProfile));
         assert_eq!(TlvTag::from_u8(0xFF), None);
     }
 
@@ -403,6 +490,80 @@ mod tests {
     }
 
     #[test]
+    fn test_builder_tls_profile() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .tls_profile(Some(TlsProfile::Firefox))
+            .build()
+            .unwrap();
+        assert_eq!(config.tls_profile, Some(TlsProfile::Firefox));
+    }
+
+    #[test]
+    fn test_builder_tls_profile_defaults_to_none() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+        assert_eq!(config.tls_profile, None);
+    }
+
+    #[test]
+    fn test_tls_profile_conversions() {
+        for (value, profile, name) in [
+            (0x00, TlsProfile::Chrome, "chrome"),
+            (0x01, TlsProfile::ChromeCanary, "chrome_canary"),
+            (0x02, TlsProfile::Safari, "safari"),
+            (0x03, TlsProfile::Firefox, "firefox"),
+            (0x04, TlsProfile::OkHttp, "okhttp"),
+            (0x05, TlsProfile::OpenSsl, "openssl"),
+            (0x06, TlsProfile::BoringSsl, "boringssl"),
+        ] {
+            assert_eq!(profile.as_u8(), value);
+            assert_eq!(TlsProfile::from_u8(value).unwrap(), profile);
+            assert_eq!(profile.to_string(), name);
+            assert_eq!(name.parse::<TlsProfile>().unwrap(), profile);
+        }
+
+        assert!(TlsProfile::from_u8(0x07).is_err());
+        assert!("default".parse::<TlsProfile>().is_err());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_tls_profile_serde_names() {
+        for (name, profile) in [
+            ("chrome", TlsProfile::Chrome),
+            ("chrome_canary", TlsProfile::ChromeCanary),
+            ("safari", TlsProfile::Safari),
+            ("firefox", TlsProfile::Firefox),
+            ("okhttp", TlsProfile::OkHttp),
+            ("openssl", TlsProfile::OpenSsl),
+            ("boringssl", TlsProfile::BoringSsl),
+        ] {
+            let json = serde_json::to_string(&profile).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<TlsProfile>(&json).unwrap(), profile);
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_protocol_serde_names() {
+        for (name, protocol) in [("http2", Protocol::Http2), ("http3", Protocol::Http3)] {
+            let json = serde_json::to_string(&protocol).unwrap();
+            assert_eq!(json, format!("\"{name}\""));
+            assert_eq!(serde_json::from_str::<Protocol>(&json).unwrap(), protocol);
+        }
+    }
+
+    #[test]
     fn test_validate_empty_hostname() {
         let config = DeepLinkConfig {
             hostname: Some(String::new()),
@@ -417,6 +578,7 @@ mod tests {
             anti_dpi: false,
             client_random_prefix: None,
             client_random_auth_key: None,
+            tls_profile: None,
             name: None,
             dns_upstreams: vec![],
             subscription_url: None,

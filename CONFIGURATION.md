@@ -35,7 +35,7 @@ configuration is split into:
 3. **Credentials file** - Client authentication credentials
 4. **Rules file** - Connection filtering rules
 
-The `setup_wizard` tool can generate these files interactively.
+The `trusttunnel_endpoint --setup-wizard` tool can generate these files interactively.
 
 ---
 
@@ -46,6 +46,7 @@ The endpoint binary accepts the following command line arguments:
 | Argument | Short | Description | Default |
 | -------- | ------- | ----------- | ------- |
 | `--version` | `-v` | Print version and exit | - |
+| `--setup-wizard` | - | Run the setup wizard and exit. Must be the first argument | - |
 | `--loglvl` | `-l` | Logging level (`info`, `debug`, `trace`) | `info` |
 | `--logfile` | - | File path for storing logs (stdout if not specified) | stdout |
 | `--sentry_dsn` | - | Sentry DSN for error reporting | - |
@@ -60,6 +61,9 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
 | `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+
+The exported client configuration and deep-link do not set `tls_profile`.
+Clients use `chrome` unless the profile is set separately.
 
 ### Examples
 

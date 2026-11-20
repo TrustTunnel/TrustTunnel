@@ -1,5 +1,5 @@
 use proptest::prelude::*;
-use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol};
+use trusttunnel_deeplink::{decode, encode, DeepLinkConfig, Protocol, TlsProfile};
 
 fn arbitrary_address_string() -> impl Strategy<Value = String> {
     prop_oneof![
@@ -17,6 +17,18 @@ fn arbitrary_hex_string() -> impl Strategy<Value = Option<String>> {
     // {1,16} not {0,16}: empty string roundtrips as None (encode skips empty,
     // decode returns None), so Some("") is not a valid roundtrip input.
     prop::option::of("([0-9a-f]{2}){1,16}")
+}
+
+fn arbitrary_tls_profile() -> impl Strategy<Value = Option<TlsProfile>> {
+    prop::option::of(prop_oneof![
+        Just(TlsProfile::Chrome),
+        Just(TlsProfile::ChromeCanary),
+        Just(TlsProfile::Safari),
+        Just(TlsProfile::Firefox),
+        Just(TlsProfile::OkHttp),
+        Just(TlsProfile::OpenSsl),
+        Just(TlsProfile::BoringSsl),
+    ])
 }
 
 fn arbitrary_subscription_url() -> impl Strategy<Value = Option<String>> {
@@ -50,6 +62,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
         prop::option::of("[a-z]{3,20}"),
         prop::collection::vec("[a-z0-9:/._-]{5,40}", 0..3),
         arbitrary_subscription_url(),
+        arbitrary_tls_profile(),
     )
         .prop_map(
             |(
@@ -70,6 +83,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                 name,
                 dns_upstreams,
                 subscription_url,
+                tls_profile,
             )| {
                 DeepLinkConfig {
                     hostname,
@@ -78,6 +92,7 @@ fn arbitrary_config() -> impl Strategy<Value = DeepLinkConfig> {
                     password,
                     client_random_prefix,
                     client_random_auth_key,
+                    tls_profile,
                     custom_sni,
                     has_ipv6,
                     skip_verification,
@@ -113,6 +128,7 @@ proptest! {
         prop_assert_eq!(decoded.username, config.username);
         prop_assert_eq!(decoded.password, config.password);
         prop_assert_eq!(decoded.client_random_auth_key, config.client_random_auth_key);
+        prop_assert_eq!(decoded.tls_profile, config.tls_profile);
         prop_assert_eq!(decoded.custom_sni, config.custom_sni);
         prop_assert_eq!(decoded.has_ipv6, config.has_ipv6);
         prop_assert_eq!(decoded.skip_verification, config.skip_verification);

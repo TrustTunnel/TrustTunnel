@@ -86,10 +86,23 @@ TAG_CLIENT_RANDOM_PREFIX = 0x0B
 TAG_NAME                 = 0x0C
 TAG_DNS_UPSTREAMS        = 0x0D
 TAG_SUBSCRIPTION_URL     = 0x0E
+TAG_CLIENT_RANDOM_AUTH_KEY = 0x0F
+TAG_TLS_PROFILE            = 0x10
 
 CURRENT_VERSION = 2
 
 PROTOCOL_MAP = {"http2": 0x01, "http3": 0x02}
+
+TLS_PROFILE_MAP = {
+    "chrome": 0x00,
+    "chrome_canary": 0x01,
+    "safari": 0x02,
+    "firefox": 0x03,
+    "okhttp": 0x04,
+    "openssl": 0x05,
+    "boringssl": 0x06,
+    "default": 0x06,  # deprecated alias of "boringssl"
+}
 
 DEFAULTS = {
     "has_ipv6": True,
@@ -144,6 +157,17 @@ def encode_config(cfg: dict) -> bytes:
     # client_random_prefix (optional hex-encoded string)
     if "client_random_prefix" in cfg and cfg["client_random_prefix"]:
         buf += tlv(TAG_CLIENT_RANDOM_PREFIX, cfg["client_random_prefix"].encode())
+
+    # client_random_auth_key (optional hex-encoded string)
+    if "client_random_auth_key" in cfg and cfg["client_random_auth_key"]:
+        buf += tlv(TAG_CLIENT_RANDOM_AUTH_KEY, cfg["client_random_auth_key"].encode())
+
+    # tls_profile (optional)
+    profile = cfg.get("tls_profile")
+    if profile:
+        if profile not in TLS_PROFILE_MAP:
+            raise ValueError(f"unknown tls_profile: {profile}")
+        buf += tlv(TAG_TLS_PROFILE, bytes([TLS_PROFILE_MAP[profile]]))
 
     # Optional string fields
     if "custom_sni" in cfg:

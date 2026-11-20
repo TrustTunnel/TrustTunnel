@@ -142,8 +142,7 @@ Notes:
 For a more customized configuration experience, run the following commands:
 
 ```shell
-make endpoint/build-wizard  # If you skipped the previous section
-cargo run --bin setup_wizard  # Launch a dialogue session allowing you to tweak the settings
+cargo run --bin trusttunnel_endpoint -- --setup-wizard  # Launch a dialogue session allowing you to tweak the settings
 cargo run --bin trusttunnel_endpoint -- <lib-settings> <hosts-settings>  # File names depend on the previous step
 ```
 

@@ -85,6 +85,11 @@ pub fn encode_tlv_payload(config: &DeepLinkConfig) -> Result<Vec<u8>> {
         }
     }
 
+    // tls_profile: include if present
+    if let Some(profile) = config.tls_profile {
+        payload.extend(encode_tlv(TlvTag::TlsProfile, &[profile.as_u8()])?);
+    }
+
     // Optional fields (omit if default value or None) - order matches Python
     if let Some(custom_sni) = &config.custom_sni {
         payload.extend(encode_string_field(TlvTag::CustomSni, custom_sni)?);
@@ -149,6 +154,7 @@ pub fn encode(config: &DeepLinkConfig) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::TlsProfile;
 
     #[test]
     fn test_encode_tlv() {
@@ -233,6 +239,45 @@ mod tests {
 
         // Should contain all fields
         assert!(!payload.is_empty());
+    }
+
+    #[test]
+    fn test_encode_tls_profile_field() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .tls_profile(Some(TlsProfile::Firefox))
+            .build()
+            .unwrap();
+
+        let payload = encode_tlv_payload(&config).unwrap();
+
+        assert!(payload.windows(3).any(|w| w == [0x10, 0x01, 0x03]));
+    }
+
+    #[test]
+    fn test_encode_tls_profile_omitted_when_unset() {
+        let config = DeepLinkConfig::builder()
+            .hostname("vpn.example.com".to_string())
+            .addresses(vec!["1.2.3.4:443".to_string()])
+            .username("alice".to_string())
+            .password("secret".to_string())
+            .build()
+            .unwrap();
+
+        let payload = encode_tlv_payload(&config).unwrap();
+
+        let mut tags = Vec::new();
+        let mut offset = 0;
+        while offset < payload.len() {
+            let (tag, after_tag) = crate::varint::decode_varint(&payload, offset).unwrap();
+            let (len, after_len) = crate::varint::decode_varint(&payload, after_tag).unwrap();
+            tags.push(tag);
+            offset = after_len + len as usize;
+        }
+        assert!(!tags.contains(&0x10));
     }
 
     #[test]

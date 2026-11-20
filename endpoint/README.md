@@ -21,10 +21,9 @@ A standalone application that allows any user to easily set up their own VPN ser
     - Credentials File: This file contains user authentication data.
     - Certificate Files: These files correspond to the TLS hosts defined in the TLS hosts settings.
 
-- **Setup Wizard Tool:** A setup wizard tool is provided within the repository, located in a
-  separate directory. This tool simplifies the process of generating the required settings and files
-  mentioned above. Refer to the [usage instructions](../README.md#usage) for quick setup
-  instructions.
+- **Setup Wizard Tool:** The endpoint binary includes a setup wizard. Run
+  `trusttunnel_endpoint --setup-wizard` to generate the required settings and files. Refer to the
+  [usage instructions](../README.md#usage) for quick setup instructions.
 
 - **Command Line Configuration:** The VPN endpoint binary supports additional configuration options
   through command line arguments. Users can customize the behavior of the endpoint according to
