@@ -537,6 +537,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 [Shadowrocket](https://shadowlaunch.com) — Rule based proxy utility client for iPhone/iPad with TrustTunnel support. (Commercial)
 
+[TrustTunnelOpenWrt](https://github.com/NooBiToo/TrustTunnelOpenWrt) — An OpenWrt 25.12+ router package with a LuCI web interface, built on the official [TrustTunnel Client][trusttunnel-client]. Sends the whole LAN or only domains from selectable lists through the tunnel, imports server configs and `tt://` links, and includes diagnostics.
+
 ## See Also
 
 - [CONFIGURATION.md](CONFIGURATION.md) - Configuration documentation
