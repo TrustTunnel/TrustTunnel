@@ -46,7 +46,7 @@ endpoint/gen_client_config:
 	$(if $(CLIENT_NAME),,$(error CLIENT_NAME is not set. Specify the client name to generate the config for))
 	$(if $(ENDPOINT_ADDRESS),,$(error ENDPOINT_ADDRESS is not set. Set it to `ip:port` that client is going to use to connect to the endpoint))
 	cargo run $(CARGO_BUILD_TYPE) --bin trusttunnel_endpoint -- \
-		-c "$(CLIENT_NAME)" --address "$(ENDPOINT_ADDRESS)" "$(CONFIG_FILE)" "$(HOSTS_CONFIG_FILE)"
+		-c "$(CLIENT_NAME)" --address "$(ENDPOINT_ADDRESS)" $(if $(TLS_PROFILE),--tls-profile "$(TLS_PROFILE)") "$(CONFIG_FILE)" "$(HOSTS_CONFIG_FILE)"
 
 .PHONY: endpoint/clean
 ## Clean cargo artifacts

@@ -35,6 +35,7 @@ const NAME_PARAM_NAME: &str = "name";
 const DNS_UPSTREAM_PARAM_NAME: &str = "dns_upstream";
 const SUBSCRIPTION_URL_PARAM_NAME: &str = "subscription_url";
 const SUBSCRIPTION_ONLY_PARAM_NAME: &str = "subscription_only";
+const TLS_PROFILE_PARAM_NAME: &str = "tls_profile";
 const SENTRY_DSN_PARAM_NAME: &str = "sentry_dsn";
 const THREADS_NUM_PARAM_NAME: &str = "threads_num";
 const TRUSTTUNNEL_QR_URL: &str = "https://trusttunnel.org/qr.html";
@@ -228,6 +229,11 @@ fn main() {
                 .requires(CLIENT_CONFIG_PARAM_NAME)
                 .long("subscription-only")
                 .help("With --format deeplink, export a minimal deep link that contains only the subscription URL (no static connection parameters). Requires [subscription] to be enabled in vpn.toml and the subscription host certificate to be verifiable by system CAs."),
+            clap::Arg::new(TLS_PROFILE_PARAM_NAME)
+                .action(clap::ArgAction::Set)
+                .requires(CLIENT_CONFIG_PARAM_NAME)
+                .long("tls-profile")
+                .help("TLS ClientHello fingerprint profile for the exported client config. Omitted when not specified; clients then use the default."),
         ])
         .disable_version_flag(true)
         .get_matches();
@@ -590,6 +596,15 @@ fn main() {
             }
         }
 
+        let tls_profile = args.get_one::<String>(TLS_PROFILE_PARAM_NAME).cloned();
+
+        if let Some(ref profile) = tls_profile {
+            if let Err(e) = client_config::validate_tls_profile(profile) {
+                eprintln!("Error: unknown tls_profile '{}': {}", profile, e);
+                std::process::exit(1);
+            }
+        }
+
         let client_config = client_config::build(
             username,
             addresses,
@@ -598,6 +613,7 @@ fn main() {
             custom_sni,
             client_random_prefix,
             client_random_auth_key,
+            tls_profile,
             name,
             dns_upstreams,
             subscription_url,

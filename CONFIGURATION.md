@@ -61,9 +61,11 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
 | `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+| `--tls-profile` | - | TLS ClientHello fingerprint profile in the exported client config (requires `-c`). One of `chrome`, `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl`. When omitted, the exported TOML carries an empty value and clients default to `chrome`. | - |
 
-The exported client configuration and deep-link do not set `tls_profile`.
-Clients use `chrome` unless the profile is set separately.
+When `--tls-profile` is specified, the exported client configuration and
+deep-link carry the selected profile. Without it, the exported TOML carries an
+empty `tls_profile`, the deep-link omits the profile, and clients use `chrome`.
 
 ### Examples
 
@@ -104,6 +106,10 @@ Clients use `chrome` unless the profile is set separately.
 # Export client configuration with an auth key for SNI-derived client random
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --client-random-auth-key 00112233445566778899aabbccddeeff
+
+# Export client configuration with a TLS ClientHello fingerprint profile
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --tls-profile chrome_canary
 ```
 
 ---
