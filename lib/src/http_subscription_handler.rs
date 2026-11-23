@@ -152,6 +152,7 @@ async fn handle_stream(
         custom_sni: config.custom_sni.as_deref(),
         client_random_prefix: config.client_random_prefix.as_deref(),
         client_random_auth_key: config.client_random_auth_key.as_deref(),
+        tls_profile: config.tls_profile.as_deref(),
         name: config.name.as_deref(),
         dns_upstreams: &config.dns_upstreams,
     };
@@ -215,6 +216,7 @@ mod tests {
             custom_sni: None,
             client_random_prefix: None,
             client_random_auth_key: None,
+            tls_profile: None,
         }
     }
 

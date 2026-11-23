@@ -39,6 +39,11 @@ pub struct SubscriptionSettings {
     /// Omitted from the JSON when unset or empty.
     #[serde(default)]
     pub client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile (`chrome`, `chrome_canary`,
+    /// `safari`, `firefox`, `okhttp`, `openssl`, `boringssl`). Omitted from
+    /// the JSON when unset; clients then default to `chrome`.
+    #[serde(default)]
+    pub tls_profile: Option<String>,
 }
 
 impl SubscriptionSettings {
@@ -59,6 +64,7 @@ impl Default for SubscriptionSettings {
             custom_sni: None,
             client_random_prefix: None,
             client_random_auth_key: None,
+            tls_profile: None,
         }
     }
 }
@@ -152,6 +158,14 @@ pub(crate) fn validate(
         }
     }
 
+    if let Some(profile) = sub.tls_profile.as_deref().filter(|s| !s.is_empty()) {
+        if profile.parse::<trusttunnel_deeplink::TlsProfile>().is_err() {
+            return Err(ValidationError::Subscription(format!(
+                "subscription tls_profile is not a known profile: {profile}"
+            )));
+        }
+    }
+
     check_path_overlap(path, settings.ping_path.as_deref())?;
     check_path_overlap(path, settings.speedtest_path.as_deref())?;
     if let Some(reverse_proxy) = settings.reverse_proxy.as_ref() {
@@ -194,6 +208,9 @@ pub(crate) struct SubscriptionConfig {
     /// Hex auth key for derived client random; `None` when unset/empty (omitted
     /// from the JSON).
     pub(crate) client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile; `None` when unset (omitted from
+    /// the JSON).
+    pub(crate) tls_profile: Option<String>,
 }
 
 /// The JSON body served to an authenticated user.
@@ -216,6 +233,8 @@ pub(crate) struct SubscriptionResponse<'a> {
     pub client_random_prefix: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_random_auth_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_profile: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -284,6 +303,7 @@ pub(crate) fn resolve(
         custom_sni: sub.custom_sni.clone().filter(|s| !s.is_empty()),
         client_random_prefix: sub.client_random_prefix.clone().filter(|s| !s.is_empty()),
         client_random_auth_key: sub.client_random_auth_key.clone().filter(|s| !s.is_empty()),
+        tls_profile: sub.tls_profile.clone().filter(|s| !s.is_empty()),
     }))
 }
 
@@ -306,6 +326,7 @@ mod tests {
             custom_sni: None,
             client_random_prefix: None,
             client_random_auth_key: None,
+            tls_profile: None,
         }
     }
 
@@ -325,12 +346,32 @@ mod tests {
         assert_eq!(sub.hostname, None);
         assert_eq!(sub.address, None);
         assert!(sub.dns_upstreams.is_empty());
+        assert_eq!(sub.tls_profile, None);
+    }
+
+    #[test]
+    fn parse_tls_profile() {
+        let toml = "[subscription]\nenabled = true\ntls_profile = \"chrome_canary\"\n";
+        let w: Wrapper = toml::from_str(toml).unwrap();
+        let sub = w.subscription.expect("section present");
+        assert_eq!(sub.tls_profile, Some("chrome_canary".to_string()));
     }
 
     #[test]
     fn parse_absent_section_is_none() {
         let w: Wrapper = toml::from_str("").unwrap();
         assert!(w.subscription.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_tls_profile() {
+        let mut sub = enabled_sub();
+        sub.tls_profile = Some("default".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
     }
 
     #[test]

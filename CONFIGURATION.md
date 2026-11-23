@@ -448,6 +448,7 @@ name = "Acme Corp VPN"
 dns_upstreams = ["tls://1.1.1.1", "tls://8.8.8.8"]
 custom_sni = "example.org"
 client_random_prefix = "a0b0/f0f0"
+tls_profile = "chrome_canary"
 ```
 
 | Setting | Type | Default | Description |
@@ -461,6 +462,7 @@ client_random_prefix = "a0b0/f0f0"
 | `custom_sni` | String | - | (Optional) Custom TLS SNI |
 | `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
 | `client_random_auth_key` | String | - | (Optional) Hex auth key for derived client random |
+| `tls_profile` | String | - | (Optional) TLS ClientHello fingerprint profile: `chrome`, `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl` |
 
 All fields are validated on every endpoint invocation (including the
 `--client_config` export) whenever the `[subscription]` section is present in
@@ -470,6 +472,9 @@ All fields are validated on every endpoint invocation (including the
 `[subscription]` (setting both is a validation error) and must match
 the corresponding `allow` rule in `rules.toml`;
 the key is also returned in the subscription JSON.
+
+`tls_profile` is returned in the subscription JSON when set; when unset the
+field is omitted and clients default to `chrome`.
 
 The `address` value is also reused by the `--client_config` export
 if the `--address` is not specified

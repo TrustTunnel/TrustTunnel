@@ -304,8 +304,9 @@ This outputs a TOML configuration file suitable for the CLI client.
 The endpoint can serve a per-user subscription URL over HTTPS. When the
 `[subscription]` section is enabled in `vpn.toml`, each client can fetch its own
 JSON configuration — connection parameters, credentials, DNS upstreams, custom
-SNI, and a client random prefix or auth key — over HTTPS using HTTP Basic Auth
-against `credentials.toml`. This lets a client provision and refresh its
+SNI, a client random prefix or auth key, and a TLS ClientHello profile — over
+HTTPS using HTTP Basic Auth against `credentials.toml`. This lets a client
+provision and refresh its
 configuration directly from the endpoint from a single URL, without manual file
 redistribution.
 
