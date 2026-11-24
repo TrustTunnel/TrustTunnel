@@ -9,7 +9,7 @@ doctest = false
 
 [dependencies]
 clap = "4.5"
-console-subscriber = { version = "0.1.9", optional = true }
+console-subscriber = { version = "0.5.0", optional = true }
 hex = "0.4"
 log = "0.4.19"
 rustls = { version = "0.23.37", features = ["logging"] }
