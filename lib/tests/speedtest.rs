@@ -140,13 +140,13 @@ async fn sni_h3_download_client(
 
     let (response, content) = conn
         .exchange(
-            Request::get(&format!(
+            Request::get(format!(
                 "https://{}:{}/speed/{}mb.bin",
                 common::MAIN_DOMAIN_NAME,
                 endpoint_address.port(),
                 body_size_mb
             ))
-            .body(hyper::Body::empty())
+            .body(common::EmptyBody::new())
             .unwrap(),
         )
         .await;
@@ -213,13 +213,13 @@ async fn path_h3_download_client(
 
     let (response, content) = conn
         .exchange(
-            Request::get(&format!(
+            Request::get(format!(
                 "https://{}:{}/speed/{}mb.bin",
                 common::MAIN_DOMAIN_NAME,
                 endpoint_address.port(),
                 body_size_mb
             ))
-            .body(hyper::Body::empty())
+            .body(common::EmptyBody::new())
             .unwrap(),
         )
         .await;
@@ -279,13 +279,13 @@ async fn sni_h3_upload_client(endpoint_address: &SocketAddr, body_size: usize) -
     )
     .await;
     conn.send_request(
-        Request::post(&format!(
+        Request::post(format!(
             "https://speed.{}:{}/upload.html",
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
         .header(http::header::CONTENT_LENGTH, body_size.to_string())
-        .body(hyper::Body::from(vec![0; body_size]))
+        .body(common::FullBody::from(vec![0; body_size]))
         .unwrap(),
     )
     .await;
@@ -346,13 +346,13 @@ async fn path_h3_upload_client(
     let mut conn =
         common::Http3Session::connect(endpoint_address, common::MAIN_DOMAIN_NAME, None).await;
     conn.send_request(
-        Request::post(&format!(
+        Request::post(format!(
             "https://{}:{}/speed/upload.html",
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
         .header(http::header::CONTENT_LENGTH, body_size.to_string())
-        .body(hyper::Body::from(vec![0; body_size]))
+        .body(common::FullBody::from(vec![0; body_size]))
         .unwrap(),
     )
     .await;

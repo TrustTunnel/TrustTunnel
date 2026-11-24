@@ -1,9 +1,14 @@
 use bytes::Bytes;
 use futures::stream;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, StreamBody};
+use hyper::body::Incoming;
 use hyper::http::{self, Request, Response};
+use hyper_util::rt::TokioIo;
 use log::info;
 use once_cell::sync::Lazy;
 use ring::digest::{digest, SHA256};
+use std::convert::Infallible;
 use std::future::Future;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
@@ -223,7 +228,7 @@ async fn sni_h3_client(endpoint_address: &SocketAddr) -> (http::response::Parts,
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
-        .body(hyper::Body::empty())
+        .body(common::EmptyBody::new())
         .unwrap(),
     )
     .await
@@ -277,7 +282,7 @@ async fn path_h3_client(endpoint_address: &SocketAddr) -> (http::response::Parts
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
-        .body(hyper::Body::empty())
+        .body(common::EmptyBody::new())
         .unwrap(),
     )
     .await
@@ -340,9 +345,11 @@ fn run_proxy() -> (SocketAddr, impl Future<Output = ()>) {
             .await
             .unwrap();
         info!("New connection from {}", peer);
-        hyper::server::conn::Http::new()
-            .http1_only(true)
-            .serve_connection(socket, hyper::service::service_fn(request_handler))
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(socket),
+                hyper::service::service_fn(request_handler),
+            )
             .await
             .unwrap();
     })
@@ -359,34 +366,43 @@ fn run_proxy_chunked() -> (SocketAddr, impl Future<Output = ()>) {
             .await
             .unwrap();
         info!("New connection from {}", peer);
-        hyper::server::conn::Http::new()
-            .http1_only(true)
-            .serve_connection(socket, hyper::service::service_fn(request_handler_chunked))
+        hyper::server::conn::http1::Builder::new()
+            .serve_connection(
+                TokioIo::new(socket),
+                hyper::service::service_fn(request_handler_chunked),
+            )
             .await
             .unwrap();
     })
 }
 
+fn box_body<B>(body: B) -> BoxBody<Bytes, Infallible>
+where
+    B: http_body::Body<Data = Bytes, Error = Infallible> + Send + Sync + 'static,
+{
+    body.boxed()
+}
+
 async fn request_handler(
-    request: Request<hyper::Body>,
-) -> Result<Response<hyper::Body>, hyper::Error> {
+    request: Request<Incoming>,
+) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
     info!("Received request: {:?}", request);
     Ok(Response::builder()
-        .body(hyper::Body::from(RESPONSE_BODY.clone()))
+        .body(box_body(http_body_util::Full::from(RESPONSE_BODY.clone())))
         .unwrap())
 }
 
 async fn request_handler_chunked(
-    request: Request<hyper::Body>,
-) -> Result<Response<hyper::Body>, hyper::Error> {
+    request: Request<Incoming>,
+) -> Result<Response<BoxBody<Bytes, Infallible>>, hyper::Error> {
     info!("Received request: {:?}", request);
     let chunk_size = 16 * 1024;
     let chunks = RESPONSE_BODY
         .chunks(chunk_size)
-        .map(|c| Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(c)))
+        .map(|c| Ok::<_, Infallible>(http_body::Frame::data(Bytes::copy_from_slice(c))))
         .collect::<Vec<_>>();
 
     Ok(Response::builder()
-        .body(hyper::Body::wrap_stream(stream::iter(chunks)))
+        .body(box_body(StreamBody::new(stream::iter(chunks))))
         .unwrap())
 }

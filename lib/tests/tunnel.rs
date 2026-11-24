@@ -1,6 +1,7 @@
 use bytes::BufMut;
 use futures::{future, FutureExt, StreamExt};
 use hyper::http::{self, Request};
+use hyper_util::rt::TokioIo;
 use log::info;
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -227,7 +228,7 @@ async fn h3_tcp_download() {
         let (response, _) = conn
             .exchange(
                 Request::connect(server_address.to_string())
-                    .body(hyper::Body::empty())
+                    .body(common::EmptyBody::new())
                     .unwrap(),
             )
             .await;
@@ -266,7 +267,7 @@ async fn h3_tcp_upload() {
         let (response, _) = conn
             .exchange(
                 Request::connect(server_address.to_string())
-                    .body(hyper::Body::empty())
+                    .body(common::EmptyBody::new())
                     .unwrap(),
             )
             .await;
@@ -300,7 +301,7 @@ async fn h3_udp_download() {
         let (response, _) = conn
             .exchange(
                 Request::connect("_udp2")
-                    .body(hyper::Body::empty())
+                    .body(common::EmptyBody::new())
                     .unwrap(),
             )
             .await;
@@ -343,7 +344,7 @@ async fn h3_udp_upload() {
         let (response, _) = conn
             .exchange(
                 Request::connect("_udp2")
-                    .body(hyper::Body::empty())
+                    .body(common::EmptyBody::new())
                     .unwrap(),
             )
             .await;
@@ -373,30 +374,24 @@ async fn make_h1_tunnel(
     Pin<Box<dyn Future<Output = ()>>>,
     Pin<Box<dyn Future<Output = impl AsyncRead + AsyncWrite + Unpin + Send>>>,
 ) {
-    let stream =
+    let mut stream =
         common::establish_tls_connection(common::MAIN_DOMAIN_NAME, &endpoint_address, None).await;
 
-    let (mut request, conn) = hyper::client::conn::Builder::new()
-        .handshake(stream)
-        .await
-        .unwrap();
+    let request = format!("CONNECT {server_address} HTTP/1.1\r\nHost: {server_address}\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
 
-    let conn_driver = async move { conn.await.unwrap() }.boxed();
-
-    let exchange = async move {
-        let rr = Request::builder()
-            .version(http::Version::HTTP_11)
-            .method(http::Method::CONNECT)
-            .uri(server_address)
-            .body(hyper::Body::empty())
-            .unwrap();
-        let response = request.send_request(rr).await.unwrap();
-        info!("CONNECT response: {:?}", response);
-        assert_eq!(response.status(), http::StatusCode::OK);
-
-        hyper::upgrade::on(response).await.unwrap()
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    while !response.ends_with(b"\r\n\r\n") {
+        stream.read_exact(&mut byte).await.unwrap();
+        response.push(byte[0]);
     }
-    .boxed();
+    let response = std::str::from_utf8(&response).unwrap();
+    info!("CONNECT response: {:?}", response);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+
+    let conn_driver = async {}.boxed();
+    let exchange = async move { stream }.boxed();
 
     (conn_driver, exchange)
 }
@@ -415,11 +410,7 @@ async fn make_h2_tunnel(
     )
     .await;
 
-    let (mut request, conn) = hyper::client::conn::Builder::new()
-        .http2_only(true)
-        .handshake(stream)
-        .await
-        .unwrap();
+    let (mut request, conn) = common::connect_http2(stream).await;
 
     let conn_driver = async move { conn.await.unwrap() }.boxed();
 
@@ -428,13 +419,13 @@ async fn make_h2_tunnel(
             .version(http::Version::HTTP_2)
             .method(http::Method::CONNECT)
             .uri(server_address)
-            .body(hyper::Body::empty())
+            .body(common::EmptyBody::new())
             .unwrap();
         let response = request.send_request(rr).await.unwrap();
         info!("CONNECT response: {:?}", response);
         assert_eq!(response.status(), http::StatusCode::OK);
 
-        hyper::upgrade::on(response).await.unwrap()
+        TokioIo::new(hyper::upgrade::on(response).await.unwrap())
     }
     .boxed();
 

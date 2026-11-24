@@ -99,7 +99,7 @@ async fn sni_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
-        .body(hyper::Body::empty())
+        .body(common::EmptyBody::new())
         .unwrap(),
     )
     .await;
@@ -158,7 +158,7 @@ async fn path_h3_client(endpoint_address: &SocketAddr) -> http::StatusCode {
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         ))
-        .body(hyper::Body::empty())
+        .body(common::EmptyBody::new())
         .unwrap(),
     )
     .await;

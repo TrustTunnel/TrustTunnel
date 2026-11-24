@@ -173,10 +173,7 @@ async fn do_connect_request(
     let stream =
         common::establish_tls_connection(common::MAIN_DOMAIN_NAME, endpoint_address, None).await;
 
-    let (mut request, conn_driver) = hyper::client::conn::Builder::new()
-        .handshake(stream)
-        .await
-        .unwrap();
+    let (mut request, conn_driver) = common::connect_http1(stream).await;
 
     let exchange = async move {
         let mut rr = Request::builder()
@@ -191,7 +188,7 @@ async fn do_connect_request(
             );
         }
 
-        let rr = rr.body(hyper::Body::empty()).unwrap();
+        let rr = rr.body(common::EmptyBody::new()).unwrap();
         let response = request.send_request(rr).await.unwrap();
         info!("CONNECT response: {:?}", response);
         response.status()

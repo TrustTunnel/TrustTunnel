@@ -282,15 +282,12 @@ async fn post_with_credentials_returns_405() {
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         );
-        let (mut request, conn) = hyper::client::conn::Builder::new()
-            .handshake(stream)
-            .await
-            .unwrap();
+        let (mut request, conn) = common::connect_http1(stream).await;
         let exchange = async {
             let req = hyper::Request::post(&url)
                 .version(http::Version::HTTP_11)
                 .header("authorization", ALICE_BASIC)
-                .body(hyper::Body::empty())
+                .body(common::EmptyBody::new())
                 .unwrap();
             request.send_request(req).await.unwrap()
         };
@@ -448,18 +445,14 @@ async fn get_h2_authenticated_returns_json() {
         // authenticates. The test harness cannot read a streamed H2 response
         // body (the connection driver is an independent task), so body content
         // is asserted over HTTP/1.1 in get_with_valid_credentials_*.
-        let (mut request_sender, conn) = hyper::client::conn::Builder::new()
-            .http2_only(true)
-            .handshake(stream)
-            .await
-            .unwrap();
+        let (mut request_sender, conn) = common::connect_http2(stream).await;
         let exchange = async {
             let req = hyper::Request::builder()
                 .method("GET")
                 .uri(&url)
                 .version(http::Version::HTTP_2)
                 .header("authorization", ALICE_BASIC)
-                .body(hyper::Body::empty())
+                .body(common::EmptyBody::new())
                 .unwrap();
             request_sender.send_request(req).await.unwrap()
         };
@@ -500,17 +493,13 @@ async fn get_h2_without_credentials_returns_401_with_content_length() {
             common::MAIN_DOMAIN_NAME,
             endpoint_address.port()
         );
-        let (mut request_sender, conn) = hyper::client::conn::Builder::new()
-            .http2_only(true)
-            .handshake(stream)
-            .await
-            .unwrap();
+        let (mut request_sender, conn) = common::connect_http2(stream).await;
         let exchange = async {
             let req = hyper::Request::builder()
                 .method("GET")
                 .uri(&url)
                 .version(http::Version::HTTP_2)
-                .body(hyper::Body::empty())
+                .body(common::EmptyBody::new())
                 .unwrap();
             request_sender.send_request(req).await.unwrap()
         };

@@ -1,7 +1,9 @@
 use bytes::{Buf, Bytes, BytesMut};
 use futures::future;
-use hyper::body::HttpBody;
+use http_body_util::{BodyExt, Empty, Full};
+use hyper::body::{Body, Incoming};
 use hyper::http::{self, Request, Response};
+use hyper_util::rt::{TokioExecutor, TokioIo};
 use log::{info, LevelFilter};
 use quiche::h3;
 use quiche::h3::NameValue;
@@ -10,6 +12,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::crypto::aws_lc_rs;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::DigitallySignedStruct;
+use std::future::Future;
 use std::io::{ErrorKind, Write};
 use std::net::{Ipv4Addr, SocketAddr};
 use std::ops::Deref;
@@ -35,6 +38,9 @@ use trusttunnel::shutdown::Shutdown;
 pub const MAIN_DOMAIN_NAME: &str = "localhost";
 pub const ENDPOINT_IP: Ipv4Addr = Ipv4Addr::LOCALHOST;
 pub static NEXT_ENDPOINT_PORT: AtomicU16 = AtomicU16::new(9128);
+
+pub type EmptyBody = Empty<Bytes>;
+pub type FullBody = Full<Bytes>;
 
 pub fn set_up_logger() {
     static ONCE: Once = Once::new();
@@ -372,10 +378,11 @@ impl Http3Session {
         }
     }
 
-    pub async fn exchange(
-        &mut self,
-        request: Request<hyper::Body>,
-    ) -> (http::response::Parts, Bytes) {
+    pub async fn exchange<B>(&mut self, request: Request<B>) -> (http::response::Parts, Bytes)
+    where
+        B: Body<Data = Bytes> + Unpin,
+        B::Error: std::fmt::Debug,
+    {
         let method = request.method().clone();
         self.send_request(request).await;
         let response = self.recv_response_with_method(&method).await;
@@ -398,7 +405,11 @@ impl Http3Session {
         (response, content.freeze())
     }
 
-    pub async fn send_request(&mut self, mut request: Request<hyper::Body>) {
+    pub async fn send_request<B>(&mut self, mut request: Request<B>)
+    where
+        B: Body<Data = Bytes> + Unpin,
+        B::Error: std::fmt::Debug,
+    {
         let uri = request.uri();
         let req = iter::once(h3::Header::new(
             b":method",
@@ -434,7 +445,8 @@ impl Http3Session {
         );
         Self::flush_quic_data(&self.socket, &mut self.quic_conn);
 
-        while let Some(mut chunk) = request.body_mut().data().await.map(Result::unwrap) {
+        while let Some(frame) = request.body_mut().frame().await {
+            let mut chunk = frame.unwrap().into_data().unwrap_or_default();
             while !chunk.is_empty() {
                 let stream_id = self.stream_id();
                 match self
@@ -734,6 +746,65 @@ impl Http3Session {
     }
 }
 
+pub enum ClientSender<B> {
+    Http1(hyper::client::conn::http1::SendRequest<B>),
+    Http2(hyper::client::conn::http2::SendRequest<B>),
+}
+
+impl<B> ClientSender<B>
+where
+    B: Body + 'static,
+{
+    pub async fn send_request(
+        &mut self,
+        request: Request<B>,
+    ) -> Result<Response<Incoming>, hyper::Error> {
+        match self {
+            Self::Http1(sender) => sender.send_request(request).await,
+            Self::Http2(sender) => sender.send_request(request).await,
+        }
+    }
+}
+
+pub type ConnDriver = Pin<Box<dyn Future<Output = Result<(), hyper::Error>> + Send>>;
+
+async fn connect<IO, B>(io: IO, http2_only: bool) -> (ClientSender<B>, ConnDriver)
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: Body + Send + Unpin + 'static,
+    B::Data: Send,
+    B::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    let io = TokioIo::new(io);
+    if http2_only {
+        let (sender, conn) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
+            .handshake(io)
+            .await
+            .unwrap();
+        (ClientSender::Http2(sender), Box::pin(conn))
+    } else {
+        let (sender, conn) = hyper::client::conn::http1::Builder::new()
+            .handshake(io)
+            .await
+            .unwrap();
+        (ClientSender::Http1(sender), Box::pin(conn))
+    }
+}
+
+pub async fn connect_http1<IO>(io: IO) -> (ClientSender<EmptyBody>, ConnDriver)
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    connect(io, false).await
+}
+
+pub async fn connect_http2<IO>(io: IO) -> (ClientSender<EmptyBody>, ConnDriver)
+where
+    IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    connect(io, true).await
+}
+
 pub async fn do_get_request<IO>(
     io: IO,
     version: http::Version,
@@ -743,26 +814,22 @@ pub async fn do_get_request<IO>(
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut request, conn) = hyper::client::conn::Builder::new()
-        .http2_only(version == http::Version::HTTP_2)
-        .handshake(io)
-        .await
-        .unwrap();
+    let (mut request, conn) = connect(io, version == http::Version::HTTP_2).await;
 
-    let mut request_builder = hyper::Request::get(url).version(version);
+    let mut request_builder = Request::get(url).version(version);
     for (n, v) in extra_headers {
         request_builder = request_builder.header(*n, *v);
     }
 
     let exchange = async {
         let response = request
-            .send_request(request_builder.body(hyper::Body::empty()).unwrap())
+            .send_request(request_builder.body(EmptyBody::new()).unwrap())
             .await
             .unwrap();
         info!("Received response: {:?}", response);
 
         let (parts, body) = response.into_parts();
-        (parts, hyper::body::to_bytes(body).await.unwrap())
+        (parts, body.collect().await.unwrap().to_bytes())
     };
 
     futures::pin_mut!(exchange);
@@ -780,20 +847,16 @@ pub async fn do_post_request<IO>(
     version: http::Version,
     url: &str,
     content_length: usize,
-) -> Response<hyper::Body>
+) -> Response<Incoming>
 where
     IO: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    let (mut request, conn) = hyper::client::conn::Builder::new()
-        .http2_only(version == http::Version::HTTP_2)
-        .handshake(io)
-        .await
-        .unwrap();
+    let (mut request, conn) = connect(io, version == http::Version::HTTP_2).await;
 
     let exchange = async {
-        let req = hyper::Request::post(url)
+        let req = Request::post(url)
             .version(version)
-            .body(hyper::Body::from(vec![0; content_length]))
+            .body(FullBody::from(vec![0; content_length]))
             .unwrap();
 
         let response = request.send_request(req).await.unwrap();
