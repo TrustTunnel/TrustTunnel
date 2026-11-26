@@ -33,8 +33,18 @@ use trusttunnel::settings::{
 use trusttunnel::shutdown::Shutdown;
 
 pub const MAIN_DOMAIN_NAME: &str = "localhost";
+pub const SUBSCRIPTION_DOMAIN_NAME: &str = "sub.localhost";
 pub const ENDPOINT_IP: Ipv4Addr = Ipv4Addr::LOCALHOST;
 pub static NEXT_ENDPOINT_PORT: AtomicU16 = AtomicU16::new(9128);
+
+pub fn make_tls_host_info(hostname: &str, cert_key_path: &str) -> TlsHostInfo {
+    TlsHostInfo {
+        hostname: hostname.to_string(),
+        cert_chain_path: cert_key_path.to_string(),
+        private_key_path: cert_key_path.to_string(),
+        allowed_sni: vec![],
+    }
+}
 
 pub fn set_up_logger() {
     static ONCE: Once = Once::new();
@@ -68,11 +78,11 @@ pub fn make_cert_key_file() -> File {
     file
 }
 
-pub async fn establish_tls_connection(
+pub async fn try_establish_tls_connection(
     server_name: &str,
     peer: &SocketAddr,
     alpn: Option<&[u8]>,
-) -> impl AsyncRead + AsyncWrite + Unpin {
+) -> std::io::Result<impl AsyncRead + AsyncWrite + Unpin> {
     let mut provider = rustls::crypto::aws_lc_rs::default_provider();
     provider.kx_groups = vec![
         aws_lc_rs::kx_group::X25519MLKEM768,
@@ -94,8 +104,18 @@ pub async fn establish_tls_connection(
     TlsConnector::from(Arc::new(config))
         .connect(
             ServerName::try_from(server_name.to_string()).unwrap(),
-            TcpStream::connect(peer).await.unwrap(),
+            TcpStream::connect(peer).await?,
         )
+        .await
+        .map_err(std::io::Error::other)
+}
+
+pub async fn establish_tls_connection(
+    server_name: &str,
+    peer: &SocketAddr,
+    alpn: Option<&[u8]>,
+) -> impl AsyncRead + AsyncWrite + Unpin {
+    try_establish_tls_connection(server_name, peer, alpn)
         .await
         .unwrap()
 }

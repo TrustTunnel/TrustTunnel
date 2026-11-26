@@ -2,8 +2,9 @@ use crate::settings::{Settings, TlsHostInfo, TlsHostsSettings, ValidationError};
 
 /// The `[subscription]` settings parsed from `vpn.toml`.
 ///
-/// Served over an existing main TLS host; live connection parameters not listed
-/// here are derived from the endpoint configuration at resolve time.
+/// Served over an existing main TLS host or a dedicated host from
+/// [`TlsHostsSettings::subscription_hosts`]; live connection parameters not
+/// listed here are derived from the endpoint configuration at resolve time.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 #[cfg_attr(feature = "rt_doc", derive(macros::RuntimeDoc))]
 pub struct SubscriptionSettings {
@@ -33,6 +34,16 @@ pub struct SubscriptionSettings {
     /// Validated as `hex[/hex]`. Omitted from the JSON when unset or empty.
     #[serde(default)]
     pub client_random_prefix: Option<String>,
+    /// Hex auth key from which the client derives its TLS `client_random` for
+    /// connection filtering. Mutually exclusive with `client_random_prefix`.
+    /// Omitted from the JSON when unset or empty.
+    #[serde(default)]
+    pub client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile (`chrome`, `chrome_canary`,
+    /// `safari`, `firefox`, `okhttp`, `openssl`, `boringssl`). Omitted from
+    /// the JSON when unset; clients then default to `chrome`.
+    #[serde(default)]
+    pub tls_profile: Option<String>,
 }
 
 impl SubscriptionSettings {
@@ -52,6 +63,8 @@ impl Default for SubscriptionSettings {
             dns_upstreams: Vec::new(),
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
         }
     }
 }
@@ -97,6 +110,62 @@ pub(crate) fn validate(
         }
     }
 
+    let auth_key = sub
+        .client_random_auth_key
+        .as_deref()
+        .filter(|s| !s.is_empty());
+    let has_prefix = sub
+        .client_random_prefix
+        .as_deref()
+        .is_some_and(|s| !s.is_empty());
+    if auth_key.is_some() && has_prefix {
+        return Err(ValidationError::Subscription(
+            "subscription client_random_auth_key and client_random_prefix are mutually exclusive"
+                .to_string(),
+        ));
+    }
+    if let Some(auth_key) = auth_key {
+        // The auth key is a secret, do not log its value
+        if !crate::rules::is_valid_hex(auth_key) {
+            return Err(ValidationError::Subscription(
+                "subscription client_random_auth_key is not valid hex".to_string(),
+            ));
+        }
+        if let Some(rules_engine) = &settings.rules_engine {
+            let matching_rule = rules_engine.config().rule.iter().find(|r| {
+                r.client_random_auth_key
+                    .as_ref()
+                    .map(|s| s.to_lowercase())
+                    .as_deref()
+                    == Some(auth_key.to_lowercase().as_str())
+            });
+            match matching_rule {
+                None => {
+                    return Err(ValidationError::Subscription(
+                        "no rule found in rules.toml with matching client_random_auth_key; \
+                         add the rule first or unset subscription client_random_auth_key"
+                            .to_string(),
+                    ));
+                }
+                Some(rule) if rule.action == crate::rules::RuleAction::Deny => {
+                    return Err(ValidationError::Subscription(
+                        "matched rule in rules.toml for client_random_auth_key has action 'deny'"
+                            .to_string(),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+
+    if let Some(profile) = sub.tls_profile.as_deref().filter(|s| !s.is_empty()) {
+        if profile.parse::<trusttunnel_deeplink::TlsProfile>().is_err() {
+            return Err(ValidationError::Subscription(format!(
+                "subscription tls_profile is not a known profile: {profile}"
+            )));
+        }
+    }
+
     check_path_overlap(path, settings.ping_path.as_deref())?;
     check_path_overlap(path, settings.speedtest_path.as_deref())?;
     if let Some(reverse_proxy) = settings.reverse_proxy.as_ref() {
@@ -136,6 +205,12 @@ pub(crate) struct SubscriptionConfig {
     pub(crate) custom_sni: Option<String>,
     /// Client-random hex prefix; `None` when unset/empty (omitted from the JSON).
     pub(crate) client_random_prefix: Option<String>,
+    /// Hex auth key for derived client random; `None` when unset/empty (omitted
+    /// from the JSON).
+    pub(crate) client_random_auth_key: Option<String>,
+    /// TLS ClientHello fingerprint profile; `None` when unset (omitted from
+    /// the JSON).
+    pub(crate) tls_profile: Option<String>,
 }
 
 /// The JSON body served to an authenticated user.
@@ -157,22 +232,23 @@ pub(crate) struct SubscriptionResponse<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub client_random_prefix: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_random_auth_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tls_profile: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<&'a str>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dns_upstreams: &'a Vec<String>,
 }
 
-/// Validate `sub` against the endpoint and TLS hosts settings.
+/// Return the main host whose hostname matches `[subscription].hostname`.
 ///
-/// Runs the field checks ([`validate`]) and verifies that `hostname` matches a
-/// `main_hosts` entry, returning the matched host. Does not read certificate
-/// files, so it is cheap enough to run on every endpoint invocation.
-pub fn validate_with_hosts<'a>(
+/// The subscription section describes a main host, so the section is invalid
+/// when its `hostname` is absent from `main_hosts`.
+pub(crate) fn matching_host<'a>(
     sub: &SubscriptionSettings,
-    settings: &Settings,
     hosts: &'a TlsHostsSettings,
 ) -> Result<&'a TlsHostInfo, ValidationError> {
-    validate(sub, settings)?;
     let hostname = sub.hostname.as_deref().unwrap_or("");
     hosts
         .main_hosts
@@ -185,23 +261,25 @@ pub fn validate_with_hosts<'a>(
         })
 }
 
-/// Resolve a [`SubscriptionSettings`] into a [`SubscriptionConfig`].
+/// Resolve an already validated [`SubscriptionSettings`] into a
+/// [`SubscriptionConfig`].
 ///
-/// Reads the matched main host's certificate chain and checks system-verifiability
-/// using the same logic as `client_config::build`. Returns `Err` (without mutating
-/// any runtime state) on any validation failure, so reload callers can keep the
-/// previous configuration.
+/// Matches the configured hostname against `main_hosts`, reads the matched
+/// host's certificate chain, and checks its system-verifiability to decide
+/// whether the certificate must be embedded in the subscription response.
+/// Returns `Err` (without mutating any runtime state) on any failure, so
+/// reload callers can keep the previous configuration.
 pub(crate) fn resolve(
-    sub: &SubscriptionSettings,
-    settings: &Settings,
+    sub: Option<&SubscriptionSettings>,
     hosts: &TlsHostsSettings,
-) -> Result<SubscriptionConfig, ValidationError> {
-    let host = validate_with_hosts(sub, settings, hosts)?;
+) -> Result<Option<SubscriptionConfig>, ValidationError> {
+    let Some(sub) = sub else {
+        return Ok(None);
+    };
+    let host = matching_host(sub, hosts)?;
 
-    let system_verifiable = crate::cert_verification::CertificateVerifier::new()
-        .ok()
-        .map(|verifier| verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname))
-        .unwrap_or(false);
+    let system_verifiable =
+        crate::cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname);
 
     let certificate = if system_verifiable {
         None
@@ -214,7 +292,7 @@ pub(crate) fn resolve(
         })?)
     };
 
-    Ok(SubscriptionConfig {
+    Ok(Some(SubscriptionConfig {
         enabled: sub.enabled,
         path: sub.path.clone(),
         hostname: sub.hostname.clone().unwrap_or_default(),
@@ -224,13 +302,18 @@ pub(crate) fn resolve(
         certificate,
         custom_sni: sub.custom_sni.clone().filter(|s| !s.is_empty()),
         client_random_prefix: sub.client_random_prefix.clone().filter(|s| !s.is_empty()),
-    })
+        client_random_auth_key: sub.client_random_auth_key.clone().filter(|s| !s.is_empty()),
+        tls_profile: sub.tls_profile.clone().filter(|s| !s.is_empty()),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{Settings, ValidationError};
+    use crate::settings::{
+        Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, Settings,
+        ValidationError,
+    };
 
     fn enabled_sub() -> SubscriptionSettings {
         SubscriptionSettings {
@@ -242,6 +325,8 @@ mod tests {
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
         }
     }
 
@@ -261,12 +346,32 @@ mod tests {
         assert_eq!(sub.hostname, None);
         assert_eq!(sub.address, None);
         assert!(sub.dns_upstreams.is_empty());
+        assert_eq!(sub.tls_profile, None);
+    }
+
+    #[test]
+    fn parse_tls_profile() {
+        let toml = "[subscription]\nenabled = true\ntls_profile = \"chrome_canary\"\n";
+        let w: Wrapper = toml::from_str(toml).unwrap();
+        let sub = w.subscription.expect("section present");
+        assert_eq!(sub.tls_profile, Some("chrome_canary".to_string()));
     }
 
     #[test]
     fn parse_absent_section_is_none() {
         let w: Wrapper = toml::from_str("").unwrap();
         assert!(w.subscription.is_none());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_tls_profile() {
+        let mut sub = enabled_sub();
+        sub.tls_profile = Some("default".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
     }
 
     #[test]
@@ -342,6 +447,82 @@ mod tests {
         assert!(validate(&sub, &settings).is_ok());
     }
 
+    fn settings_with_auth_key_rule(key: &str, action: crate::rules::RuleAction) -> Settings {
+        Settings::builder()
+            .listen_address(std::net::SocketAddr::from(([127, 0, 0, 1], 0)))
+            .unwrap()
+            .listen_protocols(ListenProtocolSettings {
+                http1: Some(Http1Settings::builder().build()),
+                http2: Some(Http2Settings::builder().build()),
+                quic: Some(QuicSettings::builder().build()),
+            })
+            .rules_engine(crate::rules::RulesEngine::from_config(
+                crate::rules::RulesConfig {
+                    rule: vec![crate::rules::Rule {
+                        cidr: None,
+                        client_random_prefix: None,
+                        client_random_auth_key: Some(key.to_string()),
+                        action,
+                    }],
+                },
+            ))
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_with_prefix() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        sub.client_random_prefix = Some("aabbcc/ff00ff".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_non_hex_auth_key() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("nothex".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_without_matching_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        let settings = Settings::default();
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
+    #[test]
+    fn validate_accepts_auth_key_with_matching_allow_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("AABBCCDD".to_string());
+        let settings = settings_with_auth_key_rule("aabbccdd", crate::rules::RuleAction::Allow);
+        assert!(validate(&sub, &settings).is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_auth_key_with_deny_rule() {
+        let mut sub = enabled_sub();
+        sub.client_random_auth_key = Some("aabbccdd".to_string());
+        let settings = settings_with_auth_key_rule("aabbccdd", crate::rules::RuleAction::Deny);
+        assert!(matches!(
+            validate(&sub, &settings),
+            Err(ValidationError::Subscription(_))
+        ));
+    }
+
     #[test]
     fn validate_rejects_path_overlap_with_ping() {
         let mut sub = enabled_sub();
@@ -376,29 +557,18 @@ mod tests {
     }
 
     #[test]
-    fn validate_with_hosts_returns_matching_host() {
+    fn matching_host_returns_matching_host() {
         let hosts = tls_hosts_with("vpn.example.com");
-        let settings = Settings::default();
-        let host = validate_with_hosts(&enabled_sub(), &settings, &hosts).unwrap();
+        let host = matching_host(&enabled_sub(), &hosts).unwrap();
         assert_eq!(host.hostname, "vpn.example.com");
     }
 
     #[test]
-    fn validate_with_hosts_rejects_unknown_hostname() {
+    fn matching_host_rejects_unknown_hostname() {
         let hosts = tls_hosts_with("other.example.com");
-        let settings = Settings::default();
         assert!(matches!(
-            validate_with_hosts(&enabled_sub(), &settings, &hosts),
+            matching_host(&enabled_sub(), &hosts),
             Err(ValidationError::Subscription(_))
         ));
-    }
-
-    #[test]
-    fn validate_with_hosts_rejects_invalid_section() {
-        let mut sub = enabled_sub();
-        sub.address = Some("no-port".to_string());
-        let hosts = tls_hosts_with("vpn.example.com");
-        let settings = Settings::default();
-        assert!(validate_with_hosts(&sub, &settings, &hosts).is_err());
     }
 }

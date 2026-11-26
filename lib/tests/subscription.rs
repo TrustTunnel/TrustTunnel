@@ -6,6 +6,7 @@ use trusttunnel::authentication::registry_based::Client;
 use trusttunnel::authentication::{registry_based::RegistryBasedAuthenticator, Authenticator};
 use trusttunnel::core::Core;
 use trusttunnel::net_utils;
+use trusttunnel::rules::{Rule, RuleAction, RulesConfig, RulesEngine};
 use trusttunnel::settings::{
     Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, Settings, TlsHostInfo,
     TlsHostsSettings,
@@ -43,6 +44,8 @@ fn make_settings(
             dns_upstreams: vec!["tls://1.1.1.1".to_string()],
             custom_sni: Some(common::MAIN_DOMAIN_NAME.to_string()),
             client_random_prefix: Some("aabbcc/ff00ff".to_string()),
+            client_random_auth_key: None,
+            tls_profile: None,
         });
     }
 
@@ -51,6 +54,115 @@ fn make_settings(
 
 fn make_hosts(cert_path: &str) -> TlsHostsSettings {
     make_hosts_with_names(cert_path, &[common::MAIN_DOMAIN_NAME])
+}
+
+fn make_hosts_with_subscription(cert_path: &str) -> TlsHostsSettings {
+    TlsHostsSettings::builder()
+        .main_hosts(vec![common::make_tls_host_info(
+            common::MAIN_DOMAIN_NAME,
+            cert_path,
+        )])
+        .subscription_hosts(vec![common::make_tls_host_info(
+            common::SUBSCRIPTION_DOMAIN_NAME,
+            cert_path,
+        )])
+        .build()
+        .unwrap()
+}
+
+fn make_settings_with_subscription(
+    listen_address: &SocketAddr,
+    subscription_address: &str,
+    enabled: bool,
+    users: Vec<Client>,
+) -> Settings {
+    Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+        })
+        .allow_private_network_connections(true)
+        .clients(users)
+        .subscription(SubscriptionSettings {
+            enabled,
+            hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+            path: SubscriptionSettings::default_path(),
+            address: Some(subscription_address.to_string()),
+            name: None,
+            dns_upstreams: vec![],
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
+        })
+        .build()
+        .unwrap()
+}
+
+fn deny_all_rules_engine() -> RulesEngine {
+    RulesEngine::from_config(RulesConfig {
+        rule: vec![Rule {
+            cidr: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            action: RuleAction::Deny,
+        }],
+    })
+}
+
+fn make_rules_settings(listen_address: &SocketAddr, users: Vec<Client>) -> Settings {
+    Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+        })
+        .allow_private_network_connections(true)
+        .clients(users)
+        .subscription(SubscriptionSettings {
+            enabled: true,
+            hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+            path: SubscriptionSettings::default_path(),
+            address: Some("203.0.113.1:443".to_string()),
+            name: None,
+            dns_upstreams: vec![],
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
+        })
+        .ping_enable(true)
+        .ping_path("/ping")
+        .rules_engine(deny_all_rules_engine())
+        .build()
+        .unwrap()
+}
+
+fn make_hosts_with_service_hosts(cert_path: &str) -> TlsHostsSettings {
+    TlsHostsSettings::builder()
+        .main_hosts(vec![common::make_tls_host_info(
+            common::MAIN_DOMAIN_NAME,
+            cert_path,
+        )])
+        .ping_hosts(vec![common::make_tls_host_info(
+            &format!("ping.{}", common::MAIN_DOMAIN_NAME),
+            cert_path,
+        )])
+        .speedtest_hosts(vec![common::make_tls_host_info(
+            &format!("speed.{}", common::MAIN_DOMAIN_NAME),
+            cert_path,
+        )])
+        .subscription_hosts(vec![common::make_tls_host_info(
+            common::SUBSCRIPTION_DOMAIN_NAME,
+            cert_path,
+        )])
+        .build()
+        .unwrap()
 }
 
 fn make_hosts_with_names(cert_path: &str, names: &[&str]) -> TlsHostsSettings {
@@ -96,6 +208,91 @@ fn make_minimal_subscription_settings(
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
+        })
+        .build()
+        .unwrap()
+}
+
+/// Like [`make_minimal_subscription_settings`], but with `client_random_auth_key`
+/// set and a `rules.toml` engine containing the matching allow rule (plus an
+/// allow-all fallback so ordinary connections without a derived client random
+/// are permitted).
+fn make_auth_key_subscription_settings(
+    listen_address: &SocketAddr,
+    subscription_address: &str,
+    users: Vec<Client>,
+) -> Settings {
+    Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+        })
+        .allow_private_network_connections(true)
+        .clients(users)
+        .subscription(SubscriptionSettings {
+            enabled: true,
+            hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+            path: SubscriptionSettings::default_path(),
+            address: Some(subscription_address.to_string()),
+            name: None,
+            dns_upstreams: vec![],
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: Some("00112233445566778899aabbccddeeff".to_string()),
+            tls_profile: None,
+        })
+        .rules_engine(RulesEngine::from_config(RulesConfig {
+            rule: vec![
+                Rule {
+                    cidr: None,
+                    client_random_prefix: None,
+                    client_random_auth_key: Some("00112233445566778899aabbccddeeff".to_string()),
+                    action: RuleAction::Allow,
+                },
+                Rule {
+                    cidr: Some("0.0.0.0/0".to_string()),
+                    client_random_prefix: None,
+                    client_random_auth_key: None,
+                    action: RuleAction::Allow,
+                },
+            ],
+        }))
+        .build()
+        .unwrap()
+}
+
+/// Like [`make_minimal_subscription_settings`], but with `tls_profile` set.
+fn make_tls_profile_subscription_settings(
+    listen_address: &SocketAddr,
+    subscription_address: &str,
+    users: Vec<Client>,
+) -> Settings {
+    Settings::builder()
+        .listen_address(listen_address)
+        .unwrap()
+        .listen_protocols(ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+        })
+        .allow_private_network_connections(true)
+        .clients(users)
+        .subscription(SubscriptionSettings {
+            enabled: true,
+            hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+            path: SubscriptionSettings::default_path(),
+            address: Some(subscription_address.to_string()),
+            name: None,
+            dns_upstreams: vec![],
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: Some("chrome_canary".to_string()),
         })
         .build()
         .unwrap()
@@ -174,6 +371,56 @@ async fn get_with_valid_credentials_returns_200_and_user_fields() {
         assert!(body.contains("\"dns_upstreams\":[\"tls://1.1.1.1\"]"));
         assert!(body.contains("\"custom_sni\":\"localhost\""));
         assert!(body.contains("\"client_random_prefix\":\"aabbcc/ff00ff\""));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn get_includes_client_random_auth_key_when_set() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_auth_key_subscription_settings(&endpoint_address, "203.0.113.1:443", alice_bob());
+    let hosts = make_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"client_random_auth_key\":\"00112233445566778899aabbccddeeff\""));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn get_includes_tls_profile_when_set() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_tls_profile_subscription_settings(&endpoint_address, "203.0.113.1:443", alice_bob());
+    let hosts = make_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) = fetch(&endpoint_address, Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"tls_profile\":\"chrome_canary\""));
     };
 
     tokio::select! {
@@ -362,6 +609,8 @@ async fn present_disabled_section_returns_403() {
             dns_upstreams: vec![],
             custom_sni: None,
             client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
         })
         .build()
         .unwrap();
@@ -548,6 +797,8 @@ async fn omits_optional_fields_when_unset() {
         assert!(body.contains("\"has_ipv6\":true"));
         assert!(!body.contains("custom_sni"));
         assert!(!body.contains("client_random_prefix"));
+        assert!(!body.contains("client_random_auth_key"));
+        assert!(!body.contains("tls_profile"));
         assert!(!body.contains("\"name\""));
         assert!(!body.contains("dns_upstreams"));
     };
@@ -632,8 +883,10 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
+        tls_profile: None,
     };
-    core.reload_subscription_settings(Some(updated), &hosts_for_reload)
+    core.reload_tls_hosts_and_subscription_settings(Some(updated), hosts_for_reload.clone())
         .unwrap();
     assert_eq!(
         fetch_address(&endpoint_address, ALICE_BASIC).await,
@@ -649,13 +902,709 @@ async fn reload_updates_served_address_and_keeps_old_on_error() {
         dns_upstreams: vec![],
         custom_sni: None,
         client_random_prefix: None,
+        client_random_auth_key: None,
+        tls_profile: None,
     };
     assert!(core
-        .reload_subscription_settings(Some(bad), &hosts_for_reload)
+        .reload_tls_hosts_and_subscription_settings(Some(bad), hosts_for_reload)
         .is_err());
     assert_eq!(
         fetch_address(&endpoint_address, ALICE_BASIC).await,
         "198.51.100.7:443"
+    );
+
+    listen_task.abort();
+}
+
+fn dedicated_url(endpoint_address: &SocketAddr, path: &str) -> String {
+    format!(
+        "https://{}:{}{}",
+        common::SUBSCRIPTION_DOMAIN_NAME,
+        endpoint_address.port(),
+        path
+    )
+}
+
+async fn fetch_dedicated(
+    endpoint_address: &SocketAddr,
+    path: &str,
+    auth: Option<&str>,
+    extra: &[(&str, &str)],
+) -> (http::response::Parts, bytes::Bytes) {
+    let stream =
+        common::establish_tls_connection(common::SUBSCRIPTION_DOMAIN_NAME, endpoint_address, None)
+            .await;
+    let url = dedicated_url(endpoint_address, path);
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(a) = auth {
+        headers.push(("authorization", a));
+    }
+    headers.extend_from_slice(extra);
+    common::do_get_request(stream, http::Version::HTTP_11, &url, &headers).await
+}
+
+async fn post_dedicated(endpoint_address: &SocketAddr, auth: &str) -> http::Response<hyper::Body> {
+    let stream =
+        common::establish_tls_connection(common::SUBSCRIPTION_DOMAIN_NAME, endpoint_address, None)
+            .await;
+    let url = dedicated_url(endpoint_address, "/subscription");
+    let (mut request, conn) = hyper::client::conn::Builder::new()
+        .handshake(stream)
+        .await
+        .unwrap();
+    let exchange = async {
+        let req = hyper::Request::post(&url)
+            .version(http::Version::HTTP_11)
+            .header("authorization", auth)
+            .body(hyper::Body::empty())
+            .unwrap();
+        request.send_request(req).await.unwrap()
+    };
+    futures::pin_mut!(exchange);
+    match future::select(conn, exchange).await {
+        future::Either::Left((_r, exchange)) => exchange.await,
+        future::Either::Right((response, _)) => response,
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_serves_json_over_h1() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) =
+            fetch_dedicated(&endpoint_address, "/subscription", Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"hostname\":\"localhost\""));
+        assert!(body.contains("\"address\":\"203.0.113.1:443\""));
+        assert!(body.contains("\"username\":\"alice\""));
+        assert!(body.contains("\"password\":\"secret\""));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_serves_json_over_h2() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let stream = common::establish_tls_connection(
+            common::SUBSCRIPTION_DOMAIN_NAME,
+            &endpoint_address,
+            Some(net_utils::HTTP2_ALPN.as_bytes()),
+        )
+        .await;
+        let url = dedicated_url(&endpoint_address, "/subscription");
+        let (mut request_sender, conn) = hyper::client::conn::Builder::new()
+            .http2_only(true)
+            .handshake(stream)
+            .await
+            .unwrap();
+        let exchange = async {
+            let req = hyper::Request::builder()
+                .method("GET")
+                .uri(&url)
+                .version(http::Version::HTTP_2)
+                .header("authorization", ALICE_BASIC)
+                .body(hyper::Body::empty())
+                .unwrap();
+            request_sender.send_request(req).await.unwrap()
+        };
+        futures::pin_mut!(exchange);
+        let response = match future::select(conn, exchange).await {
+            future::Either::Left((_r, exchange)) => exchange.await,
+            future::Either::Right((response, _)) => response,
+        };
+        assert_eq!(response.status(), http::StatusCode::OK);
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_serves_json_over_h3() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut session = common::Http3Session::connect(
+            &endpoint_address,
+            common::SUBSCRIPTION_DOMAIN_NAME,
+            None,
+        )
+        .await;
+        let request = http::Request::get(dedicated_url(&endpoint_address, "/subscription"))
+            .header("authorization", ALICE_BASIC)
+            .body(hyper::Body::empty())
+            .unwrap();
+        let (parts, body) = session.exchange(request).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("\"hostname\":\"localhost\""));
+        assert!(body.contains("\"address\":\"203.0.113.1:443\""));
+        assert!(body.contains("\"username\":\"alice\""));
+        assert!(body.contains("\"password\":\"secret\""));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_returns_401_without_credentials() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) = fetch_dedicated(&endpoint_address, "/subscription", None, &[]).await;
+        assert_eq!(parts.status, http::StatusCode::UNAUTHORIZED);
+        let www_authenticate = parts
+            .headers
+            .get("www-authenticate")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default();
+        assert!(www_authenticate.contains("Basic"));
+        assert!(!body.windows(6).any(|w| w == b"secret"));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_returns_403_when_disabled() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", false, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) =
+            fetch_dedicated(&endpoint_address, "/subscription", Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::FORBIDDEN);
+        assert!(!body.windows(6).any(|w| w == b"secret"));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_returns_405_for_post() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let response = post_dedicated(&endpoint_address, ALICE_BASIC).await;
+        assert_eq!(response.status(), http::StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response
+                .headers()
+                .get("allow")
+                .and_then(|v| v.to_str().ok()),
+            Some("GET")
+        );
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_returns_404_for_other_path() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) =
+            fetch_dedicated(&endpoint_address, "/other", Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::NOT_FOUND);
+        assert!(!body.windows(6).any(|w| w == b"secret"));
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn dedicated_host_handshake_dropped_without_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    // `enabled = false` omits the [subscription] section entirely; the
+    // dedicated host must not be served, mirroring `reverse_proxy_hosts`
+    // without `[reverse_proxy]`.
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", false, alice_bob());
+    let hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+        // The main host is unaffected.
+        let _stream =
+            common::establish_tls_connection(common::MAIN_DOMAIN_NAME, &endpoint_address, None)
+                .await;
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+    }
+}
+
+/// Subscription hosts with a name ending in `.<main host>` fall through to the
+/// SNI-auth credential split, so these use an unrelated name.
+fn make_hosts_with_unrelated_subscription_host(cert_path: &str) -> TlsHostsSettings {
+    TlsHostsSettings::builder()
+        .main_hosts(vec![common::make_tls_host_info(
+            common::MAIN_DOMAIN_NAME,
+            cert_path,
+        )])
+        .subscription_hosts(vec![common::make_tls_host_info(
+            "sub.example.com",
+            cert_path,
+        )])
+        .build()
+        .unwrap()
+}
+
+async fn assert_handshake_dropped(server_name: &str, endpoint_address: &SocketAddr) {
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        common::try_establish_tls_connection(server_name, endpoint_address, None),
+    )
+    .await;
+    if let Ok(Ok(_)) = result {
+        panic!("Handshake unexpectedly completed for {server_name}");
+    }
+}
+
+async fn assert_host_served(server_name: &str, endpoint_address: &SocketAddr, path: &str) {
+    let stream = common::establish_tls_connection(server_name, endpoint_address, None).await;
+    let url = format!(
+        "https://{}:{}{}",
+        server_name,
+        endpoint_address.port(),
+        path
+    );
+    let (parts, _) = common::do_get_request(stream, http::Version::HTTP_11, &url, &[]).await;
+    assert_eq!(parts.status, http::StatusCode::OK);
+}
+
+async fn assert_h3_served(server_name: &str, endpoint_address: &SocketAddr, path: &str) {
+    let mut session = common::Http3Session::connect(endpoint_address, server_name, None).await;
+    let request = http::Request::get(format!(
+        "https://{}:{}{}",
+        server_name,
+        endpoint_address.port(),
+        path
+    ))
+    .body(hyper::Body::empty())
+    .unwrap();
+    let (parts, _) = session.exchange(request).await;
+    assert_eq!(parts.status, http::StatusCode::OK);
+}
+
+async fn assert_h3_not_served(server_name: &str, endpoint_address: &SocketAddr) {
+    let mut session = common::Http3Session::connect(endpoint_address, server_name, None).await;
+    let request = http::Request::get(format!(
+        "https://{}:{}/",
+        server_name,
+        endpoint_address.port()
+    ))
+    .body(hyper::Body::empty())
+    .unwrap();
+    session.send_request(request).await;
+
+    let mut buffer = [0; 1024];
+    let received = tokio::time::timeout(Duration::from_secs(5), session.recv(&mut buffer))
+        .await
+        .expect("Connection did not end after a denied request");
+    assert_eq!(received, 0, "Denied request unexpectedly returned data");
+}
+
+#[tokio::test]
+async fn deny_all_rules_do_not_affect_dedicated_host() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings = make_rules_settings(&endpoint_address, alice_bob());
+    let hosts = make_hosts_with_service_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (parts, body) =
+            fetch_dedicated(&endpoint_address, "/subscription", Some(ALICE_BASIC), &[]).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        assert!(body.windows(6).any(|w| w == b"secret"));
+
+        assert_host_served(
+            &format!("ping.{}", common::MAIN_DOMAIN_NAME),
+            &endpoint_address,
+            "/",
+        )
+        .await;
+        assert_host_served(
+            &format!("speed.{}", common::MAIN_DOMAIN_NAME),
+            &endpoint_address,
+            "/1mb.bin",
+        )
+        .await;
+
+        assert_handshake_dropped(common::MAIN_DOMAIN_NAME, &endpoint_address).await;
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(15)) => panic!("Timed out"),
+    }
+}
+
+#[tokio::test]
+async fn deny_all_rules_do_not_affect_dedicated_host_over_h3() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings = make_rules_settings(&endpoint_address, alice_bob());
+    let hosts = make_hosts_with_service_hosts(cert_path);
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let mut session = common::Http3Session::connect(
+            &endpoint_address,
+            common::SUBSCRIPTION_DOMAIN_NAME,
+            None,
+        )
+        .await;
+        let request = http::Request::get(dedicated_url(&endpoint_address, "/subscription"))
+            .header("authorization", ALICE_BASIC)
+            .body(hyper::Body::empty())
+            .unwrap();
+        let (parts, body) = session.exchange(request).await;
+        assert_eq!(parts.status, http::StatusCode::OK);
+        assert!(body.windows(6).any(|w| w == b"secret"));
+
+        assert_h3_served(
+            &format!("ping.{}", common::MAIN_DOMAIN_NAME),
+            &endpoint_address,
+            "/",
+        )
+        .await;
+        assert_h3_served(
+            &format!("speed.{}", common::MAIN_DOMAIN_NAME),
+            &endpoint_address,
+            "/1mb.bin",
+        )
+        .await;
+
+        assert_h3_not_served(common::MAIN_DOMAIN_NAME, &endpoint_address).await;
+    };
+
+    tokio::select! {
+        _ = run_endpoint(settings, hosts) => unreachable!(),
+        _ = client_task => (),
+        _ = tokio::time::sleep(Duration::from_secs(30)) => panic!("Timed out"),
+    }
+}
+
+async fn fetch_dedicated_address(endpoint_address: &SocketAddr, auth: &str) -> String {
+    let (parts, body) = fetch_dedicated(endpoint_address, "/subscription", Some(auth), &[]).await;
+    assert_eq!(parts.status, http::StatusCode::OK);
+    let body = String::from_utf8(body.to_vec()).unwrap();
+    body.split("\"address\":\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn reload_accepts_unverifiable_dedicated_host_certificate() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // The dedicated host uses a self-signed certificate, which must not block
+    // the reload: certificate trust is only required when exporting a client
+    // config, not when serving.
+    let parsed_hosts: TlsHostsSettings = toml::from_str(&format!(
+        "[[main_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n\
+         [[subscription_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n",
+        common::MAIN_DOMAIN_NAME,
+        cert_path,
+        cert_path,
+        common::SUBSCRIPTION_DOMAIN_NAME,
+        cert_path,
+        cert_path,
+    ))
+    .unwrap();
+
+    let updated = SubscriptionSettings {
+        enabled: true,
+        hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("198.51.100.7:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+        client_random_auth_key: None,
+        tls_profile: None,
+    };
+
+    core.reload_tls_hosts_and_subscription_settings(Some(updated), parsed_hosts)
+        .unwrap();
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "198.51.100.7:443"
+    );
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_with_invalid_subscription_keeps_previous_hosts() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // The new hosts replace the dedicated subscription host, and the new
+    // [subscription] section names a hostname missing from main_hosts. The
+    // reload must be rejected as a whole, keeping the previous hosts.
+    let new_hosts: TlsHostsSettings = toml::from_str(&format!(
+        "[[main_hosts]]\nhostname = \"{}\"\ncert_chain_path = \"{cert_path}\"\nprivate_key_path = \"{cert_path}\"\n\
+         [[subscription_hosts]]\nhostname = \"newsub.example.com\"\ncert_chain_path = \"{cert_path}\"\nprivate_key_path = \"{cert_path}\"\n",
+        common::MAIN_DOMAIN_NAME,
+    ))
+    .unwrap();
+
+    let bad = SubscriptionSettings {
+        enabled: true,
+        hostname: Some("nope.invalid".to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("198.51.100.7:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+        client_random_auth_key: None,
+        tls_profile: None,
+    };
+
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(Some(bad), new_hosts)
+        .is_err());
+
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+    assert_handshake_dropped("newsub.example.com", &endpoint_address).await;
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_rejects_adding_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    // No [subscription] section at startup: the dedicated host is not served.
+    let settings = make_settings(&endpoint_address, "203.0.113.1:443", false, alice_bob());
+    let hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+
+    // The section is fully valid, so the only possible failure reason is the
+    // presence change, which reload must reject.
+    let new_sub = SubscriptionSettings {
+        enabled: true,
+        hostname: Some(common::MAIN_DOMAIN_NAME.to_string()),
+        path: SubscriptionSettings::default_path(),
+        address: Some("203.0.113.1:443".to_string()),
+        name: None,
+        dns_upstreams: vec![],
+        custom_sni: None,
+        client_random_prefix: None,
+        client_random_auth_key: None,
+        tls_profile: None,
+    };
+    let same_hosts = make_hosts_with_unrelated_subscription_host(cert_path);
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(Some(new_sub), same_hosts)
+        .is_err());
+
+    assert_handshake_dropped("sub.example.com", &endpoint_address).await;
+
+    listen_task.abort();
+}
+
+#[tokio::test]
+async fn reload_rejects_removing_subscription_section() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let cert_file = common::make_cert_key_file();
+    let cert_path = cert_file.path.to_str().unwrap();
+    let settings =
+        make_settings_with_subscription(&endpoint_address, "203.0.113.1:443", true, alice_bob());
+    let hosts = make_hosts_with_subscription(cert_path);
+
+    let shutdown = Shutdown::new();
+    let authenticator: Option<Arc<dyn Authenticator>> = Some(Arc::new(
+        RegistryBasedAuthenticator::new(settings.get_clients()),
+    ));
+    let core = Arc::new(Core::new(settings, authenticator, hosts, shutdown).unwrap());
+
+    let core_for_listen = core.clone();
+    let listen_task = tokio::spawn(async move {
+        core_for_listen.listen().await.unwrap();
+    });
+
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
+    );
+
+    // Removing the [subscription] section must be rejected; use `enabled`
+    // toggling to disable serving instead.
+    let same_hosts = make_hosts_with_subscription(cert_path);
+    assert!(core
+        .reload_tls_hosts_and_subscription_settings(None, same_hosts)
+        .is_err());
+
+    assert_eq!(
+        fetch_dedicated_address(&endpoint_address, ALICE_BASIC).await,
+        "203.0.113.1:443"
     );
 
     listen_task.abort();

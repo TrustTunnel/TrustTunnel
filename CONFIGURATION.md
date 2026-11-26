@@ -61,9 +61,11 @@ The endpoint binary accepts the following command line arguments:
 | `--prefix-percent` | - | Percentage of one bits in the generated mask (requires `--generate-client-random-prefix`). | `70` |
 | `--prefix-mask` | - | Explicit hex mask for generated `client_random_prefix` values (requires `--generate-client-random-prefix`). Conflicts with `--prefix-length` and `--prefix-percent`. | - |
 | `--client-random-auth-key` | - | Use an explicit hex auth key for the SNI-derived TLS client random in the exported client config (requires `-c`). Conflicts with `--client-random-prefix` and `--generate-client-random-prefix`. | - |
+| `--tls-profile` | - | TLS ClientHello fingerprint profile in the exported client config (requires `-c`). One of `chrome`, `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl`. When omitted, the exported TOML carries an empty value and clients default to `chrome`. | - |
 
-The exported client configuration and deep-link do not set `tls_profile`.
-Clients use `chrome` unless the profile is set separately.
+When `--tls-profile` is specified, the exported client configuration and
+deep-link carry the selected profile. Without it, the exported TOML carries an
+empty `tls_profile`, the deep-link omits the profile, and clients use `chrome`.
 
 ### Examples
 
@@ -104,6 +106,10 @@ Clients use `chrome` unless the profile is set separately.
 # Export client configuration with an auth key for SNI-derived client random
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
     --client-random-auth-key 00112233445566778899aabbccddeeff
+
+# Export client configuration with a TLS ClientHello fingerprint profile
+./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com \
+    --tls-profile chrome_canary
 ```
 
 ---
@@ -228,6 +234,12 @@ private_key_path = "certs/key.pem"
 # Reverse proxy hosts (optional, requires reverse_proxy in main settings)
 # [[reverse_proxy_hosts]]
 # hostname = "api.example.com"
+# cert_chain_path = "certs/cert.pem"
+# private_key_path = "certs/key.pem"
+
+# Subscription hosts (optional, requires [subscription] in main settings)
+# [[subscription_hosts]]
+# hostname = "sub.example.com"
 # cert_chain_path = "certs/cert.pem"
 # private_key_path = "certs/key.pem"
 ```
@@ -423,7 +435,8 @@ per_client_metrics = false
 ### Subscription Settings
 
 Optional. Enables an HTTPS subscription endpoint that serves a per-user JSON
-configuration over an existing main TLS host.
+configuration over an existing main TLS host, or on dedicated hosts from
+`subscription_hosts`.
 
 ```toml
 [subscription]
@@ -435,6 +448,7 @@ name = "Acme Corp VPN"
 dns_upstreams = ["tls://1.1.1.1", "tls://8.8.8.8"]
 custom_sni = "example.org"
 client_random_prefix = "a0b0/f0f0"
+tls_profile = "chrome_canary"
 ```
 
 | Setting | Type | Default | Description |
@@ -447,10 +461,20 @@ client_random_prefix = "a0b0/f0f0"
 | `dns_upstreams` | Array | `[]` | (Optional) DNS upstreams |
 | `custom_sni` | String | - | (Optional) Custom TLS SNI |
 | `client_random_prefix` | String | - | (Optional) `hex[/hex]` |
+| `client_random_auth_key` | String | - | (Optional) Hex auth key for derived client random |
+| `tls_profile` | String | - | (Optional) TLS ClientHello fingerprint profile: `chrome`, `chrome_canary`, `safari`, `firefox`, `okhttp`, `openssl`, `boringssl` |
 
 All fields are validated on every endpoint invocation (including the
 `--client_config` export) whenever the `[subscription]` section is present in
 `vpn.toml`, even when `enabled = false`.
+
+`client_random_auth_key` is mutually exclusive with `client_random_prefix` in
+`[subscription]` (setting both is a validation error) and must match
+the corresponding `allow` rule in `rules.toml`;
+the key is also returned in the subscription JSON.
+
+`tls_profile` is returned in the subscription JSON when set; when unset the
+field is omitted and clients default to `chrome`.
 
 The `address` value is also reused by the `--client_config` export
 if the `--address` is not specified
@@ -460,6 +484,12 @@ entry in `credentials.toml`; the response body contains only that user's
 credentials. Non-GET requests return `405`; missing or invalid credentials
 return `401`; an authenticated request while subscription is disabled returns
 `403`; otherwise the response is `200` with the per-user JSON body.
+
+The JSON can also be served on dedicated hosts from `subscription_hosts`. When
+`subscription_hosts` is non-empty, the exported `subscription_url` points to
+the first such host; otherwise it uses `[subscription].hostname`. The export
+fails if the first subscription host's certificate cannot be verified by
+system CAs, since no certificate is embedded for it.
 
 ---
 
@@ -475,18 +505,25 @@ Each TLS host entry requires:
 
 ### Host Types
 
+Connections to all host types except `main_hosts` are exempt from `rules.toml`
+filtering.
+
 - **`main_hosts`** - Primary hosts for VPN traffic tunneling and service requests
 - **`ping_hosts`** - Respond with `200 OK` to HTTPS GET requests (health checks)
 - **`speedtest_hosts`** - Handle speed test requests:
     - `GET /Nmb.bin` (N=1-100): Download N megabytes
     - `POST /upload.html`: Upload test (up to 120 MB)
 - **`reverse_proxy_hosts`** - Forward to reverse proxy server (requires `[reverse_proxy]`)
+- **`subscription_hosts`** - Serve the subscription JSON on a dedicated host (requires `[subscription]`)
 
 ---
 
 ## Rules Reference
 
-Rules filter incoming connections based on client IP and/or TLS client random data.
+Rules filter connections to main hosts based on client IP and/or TLS client
+random data; dedicated service hosts are exempt. Path handlers served on main
+hosts (`ping_path`, `speedtest_path`, `path_mask`, the subscription path)
+remain filtered.
 
 ### Rule Structure
 
@@ -591,9 +628,11 @@ kill -HUP $(pidof trusttunnel_endpoint)
 ```
 
 This reloads the TLS hosts file and the `[subscription]` section of `vpn.toml`
-specified at startup. If the new `[subscription]` section fails to parse or
-validate, the previously loaded subscription configuration is kept and a
-warning is logged.
+specified at startup. The `[subscription]` section cannot be added or removed
+by reload (toggle its `enabled` flag instead; a restart changes its presence).
+The new TLS hosts and subscription configuration are validated together and
+applied atomically; on failure the previous configuration is kept and an error
+is logged.
 
 ### Systemd Service
 

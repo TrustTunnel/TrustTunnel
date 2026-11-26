@@ -9,6 +9,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 use tokio::net::TcpListener;
 use trusttunnel::net_utils;
+use trusttunnel::rules::{Rule, RuleAction, RulesConfig, RulesEngine};
 use trusttunnel::settings::{
     Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, ReverseProxySettings,
     Settings, TlsHostInfo, TlsHostsSettings,
@@ -35,7 +36,7 @@ macro_rules! reverse_proxy_tests {
                 assert_eq!(response.status, http::StatusCode::OK);
                 assert_body_matches(&body);
             };
-            let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
+            let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true, None);
 
             // Pin tasks so they can be polled across multiple select! invocations
             // without being dropped (dropping run_endpoint mid-transfer would tear
@@ -73,6 +74,65 @@ reverse_proxy_tests! {
 }
 
 #[tokio::test]
+async fn sni_h1_with_deny_all_rules() {
+    common::set_up_logger();
+    let endpoint_address = common::make_endpoint_address();
+    let (proxy_address, proxy_task) = run_proxy();
+
+    let client_task = async {
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let (response, body) = sni_h1_client(&endpoint_address).await;
+        assert_eq!(response.status, http::StatusCode::OK);
+        assert_body_matches(&body);
+
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            common::try_establish_tls_connection(common::MAIN_DOMAIN_NAME, &endpoint_address, None),
+        )
+        .await;
+        if let Ok(Ok(_)) = result {
+            panic!("Main host handshake unexpectedly completed");
+        }
+    };
+    let endpoint_task = run_endpoint(
+        &endpoint_address,
+        &proxy_address,
+        true,
+        Some(deny_all_rules_engine()),
+    );
+
+    tokio::pin!(client_task);
+    tokio::pin!(proxy_task);
+    tokio::pin!(endpoint_task);
+
+    tokio::select! {
+        _ = &mut endpoint_task => unreachable!(),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => panic!("Timed out"),
+        _ = &mut client_task => (),
+        _ = &mut proxy_task => {
+            tokio::select! {
+                _ = client_task => (),
+                _ = &mut endpoint_task => unreachable!(),
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {
+                    panic!("Client timed out after proxy completed")
+                }
+            }
+        },
+    }
+}
+
+fn deny_all_rules_engine() -> RulesEngine {
+    RulesEngine::from_config(RulesConfig {
+        rule: vec![Rule {
+            cidr: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            action: RuleAction::Deny,
+        }],
+    })
+}
+
+#[tokio::test]
 async fn path_h2_chunked() {
     common::set_up_logger();
     let endpoint_address = common::make_endpoint_address();
@@ -84,7 +144,7 @@ async fn path_h2_chunked() {
         assert_eq!(response.status, http::StatusCode::OK);
         assert_body_matches(&body);
     };
-    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true, None);
 
     tokio::pin!(client_task);
     tokio::pin!(proxy_task);
@@ -118,7 +178,7 @@ async fn path_h3_chunked() {
         assert_eq!(response.status, http::StatusCode::OK);
         assert_body_matches(&body);
     };
-    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true);
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, true, None);
 
     tokio::pin!(client_task);
     tokio::pin!(proxy_task);
@@ -155,7 +215,7 @@ async fn path_h1_private_network_disallowed() {
         assert_eq!(response.status, http::StatusCode::OK);
         assert_body_matches(&body);
     };
-    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, false);
+    let endpoint_task = run_endpoint(&endpoint_address, &proxy_address, false, None);
 
     tokio::pin!(client_task);
     tokio::pin!(proxy_task);
@@ -287,8 +347,9 @@ async fn run_endpoint(
     endpoint_address: &SocketAddr,
     proxy_address: &SocketAddr,
     allow_private_network_connections: bool,
+    rules_engine: Option<RulesEngine>,
 ) {
-    let settings = Settings::builder()
+    let mut builder = Settings::builder()
         .listen_address(endpoint_address)
         .unwrap()
         .listen_protocols(ListenProtocolSettings {
@@ -304,9 +365,11 @@ async fn run_endpoint(
                 .build()
                 .unwrap(),
         )
-        .allow_private_network_connections(allow_private_network_connections)
-        .build()
-        .unwrap();
+        .allow_private_network_connections(allow_private_network_connections);
+    if let Some(rules_engine) = rules_engine {
+        builder = builder.rules_engine(rules_engine);
+    }
+    let settings = builder.build().unwrap();
 
     let cert_key_file = common::make_cert_key_file();
     let cert_key_path = cert_key_file.path.to_str().unwrap();

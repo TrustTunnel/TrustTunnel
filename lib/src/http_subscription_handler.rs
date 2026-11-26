@@ -7,11 +7,16 @@ use http::StatusCode;
 use std::io;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
+/// Serve subscription requests. `sni` is `Some` on the main-host path, where the
+/// request SNI must match the configured hostname, and `None` on a dedicated
+/// host, where the TLS layer already matched it.
 pub(crate) async fn listen(
     context: Arc<core::Context>,
     mut codec: Box<dyn HttpCodec>,
-    sni: String,
+    sni: Option<String>,
+    timeout: Duration,
     log_id: log_utils::IdChain<u64>,
 ) {
     let (mut shutdown_notification, _shutdown_completion) = {
@@ -26,40 +31,52 @@ pub(crate) async fn listen(
                 Err(e) => log_id!(debug, log_id, "Shutdown notification failure: {}", e),
             }
         },
-        _ = listen_inner(context, codec.as_mut(), sni, &log_id) => (),
+        _ = listen_inner(context, codec.as_mut(), sni, timeout, &log_id) => (),
     }
 
     if let Err(e) = codec.graceful_shutdown().await {
-        log_id!(debug, log_id, "Failed to shut down HTTP session: {}", e);
+        log_id!(debug, log_id, "Failed to shutdown HTTP session: {}", e);
     }
 }
 
 async fn listen_inner(
     context: Arc<core::Context>,
     codec: &mut dyn HttpCodec,
-    sni: String,
+    sni: Option<String>,
+    timeout: Duration,
     log_id: &log_utils::IdChain<u64>,
 ) {
     loop {
-        match codec.listen().await {
-            Ok(Some(stream)) => {
+        match tokio::time::timeout(timeout, codec.listen()).await {
+            Ok(Ok(Some(stream))) => {
                 let id = stream.id();
-                if let Err(e) =
-                    handle_stream(context.clone(), stream, sni.clone(), id.clone()).await
-                {
-                    log_id!(debug, id, "Subscription request failed: {}", e);
-                }
+                tokio::spawn({
+                    let context = context.clone();
+                    let sni = sni.clone();
+                    async move {
+                        if let Err(e) = handle_stream(context, stream, sni, &id).await {
+                            log_id!(debug, id, "Subscription request failed: {}", e);
+                        }
+                    }
+                });
             }
-            Ok(None) => {
+            Ok(Ok(None)) => {
                 log_id!(trace, log_id, "Connection closed");
                 break;
             }
-            Err(ref e) if e.kind() == ErrorKind::UnexpectedEof => {
+            Ok(Err(ref e)) if e.kind() == ErrorKind::UnexpectedEof => {
                 log_id!(trace, log_id, "Connection closed");
                 break;
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 log_id!(debug, log_id, "Session error: {}", e);
+                break;
+            }
+            Err(_elapsed) => {
+                log_id!(debug, log_id, "Closing due to timeout");
+                if let Err(e) = codec.graceful_shutdown().await {
+                    log_id!(debug, log_id, "Failed to shutdown HTTP session: {}", e);
+                }
                 break;
             }
         }
@@ -69,8 +86,8 @@ async fn listen_inner(
 async fn handle_stream(
     context: Arc<core::Context>,
     stream: Box<dyn http_codec::Stream>,
-    sni: String,
-    log_id: log_utils::IdChain<u64>,
+    sni: Option<String>,
+    log_id: &log_utils::IdChain<u64>,
 ) -> io::Result<()> {
     let (request, respond) = stream.split();
     let req = request.request();
@@ -83,17 +100,17 @@ async fn handle_stream(
         req.uri
     );
 
-    // Precedence: SNI mismatch -> 404, bad creds -> 401, disabled -> 403,
-    // non-GET -> 405, then 200. SNI is checked before auth so the endpoint never
-    // serves subscription data on the wrong TLS host.
+    // Precedence: missing config or wrong host/path -> 404, bad creds -> 401,
+    // disabled -> 403, non-GET -> 405, then 200. The host/path check is done
+    // before auth so subscription data is never served on the wrong TLS host.
     let config = context.subscription.read().unwrap().clone();
     let Some(config) = config else {
-        respond.send_bad_response(StatusCode::NOT_FOUND, vec![])?;
+        respond.send_bad_response(StatusCode::NOT_FOUND, Default::default())?;
         return Ok(());
     };
 
-    if sni != config.hostname {
-        respond.send_bad_response(StatusCode::NOT_FOUND, vec![])?;
+    if !is_subscription_request(sni.as_deref(), req.uri.path(), &config) {
+        respond.send_bad_response(StatusCode::NOT_FOUND, Default::default())?;
         return Ok(());
     }
 
@@ -109,7 +126,7 @@ async fn handle_stream(
     };
 
     if !config.enabled {
-        respond.send_bad_response(StatusCode::FORBIDDEN, vec![])?;
+        respond.send_bad_response(StatusCode::FORBIDDEN, Default::default())?;
         return Ok(());
     }
 
@@ -134,6 +151,8 @@ async fn handle_stream(
         certificate: config.certificate.as_deref(),
         custom_sni: config.custom_sni.as_deref(),
         client_random_prefix: config.client_random_prefix.as_deref(),
+        client_random_auth_key: config.client_random_auth_key.as_deref(),
+        tls_profile: config.tls_profile.as_deref(),
         name: config.name.as_deref(),
         dns_upstreams: &config.dns_upstreams,
     };
@@ -157,6 +176,15 @@ async fn handle_stream(
     Ok(())
 }
 
+fn is_subscription_request(
+    sni: Option<&str>,
+    path: &str,
+    config: &subscription::SubscriptionConfig,
+) -> bool {
+    let host_matches = sni.is_none_or(|sni| sni == config.hostname.as_str());
+    host_matches && path == config.path
+}
+
 /// Decode `Authorization: Basic <b64>` and match it against the credential registry.
 fn authenticate(context: &core::Context, headers: &http::HeaderMap) -> Option<(String, String)> {
     let header = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
@@ -170,4 +198,62 @@ fn authenticate(context: &core::Context, headers: &http::HeaderMap) -> Option<(S
         .iter()
         .find(|c| c.username == user && c.password == pass)
         .map(|c| (c.username.clone(), c.password.clone()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> subscription::SubscriptionConfig {
+        subscription::SubscriptionConfig {
+            enabled: true,
+            path: "/subscription".to_string(),
+            hostname: "vpn.example.com".to_string(),
+            address: "203.0.113.1:443".to_string(),
+            name: None,
+            dns_upstreams: vec![],
+            certificate: None,
+            custom_sni: None,
+            client_random_prefix: None,
+            client_random_auth_key: None,
+            tls_profile: None,
+        }
+    }
+
+    #[test]
+    fn dedicated_host_accepts_exact_path() {
+        assert!(is_subscription_request(None, "/subscription", &config()));
+    }
+
+    #[test]
+    fn dedicated_host_rejects_other_path() {
+        assert!(!is_subscription_request(None, "/other", &config()));
+    }
+
+    #[test]
+    fn path_route_rejects_foreign_sni() {
+        assert!(!is_subscription_request(
+            Some("other.example.com"),
+            "/subscription",
+            &config(),
+        ));
+    }
+
+    #[test]
+    fn path_route_rejects_other_path() {
+        assert!(!is_subscription_request(
+            Some("vpn.example.com"),
+            "/other",
+            &config(),
+        ));
+    }
+
+    #[test]
+    fn path_route_accepts_matching_sni_and_path() {
+        assert!(is_subscription_request(
+            Some("vpn.example.com"),
+            "/subscription",
+            &config(),
+        ));
+    }
 }

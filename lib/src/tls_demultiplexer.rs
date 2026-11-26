@@ -103,7 +103,8 @@ pub(crate) struct TlsDemux {
     reverse_proxy_hosts: HashMap<String, Host>,
     ping_hosts: HashMap<String, Host>,
     speedtest_hosts: HashMap<String, Host>,
-    tunnel_protocols: SmallVec<[Protocol; 3]>,
+    subscription_hosts: HashMap<String, Host>,
+    enabled_protocols: SmallVec<[Protocol; 3]>,
     allowed_sni_to_main_host: HashMap<String, String>,
 }
 
@@ -220,7 +221,11 @@ impl TlsDemux {
                 None => Default::default(),
                 Some(_) => make_hosts!(tls_settings.reverse_proxy_hosts)?,
             },
-            tunnel_protocols: {
+            subscription_hosts: match settings.subscription {
+                None => Default::default(),
+                Some(_) => make_hosts!(tls_settings.subscription_hosts)?,
+            },
+            enabled_protocols: {
                 let mut x = SmallVec::new();
                 if settings.listen_protocols.http1.is_some() {
                     x.push(Protocol::Http1);
@@ -273,49 +278,42 @@ impl TlsDemux {
             ));
         }
 
-        let (protocol, channel, host, auth) = if let Some(h) = self.main_hosts.get(&sni) {
+        let (protocol, channel, host, auth) = if let Some(h) = self.subscription_hosts.get(&sni) {
             (
-                self.select_tunnel_channel_protocol(parsed_alpn.iter(), alpn)?,
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
+                Channel::Subscription,
+                h,
+                None,
+            )
+        } else if let Some(h) = self.main_hosts.get(&sni) {
+            (
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Tunnel,
                 h,
                 None,
             )
         } else if let Some(h) = self.reverse_proxy_hosts.get(&sni) {
-            match parsed_alpn
-                .iter()
-                .filter(|x| matches!(x, Protocol::Http1 | Protocol::Http3))
-                .max()
-                .cloned()
-            {
-                Some(x) => (x, Channel::ReverseProxy, h, None),
-                None if alpn.clone().peekable().peek().is_none() => {
-                    (DEFAULT_PROTOCOL, Channel::ReverseProxy, h, None)
-                }
-                None => {
-                    return Err(format!(
-                        "Unexpected ALPN on reverse proxy connection {:?}",
-                        alpn.map(utils::hex_dump).collect::<Vec<_>>()
-                    ))
-                }
-            }
+            (
+                self.select_enabled_protocol(
+                    parsed_alpn
+                        .iter()
+                        .filter(|x| matches!(x, Protocol::Http1 | Protocol::Http3)),
+                    alpn,
+                )?,
+                Channel::ReverseProxy,
+                h,
+                None,
+            )
         } else if let Some(h) = self.ping_hosts.get(&sni) {
             (
-                parsed_alpn
-                    .iter()
-                    .max()
-                    .cloned()
-                    .unwrap_or(DEFAULT_PROTOCOL),
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Ping,
                 h,
                 None,
             )
         } else if let Some(h) = self.speedtest_hosts.get(&sni) {
             (
-                parsed_alpn
-                    .iter()
-                    .max()
-                    .cloned()
-                    .unwrap_or(DEFAULT_PROTOCOL),
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Speedtest,
                 h,
                 None,
@@ -325,7 +323,7 @@ impl TlsDemux {
             .and_then(|(a, b)| self.main_hosts.get(b).zip(Some(a)))
         {
             (
-                self.select_tunnel_channel_protocol(parsed_alpn.iter(), alpn)?,
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Tunnel,
                 host,
                 Some(String::from(auth_creds)),
@@ -333,7 +331,7 @@ impl TlsDemux {
         } else if let Some(main_hostname) = self.allowed_sni_to_main_host.get(&sni) {
             let host = self.main_hosts.get(main_hostname).unwrap();
             (
-                self.select_tunnel_channel_protocol(parsed_alpn.iter(), alpn)?,
+                self.select_enabled_protocol(parsed_alpn.iter(), alpn)?,
                 Channel::Tunnel,
                 host,
                 None,
@@ -355,7 +353,7 @@ impl TlsDemux {
         })
     }
 
-    fn select_tunnel_channel_protocol<'i1, 'i2, I1, I2>(
+    fn select_enabled_protocol<'i1, 'i2, I1, I2>(
         &self,
         parsed_advertised_alpn: I1,
         advertised_alpn: I2,
@@ -365,18 +363,18 @@ impl TlsDemux {
         I2: Iterator<Item = &'i2 [u8]> + Clone,
     {
         match parsed_advertised_alpn
-            .filter(|x| self.tunnel_protocols.contains(x))
+            .filter(|x| self.enabled_protocols.contains(x))
             .max()
             .cloned()
         {
             Some(x) => Ok(x),
-            None if self.tunnel_protocols.contains(&DEFAULT_PROTOCOL)
+            None if self.enabled_protocols.contains(&DEFAULT_PROTOCOL)
                 && advertised_alpn.clone().peekable().peek().is_none() =>
             {
                 Ok(DEFAULT_PROTOCOL)
             }
             None => Err(format!(
-                "Unexpected ALPN on reverse proxy connection {:?}",
+                "Unexpected ALPN on connection {:?}",
                 advertised_alpn.map(utils::hex_dump).collect::<Vec<_>>()
             )),
         }
@@ -390,6 +388,7 @@ mod tests {
         Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, ReverseProxySettings,
         Settings, TlsHostInfo, TlsHostsSettings,
     };
+    use crate::subscription::SubscriptionSettings;
     use crate::tls_demultiplexer;
     use crate::tls_demultiplexer::{ConnectionMeta, Protocol};
     use std::net::ToSocketAddrs;
@@ -420,6 +419,15 @@ mod tests {
         }
     }
 
+    fn settings_with_subscription() -> Settings {
+        let mut settings = Settings::default();
+        settings.subscription = Some(SubscriptionSettings {
+            hostname: Some("vpn.example.com".to_string()),
+            ..Default::default()
+        });
+        settings
+    }
+
     fn check_protocol_selection(
         listen_protocols: ListenProtocolSettings,
         advertised_protocols: Vec<Protocol>,
@@ -443,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn no_matching_tunnel_protocols() {
+    fn no_matching_enabled_protocols() {
         struct Sample {
             listen_protocols: ListenProtocolSettings,
             advertised_protocols: Vec<Protocol>,
@@ -579,6 +587,43 @@ mod tests {
     }
 
     #[test]
+    fn reverse_proxy_protocol_selection_respects_listen_protocols() {
+        const TEST_HOST: &str = "httpbin.agrd.dev";
+
+        let mut settings = Settings::default();
+        settings.reverse_proxy = Some(dummy_reverse_proxy_settings());
+        settings.listen_protocols = ListenProtocolSettings {
+            http2: Some(Http2Settings::builder().build()),
+            quic: Some(QuicSettings::builder().build()),
+            ..Default::default()
+        };
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.reverse_proxy_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+
+        demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap_err();
+
+        demux
+            .select(std::iter::empty::<&[u8]>(), TEST_HOST.to_string())
+            .unwrap_err();
+
+        let meta = demux
+            .select(
+                [Protocol::Http3.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http3);
+    }
+
+    #[test]
     fn ping_protocol_selection() {
         const TEST_HOST: &str = "httpbin.agrd.dev";
 
@@ -640,6 +685,116 @@ mod tests {
             )
             .unwrap();
         assert_eq!(meta.protocol, Protocol::Http3);
+    }
+
+    #[test]
+    fn subscription_protocol_selection_respects_listen_protocols() {
+        const TEST_HOST: &str = "httpbin.agrd.dev";
+
+        let mut settings = settings_with_subscription();
+        settings.listen_protocols = ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            ..Default::default()
+        };
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.subscription_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+
+        let meta = demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.channel, Channel::Subscription);
+        assert_eq!(meta.protocol, Protocol::Http1);
+
+        demux
+            .select(
+                [Protocol::Http2.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap_err();
+
+        let meta = demux
+            .select(std::iter::empty::<&[u8]>(), TEST_HOST.to_string())
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+    }
+
+    #[test]
+    fn ping_protocol_selection_respects_listen_protocols() {
+        const TEST_HOST: &str = "httpbin.agrd.dev";
+
+        let mut settings = Settings::default();
+        settings.listen_protocols = ListenProtocolSettings {
+            http2: Some(Http2Settings::builder().build()),
+            ..Default::default()
+        };
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.ping_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+
+        let meta = demux
+            .select(
+                [Protocol::Http2.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http2);
+
+        demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap_err();
+
+        demux
+            .select(std::iter::empty::<&[u8]>(), TEST_HOST.to_string())
+            .unwrap_err();
+    }
+
+    #[test]
+    fn speedtest_protocol_selection_respects_listen_protocols() {
+        const TEST_HOST: &str = "httpbin.agrd.dev";
+
+        let mut settings = Settings::default();
+        settings.listen_protocols = ListenProtocolSettings {
+            http1: Some(Http1Settings::builder().build()),
+            ..Default::default()
+        };
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.speedtest_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+
+        let meta = demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+
+        demux
+            .select(
+                [Protocol::Http2.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap_err();
+
+        demux
+            .select(
+                [Protocol::Http3.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap_err();
     }
 
     #[test]
@@ -766,5 +921,87 @@ mod tests {
         demux
             .select(advertised_alpn.clone(), "unknown.sni".to_string())
             .expect_err("Unknown SNI should fail");
+    }
+
+    #[test]
+    fn subscription_protocol_selection() {
+        const TEST_HOST: &str = "sub.localhost";
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.subscription_hosts = vec![make_tls_host(TEST_HOST.to_string())];
+
+        let settings = settings_with_subscription();
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+
+        let meta = demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+        let meta = demux
+            .select(
+                [Protocol::Http2.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http2);
+        let meta = demux
+            .select(
+                [Protocol::Http3.as_alpn().as_bytes()].into_iter(),
+                TEST_HOST.to_string(),
+            )
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http3);
+        let meta = demux
+            .select(std::iter::empty(), TEST_HOST.to_string())
+            .unwrap();
+        assert_eq!(meta.protocol, Protocol::Http1);
+    }
+
+    #[test]
+    fn subscription_channel_selection_has_priority_over_credential_split() {
+        const MAIN_HOST: &str = "endpoint";
+        const SUBSCRIPTION_HOST: &str = "sub.endpoint";
+        const CREDENTIALS: &str = "creds";
+
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.main_hosts = vec![make_tls_host(MAIN_HOST.to_string())];
+        tls_settings.subscription_hosts = vec![make_tls_host(SUBSCRIPTION_HOST.to_string())];
+
+        let settings = settings_with_subscription();
+        let demux = TlsDemux::new(&settings, &tls_settings).unwrap();
+        let advertised_alpn = [Protocol::Http1.as_alpn().as_bytes()].into_iter();
+
+        let meta = demux
+            .select(advertised_alpn.clone(), SUBSCRIPTION_HOST.to_string())
+            .unwrap();
+        assert_eq!(meta.channel, Channel::Subscription);
+        assert!(meta.sni_auth_creds.is_none());
+
+        let meta = demux
+            .select(
+                advertised_alpn.clone(),
+                format!("{CREDENTIALS}.{MAIN_HOST}"),
+            )
+            .unwrap();
+        assert_eq!(meta.channel, Channel::Tunnel);
+        assert_eq!(meta.sni_auth_creds.as_deref(), Some(CREDENTIALS));
+    }
+
+    #[test]
+    fn subscription_hosts_not_served_without_subscription_section() {
+        let mut tls_settings = TlsHostsSettings::default();
+        tls_settings.subscription_hosts = vec![make_tls_host("sub.localhost".to_string())];
+
+        let demux = TlsDemux::new(&Settings::default(), &tls_settings).unwrap();
+
+        demux
+            .select(
+                [Protocol::Http1.as_alpn().as_bytes()].into_iter(),
+                "sub.localhost".to_string(),
+            )
+            .expect_err("subscription host must not be served without [subscription]");
     }
 }

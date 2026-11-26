@@ -1,5 +1,5 @@
 use crate::{
-    authentication::registry_based, cert_verification::CertificateVerifier,
+    authentication::registry_based, cert_verification, settings::TlsHostInfo,
     settings::TlsHostsSettings, utils::ToTomlComment,
 };
 #[cfg(feature = "rt_doc")]
@@ -86,6 +86,58 @@ pub fn subscription_url_port(address: Option<&str>) -> Option<u16> {
     (port != 0 && port != 443).then_some(port)
 }
 
+/// Select the host whose hostname is placed in the exported subscription URL.
+///
+/// The first configured subscription host wins; otherwise the main host named
+/// by `main_hostname` is used. Returns `None` when neither exists.
+pub fn subscription_url_host<'a>(
+    hosts: &'a TlsHostsSettings,
+    main_hostname: Option<&str>,
+) -> Option<&'a TlsHostInfo> {
+    hosts.subscription_hosts.first().or_else(|| {
+        let main_hostname = main_hostname?;
+        hosts
+            .main_hosts
+            .iter()
+            .find(|host| host.hostname == main_hostname)
+    })
+}
+
+/// Check that a client receiving an exported config can fetch the subscription
+/// from the host the exported subscription URL points at.
+///
+/// When `subscription_hosts` is configured, the URL points at its first entry
+/// and no certificate is embedded for that host in the exported config, so its
+/// certificate must be verifiable by system CAs. Otherwise the URL points at a
+/// main host, whose certificate is embedded in the exported config.
+pub fn validate_subscription_url_host(hosts: &TlsHostsSettings) -> Result<(), String> {
+    let Some(host) = hosts.subscription_hosts.first() else {
+        return Ok(());
+    };
+
+    if cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname) {
+        return Ok(());
+    }
+
+    Err(format!(
+        "the certificate of the subscription host '{}' is not verifiable by system CAs; \
+         no certificate is embedded for a dedicated subscription host in the exported \
+         config, so clients would not be able to fetch the subscription from it",
+        host.hostname
+    ))
+}
+
+/// Validate a `--tls-profile` value.
+///
+/// The value must name a known [`trusttunnel_deeplink::TlsProfile`]; unknown
+/// names are rejected so an invalid profile never reaches the exported TOML.
+pub fn validate_tls_profile(profile: &str) -> Result<(), String> {
+    profile
+        .parse::<trusttunnel_deeplink::TlsProfile>()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn build(
     client: &String,
@@ -95,6 +147,7 @@ pub fn build(
     custom_sni: Option<String>,
     client_random_prefix: Option<String>,
     client_random_auth_key: Option<String>,
+    tls_profile: Option<String>,
     name: Option<String>,
     dns_upstreams: Vec<String>,
     subscription_url: Option<String>,
@@ -113,10 +166,8 @@ pub fn build(
         std::fs::read_to_string(&host.cert_chain_path).expect("Failed to load certificate");
 
     // Check if certificate is system-verifiable
-    let cert_is_system_verifiable = CertificateVerifier::new()
-        .ok()
-        .map(|verifier| verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname))
-        .unwrap_or(false);
+    let cert_is_system_verifiable =
+        cert_verification::is_system_verifiable(&host.cert_chain_path, &host.hostname);
 
     ClientConfig {
         hostname: host.hostname.clone(),
@@ -127,6 +178,7 @@ pub fn build(
         password: user.password.clone(),
         client_random_prefix: client_random_prefix.unwrap_or_default(),
         client_random_auth_key: client_random_auth_key.unwrap_or_default(),
+        tls_profile,
         skip_verification: false,
         certificate,
         cert_is_system_verifiable,
@@ -159,6 +211,10 @@ pub struct ClientConfig {
     /// TLS client random auth key (hex string for HKDF+AES client_random derivation).
     /// Must have a corresponding rule with client_random_auth_key in rules.toml.
     client_random_auth_key: String,
+    /// TLS ClientHello fingerprint profile (`chrome`, `chrome_canary`, `safari`,
+    /// `firefox`, `okhttp`, `openssl`, `boringssl`). If not set, clients use
+    /// the default (`chrome`).
+    tls_profile: Option<String>,
     /// Skip the endpoint certificate verification?
     /// That is, any certificate is accepted with this one set to true.
     skip_verification: bool,
@@ -193,6 +249,7 @@ impl ClientConfig {
         doc["password"] = value(&self.password);
         doc["client_random_prefix"] = value(&self.client_random_prefix);
         doc["client_random_auth_key"] = value(&self.client_random_auth_key);
+        doc["tls_profile"] = value(self.tls_profile.as_deref().unwrap_or_default());
         doc["skip_verification"] = value(self.skip_verification);
         if self.cert_is_system_verifiable {
             doc["certificate"] = value("");
@@ -234,6 +291,13 @@ impl ClientConfig {
             .parse()
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
+        let tls_profile = self
+            .tls_profile
+            .as_deref()
+            .map(str::parse)
+            .transpose()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+
         // Build deep-link config
         let config = DeepLinkConfig {
             hostname: Some(self.hostname.clone()),
@@ -250,7 +314,7 @@ impl ClientConfig {
             } else {
                 Some(self.client_random_auth_key.clone())
             },
-            tls_profile: None,
+            tls_profile,
             custom_sni: if self.custom_sni.is_empty() {
                 None
             } else {
@@ -325,6 +389,9 @@ client_random_prefix = ""
 client_random_auth_key = ""
 
 {}
+tls_profile = ""
+
+{}
 skip_verification = false
 
 {}
@@ -350,6 +417,7 @@ dns_upstreams = []
         ClientConfig::doc_password().to_toml_comment(),
         ClientConfig::doc_client_random_prefix().to_toml_comment(),
         ClientConfig::doc_client_random_auth_key().to_toml_comment(),
+        ClientConfig::doc_tls_profile().to_toml_comment(),
         ClientConfig::doc_skip_verification().to_toml_comment(),
         ClientConfig::doc_certificate().to_toml_comment(),
         ClientConfig::doc_upstream_protocol().to_toml_comment(),
@@ -373,6 +441,7 @@ mod tests {
                 password: "secret".into(),
                 client_random_prefix: String::new(),
                 client_random_auth_key: String::new(),
+                tls_profile: None,
                 skip_verification: false,
                 certificate,
                 cert_is_system_verifiable,
@@ -657,5 +726,116 @@ omxU7kknZApM\n\
         config.client_random_auth_key = "aabbccdd".into();
         let toml = config.compose_toml();
         assert!(toml.contains("client_random_auth_key = \"aabbccdd\""));
+    }
+
+    #[test]
+    fn compose_toml_emits_tls_profile_when_set() {
+        let mut config = ClientConfig::test_config(String::new(), true);
+        config.tls_profile = Some("chrome_canary".to_string());
+        let toml = config.compose_toml();
+        assert!(toml.contains("tls_profile = \"chrome_canary\""));
+    }
+
+    #[test]
+    fn compose_toml_emits_empty_tls_profile_when_unset() {
+        let config = ClientConfig::test_config(String::new(), true);
+        let toml = config.compose_toml();
+        assert!(toml.contains("tls_profile = \"\""));
+    }
+
+    #[test]
+    fn compose_deeplink_includes_tls_profile() {
+        let mut config = ClientConfig::test_config(String::new(), true);
+        config.tls_profile = Some("chrome_canary".to_string());
+        let uri = config.compose_deeplink().unwrap();
+        let decoded = trusttunnel_deeplink::decode(&uri).unwrap();
+        assert_eq!(
+            decoded.tls_profile,
+            Some(trusttunnel_deeplink::TlsProfile::ChromeCanary)
+        );
+    }
+
+    #[test]
+    fn compose_deeplink_omits_tls_profile_when_unset() {
+        let config = ClientConfig::test_config(String::new(), true);
+        let uri = config.compose_deeplink().unwrap();
+        let decoded = trusttunnel_deeplink::decode(&uri).unwrap();
+        assert_eq!(decoded.tls_profile, None);
+    }
+
+    #[test]
+    fn validate_tls_profile_accepts_known_profiles() {
+        for profile in [
+            "chrome",
+            "chrome_canary",
+            "safari",
+            "firefox",
+            "okhttp",
+            "openssl",
+            "boringssl",
+        ] {
+            assert!(validate_tls_profile(profile).is_ok(), "{profile}");
+        }
+    }
+
+    #[test]
+    fn validate_tls_profile_rejects_unknown_profiles() {
+        for profile in ["", "default", "Chrome", "chrome-canary"] {
+            assert!(validate_tls_profile(profile).is_err(), "{profile}");
+        }
+    }
+
+    fn hosts_with(main: &[&str], subscription: &[&str]) -> TlsHostsSettings {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let to_host = |hostname: &&str| TlsHostInfo {
+            hostname: hostname.to_string(),
+            cert_chain_path: path.to_string(),
+            private_key_path: path.to_string(),
+            allowed_sni: vec![],
+        };
+        TlsHostsSettings::builder()
+            .main_hosts(main.iter().map(to_host).collect())
+            .subscription_hosts(subscription.iter().map(to_host).collect())
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn subscription_url_host_prefers_first_subscription_host() {
+        let hosts = hosts_with(
+            &["vpn.example.com"],
+            &["sub1.example.com", "sub2.example.com"],
+        );
+        let host = subscription_url_host(&hosts, Some("vpn.example.com")).unwrap();
+        assert_eq!(host.hostname, "sub1.example.com");
+    }
+
+    #[test]
+    fn subscription_url_host_falls_back_to_main_host() {
+        let hosts = hosts_with(&["vpn.example.com", "other.example.com"], &[]);
+        let host = subscription_url_host(&hosts, Some("other.example.com")).unwrap();
+        assert_eq!(host.hostname, "other.example.com");
+    }
+
+    #[test]
+    fn subscription_url_host_none_without_any_host() {
+        let hosts = hosts_with(&["vpn.example.com"], &[]);
+        assert!(subscription_url_host(&hosts, Some("unknown.example.com")).is_none());
+        assert!(subscription_url_host(&hosts, None).is_none());
+    }
+
+    #[test]
+    fn validate_subscription_url_host_accepts_no_subscription_hosts() {
+        let hosts = hosts_with(&["vpn.example.com"], &[]);
+        assert!(validate_subscription_url_host(&hosts).is_ok());
+    }
+
+    #[test]
+    fn validate_subscription_url_host_rejects_unverifiable_certificate() {
+        // The test certificate is self-signed, so it is not system-verifiable.
+        let hosts = hosts_with(&["vpn.example.com"], &["sub.example.com"]);
+        let err = validate_subscription_url_host(&hosts).unwrap_err();
+        assert!(err.contains("sub.example.com"));
     }
 }

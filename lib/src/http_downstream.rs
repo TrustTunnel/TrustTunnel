@@ -179,7 +179,8 @@ impl Downstream for HttpDownstream {
                             http_subscription_handler::listen(
                                 context.clone(),
                                 Box::new(http_codec::stream_into_codec(stream, protocol)),
-                                sni,
+                                Some(sni),
+                                context.settings.tls_handshake_timeout,
                                 stream_id,
                             )
                             .await

@@ -35,6 +35,7 @@ const NAME_PARAM_NAME: &str = "name";
 const DNS_UPSTREAM_PARAM_NAME: &str = "dns_upstream";
 const SUBSCRIPTION_URL_PARAM_NAME: &str = "subscription_url";
 const SUBSCRIPTION_ONLY_PARAM_NAME: &str = "subscription_only";
+const TLS_PROFILE_PARAM_NAME: &str = "tls_profile";
 const SENTRY_DSN_PARAM_NAME: &str = "sentry_dsn";
 const THREADS_NUM_PARAM_NAME: &str = "threads_num";
 const TRUSTTUNNEL_QR_URL: &str = "https://trusttunnel.org/qr.html";
@@ -228,6 +229,11 @@ fn main() {
                 .requires(CLIENT_CONFIG_PARAM_NAME)
                 .long("subscription-only")
                 .help("With --format deeplink, export a minimal deep link that contains only the subscription URL (no static connection parameters). Requires [subscription] to be enabled in vpn.toml and the subscription host certificate to be verifiable by system CAs."),
+            clap::Arg::new(TLS_PROFILE_PARAM_NAME)
+                .action(clap::ArgAction::Set)
+                .requires(CLIENT_CONFIG_PARAM_NAME)
+                .long("tls-profile")
+                .help("TLS ClientHello fingerprint profile for the exported client config. Omitted when not specified; clients then use the default."),
         ])
         .disable_version_flag(true)
         .get_matches();
@@ -296,21 +302,20 @@ fn main() {
     let tls_hosts_settings_path = args
         .get_one::<String>(TLS_HOSTS_SETTINGS_PARAM_NAME)
         .unwrap();
-    let tls_hosts_settings: settings::TlsHostsSettings = toml::from_str(
-        &std::fs::read_to_string(tls_hosts_settings_path)
-            .expect("Couldn't read the TLS hosts settings file"),
-    )
-    .expect("Couldn't parse the TLS hosts settings file");
-
-    let subscription_host = settings.get_subscription().as_ref().map(|sub| {
-        trusttunnel::subscription::validate_with_hosts(sub, &settings, &tls_hosts_settings)
-            .unwrap_or_else(|e| {
-                eprintln!("Error: {e:?}");
-                std::process::exit(1);
-            })
-    });
+    let tls_hosts_settings = read_tls_hosts_settings(Path::new(tls_hosts_settings_path))
+        .unwrap_or_else(|e| {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        });
 
     if args.contains_id(CLIENT_CONFIG_PARAM_NAME) {
+        // The export path must not start the endpoint, so it validates the
+        // settings here instead of relying on Core::new.
+        if let Err(e) = Core::check_settings(&settings, &tls_hosts_settings) {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+
         let username = args.get_one::<String>(CLIENT_CONFIG_PARAM_NAME).unwrap();
         let listen_port = settings.get_listen_address().port();
         let explicit_addresses: Vec<String> = args
@@ -511,7 +516,6 @@ fn main() {
                 .get_clients()
                 .iter()
                 .find(|c| c.username == *username)?;
-            let hostname = sub.hostname.as_deref()?;
             let base: String = match args.get_one::<String>(SUBSCRIPTION_URL_PARAM_NAME) {
                 Some(override_url) => {
                     if let Err(e) = client_config::validate_subscription_url_override(override_url)
@@ -522,10 +526,20 @@ fn main() {
                     override_url.clone()
                 }
                 None => {
+                    let host = client_config::subscription_url_host(
+                        &tls_hosts_settings,
+                        sub.hostname.as_deref(),
+                    )?;
+                    if let Err(e) =
+                        client_config::validate_subscription_url_host(&tls_hosts_settings)
+                    {
+                        eprintln!("Error: {e}");
+                        std::process::exit(1);
+                    }
                     let port = client_config::subscription_url_port(sub.address.as_deref())
                         .map(|port| format!(":{port}"))
                         .unwrap_or_default();
-                    format!("https://{hostname}{port}{}", sub.path.as_str())
+                    format!("https://{}{port}{}", host.hostname, sub.path.as_str())
                 }
             };
             Some(client_config::build_subscription_url(
@@ -582,6 +596,15 @@ fn main() {
             }
         }
 
+        let tls_profile = args.get_one::<String>(TLS_PROFILE_PARAM_NAME).cloned();
+
+        if let Some(ref profile) = tls_profile {
+            if let Err(e) = client_config::validate_tls_profile(profile) {
+                eprintln!("Error: unknown tls_profile '{}': {}", profile, e);
+                std::process::exit(1);
+            }
+        }
+
         let client_config = client_config::build(
             username,
             addresses,
@@ -590,6 +613,7 @@ fn main() {
             custom_sni,
             client_random_prefix,
             client_random_auth_key,
+            tls_profile,
             name,
             dns_upstreams,
             subscription_url,
@@ -615,13 +639,14 @@ fn main() {
                 .get_one::<String>(SUBSCRIPTION_URL_PARAM_NAME)
                 .is_none()
         {
-            if let Some(host) = subscription_host {
-                let system_verifiable = trusttunnel::cert_verification::CertificateVerifier::new()
-                    .ok()
-                    .map(|verifier| {
-                        verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname)
-                    })
-                    .unwrap_or(false);
+            let host = settings.get_subscription().as_ref().and_then(|sub| {
+                client_config::subscription_url_host(&tls_hosts_settings, sub.hostname.as_deref())
+            });
+            if let Some(host) = host {
+                let system_verifiable = trusttunnel::cert_verification::is_system_verifiable(
+                    &host.cert_chain_path,
+                    &host.hostname,
+                );
                 if !system_verifiable {
                     eprintln!(
                         "Error: --subscription-only requires the certificate of the subscription \
@@ -690,15 +715,18 @@ fn main() {
     } else {
         None
     };
-    let core = Arc::new(
-        Core::new(
-            settings,
-            authenticator,
-            tls_hosts_settings,
-            shutdown.clone(),
-        )
-        .expect("Couldn't create core instance"),
-    );
+    let core = match Core::new(
+        settings,
+        authenticator,
+        tls_hosts_settings,
+        shutdown.clone(),
+    ) {
+        Ok(core) => Arc::new(core),
+        Err(e) => {
+            eprintln!("Error: {e:?}");
+            std::process::exit(1);
+        }
+    };
 
     let listen_task = {
         let core = core.clone();
@@ -716,15 +744,17 @@ fn main() {
                 sighup_listener.recv().await;
                 info!("Reloading TLS hosts settings");
 
-                let tls_hosts_settings: settings::TlsHostsSettings = toml::from_str(
-                    &std::fs::read_to_string(&tls_hosts_settings_path)
-                        .expect("Couldn't read the TLS hosts settings file"),
-                )
-                .expect("Couldn't parse the TLS hosts settings file");
-
-                core.reload_tls_hosts_settings(tls_hosts_settings.clone())
-                    .expect("Couldn't apply new settings");
-                info!("TLS hosts settings are successfully reloaded");
+                let tls_hosts_settings =
+                    match read_tls_hosts_settings(Path::new(&tls_hosts_settings_path)) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!(
+                                "Failed to reload TLS hosts settings: {}; keeping previous",
+                                e
+                            );
+                            continue;
+                        }
+                    };
 
                 info!("Reloading subscription settings");
                 let subscription = std::fs::read_to_string(&settings_path).and_then(|contents| {
@@ -737,14 +767,15 @@ fn main() {
                 });
                 match subscription {
                     Ok(sub) => {
-                        if let Err(e) = core.reload_subscription_settings(sub, &tls_hosts_settings)
+                        if let Err(e) =
+                            core.reload_tls_hosts_and_subscription_settings(sub, tls_hosts_settings)
                         {
                             error!(
-                                "Failed to reload subscription settings: {}; keeping previous",
+                                "Failed to reload TLS hosts and subscription settings: {}; keeping previous",
                                 e
                             );
                         } else {
-                            info!("Subscription settings are successfully reloaded");
+                            info!("TLS hosts and subscription settings are successfully reloaded");
                         }
                     }
                     Err(e) => error!(
@@ -911,6 +942,16 @@ fn parse_endpoint_address(input: &str, default_port: u16) -> String {
     }
 }
 
+/// Reads and parses the TLS hosts settings file.
+fn read_tls_hosts_settings(path: &Path) -> std::io::Result<settings::TlsHostsSettings> {
+    let contents = std::fs::read_to_string(path).map_err(|e| {
+        std::io::Error::other(format!("Couldn't read the TLS hosts settings file: {e}"))
+    })?;
+    toml::from_str(&contents).map_err(|e| {
+        std::io::Error::other(format!("Couldn't parse the TLS hosts settings file: {e}"))
+    })
+}
+
 #[derive(serde::Deserialize)]
 struct SubscriptionOnly {
     #[serde(default)]
@@ -922,7 +963,7 @@ struct SubscriptionOnly {
 /// Re-parsing the whole `Settings` would re-read `credentials.toml` and
 /// re-validate unrelated fields; this wrapper ignores all other keys (serde
 /// ignores unknown fields by default) and only validates `[subscription]` via
-/// `Core::reload_subscription_settings`.
+/// `Core::reload_tls_hosts_and_subscription_settings`.
 fn extract_subscription(
     contents: &str,
 ) -> Result<Option<trusttunnel::subscription::SubscriptionSettings>, toml::de::Error> {
@@ -1189,6 +1230,55 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&rules_path);
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_parses_valid_file() {
+        let cert = std::env::temp_dir().join("trusttunnel_read_tls_hosts_cert.pem");
+        std::fs::write(&cert, b"").unwrap();
+        let config = std::env::temp_dir().join("trusttunnel_read_tls_hosts_valid.toml");
+        std::fs::write(
+            &config,
+            format!(
+                "[[main_hosts]]\nhostname = \"vpn.example.com\"\ncert_chain_path = \"{}\"\nprivate_key_path = \"{}\"\n",
+                cert.display(),
+                cert.display()
+            ),
+        )
+        .unwrap();
+
+        let hosts = read_tls_hosts_settings(&config).unwrap();
+
+        assert_eq!(hosts.get_main_hosts().len(), 1);
+        assert_eq!(hosts.get_main_hosts()[0].hostname, "vpn.example.com");
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_missing_file_is_read_error() {
+        let path = std::env::temp_dir().join("trusttunnel_read_tls_hosts_missing.toml");
+        let _ = std::fs::remove_file(&path);
+
+        let err = read_tls_hosts_settings(&path)
+            .err()
+            .expect("expected error");
+
+        assert!(err
+            .to_string()
+            .contains("Couldn't read the TLS hosts settings file"));
+    }
+
+    #[test]
+    fn read_tls_hosts_settings_invalid_toml_is_parse_error() {
+        let path = std::env::temp_dir().join("trusttunnel_read_tls_hosts_invalid.toml");
+        std::fs::write(&path, "not [ valid toml").unwrap();
+
+        let err = read_tls_hosts_settings(&path)
+            .err()
+            .expect("expected error");
+
+        assert!(err
+            .to_string()
+            .contains("Couldn't parse the TLS hosts settings file"));
     }
 
     #[test]

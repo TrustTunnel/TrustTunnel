@@ -26,7 +26,8 @@ pub enum ValidationError {
     SpeedTlsHostInfo(String),
     /// Invalid [`Settings.reverse_proxy`]
     ReverseProxy(String),
-    /// Invalid [`Settings.subscription`]
+    /// Invalid [`Settings.subscription`] or
+    /// [`TlsHostsSettings.subscription_hosts`]
     Subscription(String),
     /// Invalid [`Settings.listen_protocols`]
     ListenProtocols(String),
@@ -180,8 +181,9 @@ pub struct Settings {
     pub(crate) reverse_proxy: Option<ReverseProxySettings>,
     /// The subscription endpoint settings.
     /// When enabled, the endpoint serves a per-user JSON configuration over an
-    /// existing main TLS host. Hot-reloaded on `SIGHUP` (see
-    /// [`crate::core::Core::reload_subscription_settings`]).
+    /// existing main TLS host or a dedicated host from
+    /// [`TlsHostsSettings::subscription_hosts`]. Hot-reloaded on `SIGHUP` (see
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings`]).
     #[serde(default)]
     pub(crate) subscription: Option<SubscriptionSettings>,
     /// The ICMP forwarding settings.
@@ -257,14 +259,16 @@ pub struct TlsHostInfo {
     /// Path to a file containing the certificate chain.
     /// MUST remain valid until [`crate::core::Core::listen()`] or
     /// [`crate::core::Core::listen_async()`] is running, or
-    /// until the next [`crate::core::Core::reload_tls_hosts_settings()`] call.
+    /// until the next
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings()`] call.
     #[serde(deserialize_with = "deserialize_file_path")]
     pub cert_chain_path: String,
     /// Path to a file containing the private key.
     /// May be equal to `cert_chain_path` if it contains both of them.
     /// MUST remain valid until [`crate::core::Core::listen()`] or
     /// [`crate::core::Core::listen_async()`] is running, or
-    /// until the next [`crate::core::Core::reload_tls_hosts_settings()`] call.
+    /// until the next
+    /// [`crate::core::Core::reload_tls_hosts_and_subscription_settings()`] call.
     #[serde(deserialize_with = "deserialize_file_path")]
     pub private_key_path: String,
     /// List of alternative SNIs that should be accepted for this host.
@@ -300,6 +304,11 @@ pub struct TlsHostsSettings {
     /// Only makes sense if the reverse proxy is set up, otherwise it is ignored.
     #[serde(default)]
     pub(crate) reverse_proxy_hosts: Vec<TlsHostInfo>,
+    /// The TLS hosts for serving the subscription JSON
+    /// (see [`Settings::subscription`]).
+    /// Only makes sense if the subscription is set up, otherwise it is ignored.
+    #[serde(default)]
+    pub(crate) subscription_hosts: Vec<TlsHostInfo>,
 
     /// Whether an instance was built through a [`TlsSettingsBuilder`].
     /// This flag is a workaround for absence of the ability to validate
@@ -559,6 +568,10 @@ impl Settings {
         Self::validate_request_path("speedtest_path", &self.speedtest_path)?;
         Self::validate_request_path_overlaps(&self.ping_path, &self.speedtest_path)?;
 
+        if let Some(subscription) = self.subscription.as_ref() {
+            crate::subscription::validate(subscription, self)?;
+        }
+
         if self.listen_protocols.http1.is_none()
             && self.listen_protocols.http2.is_none()
             && self.listen_protocols.quic.is_none()
@@ -755,8 +768,10 @@ impl TlsHostsSettings {
             .map_err(ValidationError::PingTlsHostInfo)?;
         let hosts = Self::validate_tls_hosts(self.speedtest_hosts.iter(), hosts)
             .map_err(ValidationError::SpeedTlsHostInfo)?;
-        Self::validate_tls_hosts(self.reverse_proxy_hosts.iter(), hosts)
+        let hosts = Self::validate_tls_hosts(self.reverse_proxy_hosts.iter(), hosts)
             .map_err(ValidationError::ReverseProxy)?;
+        Self::validate_tls_hosts(self.subscription_hosts.iter(), hosts)
+            .map_err(ValidationError::Subscription)?;
 
         Ok(())
     }
@@ -1144,6 +1159,7 @@ impl TlsSettingsBuilder {
                 ping_hosts: Default::default(),
                 speedtest_hosts: Default::default(),
                 reverse_proxy_hosts: Default::default(),
+                subscription_hosts: Default::default(),
                 built: true,
             },
         }
@@ -1188,6 +1204,13 @@ impl TlsSettingsBuilder {
     /// is set up, otherwise it is ignored.
     pub fn reverse_proxy_hosts(mut self, hosts: Vec<TlsHostInfo>) -> Self {
         self.settings.reverse_proxy_hosts = hosts;
+        self
+    }
+
+    /// Set the TLS hosts for serving the subscription JSON.
+    /// Only makes sense if the subscription is set up.
+    pub fn subscription_hosts(mut self, hosts: Vec<TlsHostInfo>) -> Self {
+        self.settings.subscription_hosts = hosts;
         self
     }
 }
@@ -1823,6 +1846,116 @@ mod tests {
         assert!(matches!(
             err,
             ValidationError::InvalidAuthFailureStatusCode(200)
+        ));
+    }
+
+    fn tls_host(name: &str, path: &str) -> TlsHostInfo {
+        TlsHostInfo {
+            hostname: name.to_string(),
+            cert_chain_path: path.to_string(),
+            private_key_path: path.to_string(),
+            allowed_sni: vec![],
+        }
+    }
+
+    #[test]
+    fn parse_subscription_hosts_absent_is_empty() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+        assert!(hosts.subscription_hosts.is_empty());
+    }
+
+    #[test]
+    fn parse_subscription_hosts_reads_entry() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        let host = &hosts.subscription_hosts[0];
+        assert_eq!(host.hostname, "sub.example.com");
+        assert_eq!(host.cert_chain_path, path);
+        assert_eq!(host.private_key_path, path);
+    }
+
+    #[test]
+    fn tls_settings_builder_sets_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts = TlsHostsSettings::builder()
+            .main_hosts(vec![tls_host("vpn.example.com", path)])
+            .subscription_hosts(vec![tls_host("sub.example.com", path)])
+            .build()
+            .unwrap();
+
+        assert_eq!(hosts.subscription_hosts.len(), 1);
+        assert_eq!(hosts.subscription_hosts[0].hostname, "sub.example.com");
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_hostname_between_main_and_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        match hosts.validate().unwrap_err() {
+            ValidationError::Subscription(message) => {
+                assert!(message.contains("vpn.example.com"));
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_hostname_within_subscription_hosts() {
+        let file = crate::utils::make_test_cert_key_file();
+        let path = file.path().to_str().unwrap();
+        let hosts: TlsHostsSettings = toml::from_str(&format!(
+            "[[main_hosts]]\nhostname = \"vpn.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n\
+             [[subscription_hosts]]\nhostname = \"sub.example.com\"\n\
+             cert_chain_path = \"{path}\"\nprivate_key_path = \"{path}\"\n"
+        ))
+        .unwrap();
+
+        match hosts.validate().unwrap_err() {
+            ValidationError::Subscription(message) => {
+                assert!(message.contains("sub.example.com"));
+            }
+            other => panic!("Unexpected error: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn validate_checks_subscription_section() {
+        let mut settings = Settings::default();
+        settings.listen_address = (Ipv4Addr::LOCALHOST, 8443).into();
+        settings.subscription = Some(SubscriptionSettings {
+            address: Some("no-port".to_string()),
+            ..Default::default()
+        });
+
+        assert!(matches!(
+            settings.validate().unwrap_err(),
+            ValidationError::Subscription(_)
         ));
     }
 }
