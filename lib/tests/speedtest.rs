@@ -1,4 +1,4 @@
-use http::Request;
+use hyper::http::{self, Request};
 use std::net::SocketAddr;
 use std::time::Duration;
 use trusttunnel::net_utils;

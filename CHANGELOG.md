@@ -22,7 +22,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- [Fix] HTTP/2: the endpoint process no longer aborts with `assertion failed: self.window_size.0 >= sz as i32` (`h2` `flow_control.rs`) when a tunnel stream is dropped while waiting for flow-control capacity. Caused by [hyperium/h2#607](https://github.com/hyperium/h2/issues/607), fixed only in `h2` 0.4; the endpoint now uses `h2` 0.4 and `http` 1.x. See [#140](https://github.com/TrustTunnel/TrustTunnel/issues/140).
+
 ### Security
+
+- [Security] `h2` updated to 0.4.20, which includes the fix for [RUSTSEC-2026-0258](https://rustsec.org/advisories/RUSTSEC-2026-0258) (unbounded empty DATA frames, denial of service). `h2` 0.3 does not receive this fix.
 
 ## [1.3.1] - 2026-11-19
 

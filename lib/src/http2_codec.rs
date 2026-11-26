@@ -318,6 +318,10 @@ impl std::future::Future for WaitWritable<'_> {
             return Poll::Ready(Ok(()));
         }
 
+        // h2 assigns no capacity to a stream that requests none, and then
+        // poll_capacity() never wakes up
+        self.stream.reserve_capacity(16 * 1024);
+
         Poll::Ready(match futures::ready!(self.stream.poll_capacity(cx)) {
             None => Err(io::Error::from(ErrorKind::UnexpectedEof)),
             Some(Ok(_)) => Ok(()),

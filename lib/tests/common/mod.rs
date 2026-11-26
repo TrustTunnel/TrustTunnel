@@ -1,7 +1,7 @@
 use bytes::{Buf, Bytes, BytesMut};
 use futures::future;
-use http::{Request, Response};
 use hyper::body::HttpBody;
+use hyper::http::{self, Request, Response};
 use log::{info, LevelFilter};
 use quiche::h3;
 use quiche::h3::NameValue;

@@ -1,6 +1,6 @@
 use bytes::Bytes;
 use futures::stream;
-use http::{Request, Response};
+use hyper::http::{self, Request, Response};
 use log::info;
 use once_cell::sync::Lazy;
 use ring::digest::{digest, SHA256};
