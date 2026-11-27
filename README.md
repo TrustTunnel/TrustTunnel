@@ -545,6 +545,8 @@ Available on [App Store][app-store]* and [Play Store][play-store].
 
 [Shadowrocket](https://shadowlaunch.com) — Rule based proxy utility client for iPhone/iPad with TrustTunnel support. (Commercial)
 
+[Netlane](https://netlane.cloud/) — Free, open-source desktop clients for [Windows](https://github.com/divezh/netlane-windows) and [macOS](https://github.com/divezh/netlane-macos), built on the official [TrustTunnel Client][trusttunnel-client]. Subscriptions, split tunneling by site and app, kill switch, and signed updates. Optional self-hosted admin panel: [Netlane Server](https://github.com/divezh/netlane-server).
+
 ## See Also
 
 - [CONFIGURATION.md](CONFIGURATION.md) - Configuration documentation
